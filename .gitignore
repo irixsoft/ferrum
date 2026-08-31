@@ -1,0 +1,5 @@
+/target
+/target/schema.db
+node_modules/
+dist/
+*.tsbuildinfo
