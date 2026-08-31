@@ -1,0 +1,23 @@
+[Unit]
+Description=Ferrum
+Documentation=https://github.com/irixsoft/ferrum
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=exec
+ExecStart=/usr/local/bin/ferrum serve --data-dir /var/lib/ferrum
+Restart=on-failure
+RestartSec=2s
+KillSignal=SIGTERM
+TimeoutStopSec=30s
+StateDirectory=ferrum
+StateDirectoryMode=0700
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectHome=yes
+ProtectControlGroups=no
+Environment=FERRUM_LOG=info
+
+[Install]
+WantedBy=multi-user.target
