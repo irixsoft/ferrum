@@ -36,6 +36,26 @@ async fn version_endpoint_returns_build_metadata() {
 }
 
 #[tokio::test]
+async fn health_endpoint_reports_ok() {
+    let res = app()
+        .await
+        .oneshot(
+            Request::builder()
+                .uri("/api/health")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(res.status(), StatusCode::OK);
+
+    let bytes = axum::body::to_bytes(res.into_body(), 1024).await.unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(json["ok"], true);
+}
+
+#[tokio::test]
 async fn unknown_path_is_404() {
     let res = app()
         .await

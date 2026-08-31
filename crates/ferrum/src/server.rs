@@ -8,6 +8,7 @@ pub use ferrum_core::LISTEN_ADDR;
 
 pub fn app(state: State) -> Router {
     Router::new()
+        .route("/api/health", get(crate::routes::health::get))
         .route("/api/version", get(crate::routes::version::get))
         .layer(TraceLayer::new_for_http())
         .with_state(state)
