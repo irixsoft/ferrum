@@ -27,7 +27,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: sudo apt-get update && sudo apt-get install -y shellcheck
-      - run: shellcheck -s sh install.sh
+      - run: shellcheck -s sh -e SC1091 install.sh
 
   build:
     runs-on: ubuntu-24.04

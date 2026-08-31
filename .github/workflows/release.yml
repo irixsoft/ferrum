@@ -1,0 +1,65 @@
+name: release
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+  SQLX_OFFLINE: "true"
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    strategy:
+      matrix:
+        target: [x86_64-unknown-linux-musl, aarch64-unknown-linux-musl]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: mlugg/setup-zig@v1
+      - run: cargo install cargo-zigbuild --locked
+      - name: Build
+        env:
+          FERRUM_BUILD_ID: ${{ github.sha }}
+          FERRUM_COMMIT_SHA: ${{ github.sha }}
+        run: cargo zigbuild --release --target ${{ matrix.target }} -p ferrum
+      - run: cp target/${{ matrix.target }}/release/ferrum ferrum-${{ matrix.target }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ferrum-${{ matrix.target }}
+          path: ferrum-${{ matrix.target }}
+
+  publish:
+    needs: build
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
+          path: .
+      - name: Checksum
+        run: sha256sum ferrum-*-unknown-linux-musl > SHA256SUMS
+      - name: Sign
+        env:
+          KEY: ${{ secrets.FERRUM_SIGNING_KEY }}
+        run: |
+          printf '%s' "$KEY" > key.pem
+          openssl pkeyutl -sign -inkey key.pem -rawin -in SHA256SUMS -out SHA256SUMS.sig
+          shred -u key.pem
+          openssl pkeyutl -verify -pubin -inkey packaging/ferrum-pub.pem \
+            -rawin -in SHA256SUMS -sigfile SHA256SUMS.sig
+      - uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: |
+            ferrum-x86_64-unknown-linux-musl
+            ferrum-aarch64-unknown-linux-musl
+            SHA256SUMS
+            SHA256SUMS.sig
+            packaging/ferrum-pub.pem
