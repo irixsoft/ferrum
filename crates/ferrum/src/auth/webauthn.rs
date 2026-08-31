@@ -22,13 +22,15 @@ pub fn instance(hostname: &str) -> anyhow::Result<Webauthn> {
 pub fn start_registration(
     webauthn: &Webauthn,
     user: &User,
+    already_held: Vec<CredentialID>,
 ) -> anyhow::Result<(CreationChallengeResponse, PasskeyRegistration)> {
     let handle = user
         .handle_uuid()
         .context("this account's handle is not a uuid, so no passkey can be created for it")?;
+    let exclude = (!already_held.is_empty()).then_some(already_held);
 
     let (mut challenge, registration) =
-        webauthn.start_passkey_registration(handle, &user.name, &user.name, None)?;
+        webauthn.start_passkey_registration(handle, &user.name, &user.name, exclude)?;
     require_discoverable(&mut challenge);
     Ok((challenge, registration))
 }
@@ -137,7 +139,7 @@ mod tests {
             name: "Saeed".into(),
             created_at: String::new(),
         };
-        let (challenge, _) = start_registration(&w, &user).unwrap();
+        let (challenge, _) = start_registration(&w, &user, Vec::new()).unwrap();
         let json = serde_json::to_value(&challenge).unwrap();
 
         assert_eq!(
@@ -147,6 +149,32 @@ mod tests {
         assert_eq!(
             json["publicKey"]["authenticatorSelection"]["requireResidentKey"],
             true
+        );
+    }
+
+    #[test]
+    fn registration_excludes_passkeys_the_account_already_holds() {
+        let w = instance("panel.example.com").unwrap();
+        let user = User {
+            id: "u1".into(),
+            handle: Uuid::new_v4().to_string(),
+            name: "Saeed".into(),
+            created_at: String::new(),
+        };
+
+        let (bare, _) = start_registration(&w, &user, Vec::new()).unwrap();
+        assert!(
+            bare.public_key.exclude_credentials.is_none(),
+            "a first passkey has nothing to exclude"
+        );
+
+        let (again, _) = start_registration(&w, &user, vec![vec![1, 2, 3]]).unwrap();
+        let excluded = again.public_key.exclude_credentials.unwrap();
+        assert_eq!(excluded.len(), 1);
+        assert_eq!(
+            excluded[0].id,
+            vec![1, 2, 3],
+            "an authenticator must be told not to enrol itself twice"
         );
     }
 
@@ -176,7 +204,7 @@ mod tests {
             name: "Saeed".into(),
             created_at: String::new(),
         };
-        assert!(start_registration(&w, &user).is_err());
+        assert!(start_registration(&w, &user, Vec::new()).is_err());
     }
 
     fn unreachable_registration() -> PasskeyRegistration {
@@ -187,7 +215,7 @@ mod tests {
             name: "Saeed".into(),
             created_at: String::new(),
         };
-        start_registration(&w, &user).unwrap().1
+        start_registration(&w, &user, Vec::new()).unwrap().1
     }
 
     #[test]

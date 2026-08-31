@@ -70,8 +70,14 @@ async fn register_begin(
         .await?
         .ok_or_else(|| ApiError::unauthorized(UNKNOWN_LINK))?;
 
+    let already_held = credentials::for_user(&app.db, &user.id)
+        .await?
+        .iter()
+        .filter_map(|c| URL_SAFE_NO_PAD.decode(&c.id).ok())
+        .collect();
+
     let webauthn = instance(&app).await?;
-    let (options, registration) = webauthn::start_registration(&webauthn, &user)?;
+    let (options, registration) = webauthn::start_registration(&webauthn, &user, already_held)?;
 
     let id = app.challenges.put(Pending::Register {
         user_id: user.id,
