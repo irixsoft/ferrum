@@ -8,7 +8,11 @@ repository.workspace = true
 [dependencies]
 anyhow.workspace = true
 ferrum-platform = { path = "../ferrum-platform" }
+hickory-resolver.workspace = true
+reqwest.workspace = true
 serde.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
 sqlx.workspace = true
 tracing.workspace = true
 

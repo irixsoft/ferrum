@@ -1,3 +1,4 @@
+pub mod dns;
 pub mod nginx;
 pub mod state;
 pub mod swap;
