@@ -16,6 +16,7 @@ path = "src/main.rs"
 [dependencies]
 anyhow.workspace = true
 axum.workspace = true
+base64.workspace = true
 clap.workspace = true
 ferrum-core = { path = "../ferrum-core" }
 ferrum-platform = { path = "../ferrum-platform" }
@@ -29,7 +30,11 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 uuid.workspace = true
 webauthn-rs.workspace = true
+webauthn-rs-proto.workspace = true
 
 [dev-dependencies]
+sqlx.workspace = true
 tempfile = "3"
 tower = "0.5"
+uuid.workspace = true
+webauthn-authenticator-rs = { version = "=0.6.1-dev", default-features = false, features = ["softpasskey"] }

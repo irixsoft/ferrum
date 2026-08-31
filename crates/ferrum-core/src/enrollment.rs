@@ -25,6 +25,22 @@ pub async fn issue(state: &State, user_id: &str) -> anyhow::Result<String> {
     Ok(token)
 }
 
+pub async fn check(state: &State, token: &str) -> anyhow::Result<Option<User>> {
+    let hash = secret::hash(token);
+    let row = sqlx::query!(
+        "SELECT user_id FROM enrollments
+         WHERE hash = ? AND used_at IS NULL AND expires_at > datetime('now')",
+        hash
+    )
+    .fetch_optional(&state.pool)
+    .await?;
+
+    match row {
+        Some(r) => users::by_id(state, &r.user_id).await,
+        None => Ok(None),
+    }
+}
+
 pub async fn redeem(state: &State, token: &str) -> anyhow::Result<Option<User>> {
     let hash = secret::hash(token);
     let row = sqlx::query!(
@@ -68,6 +84,21 @@ mod tests {
             redeem(&state, &token).await.unwrap().is_none(),
             "a used link must not work twice"
         );
+    }
+
+    #[tokio::test]
+    async fn checking_a_link_does_not_consume_it() {
+        let (_d, state) = state().await;
+        let user = users::create(&state, "Saeed").await.unwrap();
+        let token = issue(&state, &user.id).await.unwrap();
+
+        assert!(check(&state, &token).await.unwrap().is_some());
+        assert!(check(&state, &token).await.unwrap().is_some());
+        assert!(
+            redeem(&state, &token).await.unwrap().is_some(),
+            "checking must leave the link redeemable"
+        );
+        assert!(check(&state, &token).await.unwrap().is_none());
     }
 
     #[tokio::test]

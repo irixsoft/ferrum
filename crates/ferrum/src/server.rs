@@ -1,3 +1,4 @@
+use crate::auth::webauthn::Challenges;
 use axum::Router;
 use axum::routing::get;
 use ferrum_core::state::State;
@@ -6,12 +7,30 @@ use tower_http::trace::TraceLayer;
 
 pub use ferrum_core::LISTEN_ADDR;
 
-pub fn app(state: State) -> Router {
-    Router::new()
+#[derive(Clone)]
+pub struct AppState {
+    pub db: State,
+    pub challenges: Challenges,
+}
+
+impl AppState {
+    pub fn new(db: State) -> Self {
+        Self {
+            db,
+            challenges: Challenges::default(),
+        }
+    }
+}
+
+pub fn app(db: State) -> Router {
+    let state = AppState::new(db);
+
+    let public = Router::new()
         .route("/api/health", get(crate::routes::health::get))
         .route("/api/version", get(crate::routes::version::get))
-        .layer(TraceLayer::new_for_http())
-        .with_state(state)
+        .merge(crate::routes::auth::router());
+
+    public.layer(TraceLayer::new_for_http()).with_state(state)
 }
 
 pub async fn serve(data_dir: &Path) -> anyhow::Result<()> {
