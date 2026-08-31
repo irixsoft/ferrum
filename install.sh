@@ -90,7 +90,17 @@ WantedBy=multi-user.target
 UNITEOF
 
 systemctl daemon-reload
-systemctl enable --now ferrum.service
 
 printf '\n%s\n' "$("$BIN" version)"
-printf '%s\n\n' "Ferrum is running."
+
+rm -rf "$TMP"
+trap - EXIT INT TERM
+
+if [ -t 0 ]; then
+  exec "$BIN" setup
+elif [ -e /dev/tty ] && (: >/dev/tty) 2>/dev/null; then
+  exec "$BIN" setup < /dev/tty
+else
+  printf '\n%s\n' "Ferrum is installed. No terminal is attached, so setup did not start."
+  printf '%s\n\n' "Run: ferrum setup"
+fi
