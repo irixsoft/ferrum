@@ -16,8 +16,22 @@ pub enum Command {
     Version,
     Doctor,
     Serve {
-        #[arg(long, default_value = "/var/lib/ferrum")]
+        #[arg(long, default_value = ferrum_core::DATA_DIR)]
         data_dir: String,
+    },
+    Setup {
+        #[arg(long, default_value = ferrum_core::DATA_DIR)]
+        data_dir: String,
+        #[arg(long)]
+        non_interactive: bool,
+        #[arg(long)]
+        hostname: Option<String>,
+        #[arg(long)]
+        email: Option<String>,
+        #[arg(long)]
+        create_swap: Option<bool>,
+        #[arg(long)]
+        staging: bool,
     },
 }
 

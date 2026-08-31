@@ -33,5 +33,27 @@ async fn main() -> anyhow::Result<()> {
         cli::Command::Serve { data_dir } => {
             ferrum::server::serve(std::path::Path::new(&data_dir)).await
         }
+        cli::Command::Setup {
+            data_dir,
+            non_interactive,
+            hostname,
+            email,
+            create_swap,
+            staging,
+        } => {
+            let opts = ferrum::setup::SetupOpts {
+                data_dir: data_dir.into(),
+                non_interactive,
+                hostname,
+                email,
+                create_swap,
+                staging,
+            };
+            if let Err(e) = ferrum::setup::run(opts).await {
+                eprintln!("\n  {e:#}\n");
+                std::process::exit(1);
+            }
+            Ok(())
+        }
     }
 }

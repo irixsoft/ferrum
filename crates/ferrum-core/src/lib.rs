@@ -9,6 +9,8 @@ use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
 pub const LISTEN_ADDR: SocketAddr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 8443);
 
+pub const FERRUM_UNIT: &str = "ferrum";
+
 pub const DATA_DIR: &str = "/var/lib/ferrum";
 pub const ACME_ROOT: &str = "/var/lib/ferrum/acme";
 pub const ACME_WEBROOT: &str = "/var/lib/ferrum/acme/.well-known/acme-challenge";
