@@ -35,7 +35,10 @@ async fn set_setting_overwrites() {
     let (_dir, state) = temp_state().await;
     state.set_setting("k", "one").await.unwrap();
     state.set_setting("k", "two").await.unwrap();
-    assert_eq!(state.get_setting("k").await.unwrap(), Some("two".to_string()));
+    assert_eq!(
+        state.get_setting("k").await.unwrap(),
+        Some("two".to_string())
+    );
 }
 
 #[tokio::test]

@@ -24,7 +24,9 @@ async fn version_endpoint_returns_build_metadata() {
 
     assert_eq!(res.status(), StatusCode::OK);
 
-    let bytes = axum::body::to_bytes(res.into_body(), 64 * 1024).await.unwrap();
+    let bytes = axum::body::to_bytes(res.into_body(), 64 * 1024)
+        .await
+        .unwrap();
     let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
 
     assert_eq!(json["version"], env!("CARGO_PKG_VERSION"));
