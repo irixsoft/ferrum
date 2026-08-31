@@ -2,6 +2,8 @@ use crate::{Platform, PlatformError, ServiceAction, exec};
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
+pub const NGINX_CONF_DIR: &str = "/etc/nginx/conf.d";
+pub const NGINX_UNIT: &str = "nginx";
 pub const KEYRING_DIR: &str = "/etc/apt/keyrings";
 pub const SOURCES_DIR: &str = "/etc/apt/sources.list.d";
 pub const SYSCTL_FILE: &str = "/etc/sysctl.d/99-ferrum.conf";

@@ -27,7 +27,16 @@ impl Arch {
 pub struct HostInfo {
     pub distro_id: String,
     pub version_id: String,
+    pub codename: String,
     pub arch: Arch,
+    pub pretty_name: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OsRelease {
+    pub id: String,
+    pub version_id: String,
+    pub codename: String,
     pub pretty_name: String,
 }
 
@@ -48,9 +57,10 @@ impl fmt::Display for Unsupported {
     }
 }
 
-pub fn parse_os_release(text: &str) -> Option<(String, String, String)> {
+pub fn parse_os_release(text: &str) -> Option<OsRelease> {
     let mut id = None;
     let mut version = None;
+    let mut codename = None;
     let mut pretty = None;
     for line in text.lines() {
         let Some((k, v)) = line.split_once('=') else {
@@ -60,14 +70,20 @@ pub fn parse_os_release(text: &str) -> Option<(String, String, String)> {
         match k.trim() {
             "ID" => id = Some(v),
             "VERSION_ID" => version = Some(v),
+            "VERSION_CODENAME" => codename = Some(v),
             "PRETTY_NAME" => pretty = Some(v),
             _ => {}
         }
     }
     let id = id?;
-    let version = version?;
-    let pretty = pretty.unwrap_or_else(|| format!("{id} {version}"));
-    Some((id, version, pretty))
+    let version_id = version?;
+    let pretty_name = pretty.unwrap_or_else(|| format!("{id} {version_id}"));
+    Some(OsRelease {
+        id,
+        version_id,
+        codename: codename.unwrap_or_default(),
+        pretty_name,
+    })
 }
 
 pub fn check_supported(info: &HostInfo) -> Result<(), Unsupported> {
@@ -84,18 +100,18 @@ pub fn detect() -> Result<HostInfo, Unsupported> {
         found: std::env::consts::ARCH.into(),
     })?;
     let text = std::fs::read_to_string("/etc/os-release").unwrap_or_default();
-    let (distro_id, version_id, pretty_name) = parse_os_release(&text).unwrap_or_else(|| {
-        (
-            "unknown".into(),
-            "unknown".into(),
-            "an unrecognised system".into(),
-        )
+    let os = parse_os_release(&text).unwrap_or_else(|| OsRelease {
+        id: "unknown".into(),
+        version_id: "unknown".into(),
+        codename: String::new(),
+        pretty_name: "an unrecognised system".into(),
     });
     let info = HostInfo {
-        distro_id,
-        version_id,
+        distro_id: os.id,
+        version_id: os.version_id,
+        codename: os.codename,
         arch,
-        pretty_name,
+        pretty_name: os.pretty_name,
     };
     check_supported(&info)?;
     Ok(info)
@@ -108,8 +124,16 @@ mod tests {
     const NOBLE: &str = r#"PRETTY_NAME="Ubuntu 24.04.1 LTS"
 NAME="Ubuntu"
 VERSION_ID="24.04"
+VERSION_CODENAME=noble
 ID=ubuntu
 ID_LIKE=debian
+"#;
+
+    const JAMMY: &str = r#"PRETTY_NAME="Ubuntu 22.04.5 LTS"
+NAME="Ubuntu"
+VERSION_ID="22.04"
+VERSION_CODENAME=jammy
+ID=ubuntu
 "#;
 
     const DEBIAN: &str = r#"PRETTY_NAME="Debian GNU/Linux 12 (bookworm)"
@@ -120,10 +144,16 @@ ID=debian
 
     #[test]
     fn parses_quoted_and_unquoted_fields() {
-        let (id, version, pretty) = parse_os_release(NOBLE).unwrap();
-        assert_eq!(id, "ubuntu");
-        assert_eq!(version, "24.04");
-        assert_eq!(pretty, "Ubuntu 24.04.1 LTS");
+        let os = parse_os_release(NOBLE).unwrap();
+        assert_eq!(os.id, "ubuntu");
+        assert_eq!(os.version_id, "24.04");
+        assert_eq!(os.pretty_name, "Ubuntu 24.04.1 LTS");
+    }
+
+    #[test]
+    fn reads_the_codename_for_both_supported_releases() {
+        assert_eq!(parse_os_release(NOBLE).unwrap().codename, "noble");
+        assert_eq!(parse_os_release(JAMMY).unwrap().codename, "jammy");
     }
 
     #[test]
@@ -132,6 +162,7 @@ ID=debian
             let info = HostInfo {
                 distro_id: "ubuntu".into(),
                 version_id: v.into(),
+                codename: "noble".into(),
                 arch: Arch::X86_64,
                 pretty_name: format!("Ubuntu {v}"),
             };
@@ -141,12 +172,13 @@ ID=debian
 
     #[test]
     fn refuses_other_distros_by_name() {
-        let (id, version, pretty) = parse_os_release(DEBIAN).unwrap();
+        let os = parse_os_release(DEBIAN).unwrap();
         let info = HostInfo {
-            distro_id: id,
-            version_id: version,
+            distro_id: os.id,
+            version_id: os.version_id,
+            codename: os.codename,
             arch: Arch::X86_64,
-            pretty_name: pretty,
+            pretty_name: os.pretty_name,
         };
         let err = check_supported(&info).unwrap_err().to_string();
         assert!(err.contains("Debian GNU/Linux 12"), "got: {err}");
@@ -158,6 +190,7 @@ ID=debian
         let info = HostInfo {
             distro_id: "ubuntu".into(),
             version_id: "20.04".into(),
+            codename: "focal".into(),
             arch: Arch::X86_64,
             pretty_name: "Ubuntu 20.04 LTS".into(),
         };

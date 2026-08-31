@@ -1,14 +1,10 @@
 use axum::Router;
 use axum::routing::get;
 use ferrum_core::state::State;
-use std::net::SocketAddr;
 use std::path::Path;
 use tower_http::trace::TraceLayer;
 
-pub const LISTEN_ADDR: SocketAddr = SocketAddr::new(
-    std::net::IpAddr::V4(std::net::Ipv4Addr::new(127, 0, 0, 1)),
-    8443,
-);
+pub use ferrum_core::LISTEN_ADDR;
 
 pub fn app(state: State) -> Router {
     Router::new()

@@ -5,7 +5,9 @@ pub mod ubuntu;
 
 use std::path::Path;
 
-pub use detect::{Arch, HostInfo, Unsupported, check_supported, detect, parse_os_release};
+pub use detect::{
+    Arch, HostInfo, OsRelease, Unsupported, check_supported, detect, parse_os_release,
+};
 pub use fake::FakePlatform;
 pub use ubuntu::Ubuntu;
 
