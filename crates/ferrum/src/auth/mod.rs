@@ -1,7 +1,95 @@
 pub mod webauthn;
 
+use crate::routes::error::ApiError;
+use crate::server::AppState;
+use axum::extract::{FromRequestParts, Request, State as Extract};
 use axum::http::HeaderMap;
+use axum::http::request::Parts;
+use axum::middleware::Next;
+use axum::response::Response;
 use ferrum_core::sessions;
+use ferrum_core::tokens::{self, ApiToken};
+use ferrum_core::users::User;
+
+const SIGN_IN: &str = "Sign in to use this.";
+
+#[derive(Debug, Clone)]
+pub enum Caller {
+    User(User),
+    Machine(ApiToken),
+}
+
+impl Caller {
+    pub fn is_read_only(&self) -> bool {
+        matches!(self, Caller::Machine(token) if token.read_only)
+    }
+
+    pub fn kind(&self) -> &'static str {
+        match self {
+            Caller::User(_) => "user",
+            Caller::Machine(_) => "machine",
+        }
+    }
+
+    pub fn name(&self) -> &str {
+        match self {
+            Caller::User(user) => &user.name,
+            Caller::Machine(token) => &token.name,
+        }
+    }
+
+    pub fn user(&self) -> Option<&User> {
+        match self {
+            Caller::User(user) => Some(user),
+            Caller::Machine(_) => None,
+        }
+    }
+}
+
+pub async fn require_caller(
+    Extract(app): Extract<AppState>,
+    mut request: Request,
+    next: Next,
+) -> Result<Response, ApiError> {
+    let caller = resolve(&app, request.headers()).await?;
+    request.extensions_mut().insert(caller);
+    Ok(next.run(request).await)
+}
+
+async fn resolve(app: &AppState, headers: &HeaderMap) -> Result<Caller, ApiError> {
+    if let Some(presented) = bearer(headers) {
+        return tokens::verify(&app.db, &presented)
+            .await?
+            .map(Caller::Machine)
+            .ok_or_else(|| ApiError::unauthorized("That API token is not valid."));
+    }
+
+    let token = cookie(headers, sessions::COOKIE).ok_or_else(|| ApiError::unauthorized(SIGN_IN))?;
+    sessions::resolve(&app.db, &token)
+        .await?
+        .map(Caller::User)
+        .ok_or_else(|| ApiError::unauthorized(SIGN_IN))
+}
+
+impl FromRequestParts<AppState> for Caller {
+    type Rejection = ApiError;
+
+    async fn from_request_parts(
+        parts: &mut Parts,
+        _app: &AppState,
+    ) -> Result<Self, Self::Rejection> {
+        parts.extensions.get::<Caller>().cloned().ok_or_else(|| {
+            tracing::error!(
+                path = %parts.uri.path(),
+                "a route asked for the caller without sitting behind the auth layer"
+            );
+            ApiError::new(
+                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                "This route is misconfigured.",
+            )
+        })
+    }
+}
 
 pub fn cookie(headers: &HeaderMap, name: &str) -> Option<String> {
     headers

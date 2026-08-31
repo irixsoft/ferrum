@@ -30,7 +30,17 @@ pub fn app(db: State) -> Router {
         .route("/api/version", get(crate::routes::version::get))
         .merge(crate::routes::auth::router());
 
-    public.layer(TraceLayer::new_for_http()).with_state(state)
+    let protected = Router::new()
+        .route("/api/me", get(crate::routes::me::get))
+        .route_layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            crate::auth::require_caller,
+        ));
+
+    public
+        .merge(protected)
+        .layer(TraceLayer::new_for_http())
+        .with_state(state)
 }
 
 pub async fn serve(data_dir: &Path) -> anyhow::Result<()> {
