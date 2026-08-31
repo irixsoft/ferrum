@@ -42,6 +42,58 @@ async fn set_setting_overwrites() {
 }
 
 #[tokio::test]
+async fn identity_tables_exist_after_migration() {
+    let (_dir, state) = temp_state().await;
+    for table in [
+        "users",
+        "credentials",
+        "sessions",
+        "api_tokens",
+        "enrollments",
+    ] {
+        let found: Option<String> =
+            sqlx::query_scalar("SELECT name FROM sqlite_master WHERE type='table' AND name = ?")
+                .bind(table)
+                .fetch_optional(&state.pool)
+                .await
+                .unwrap();
+        assert_eq!(found.as_deref(), Some(table), "missing table {table}");
+    }
+}
+
+#[tokio::test]
+async fn deleting_a_user_takes_their_credentials_and_sessions() {
+    let (_dir, state) = temp_state().await;
+    sqlx::query("INSERT INTO users (id, handle, name) VALUES ('u1', 'h1', 'Saeed')")
+        .execute(&state.pool)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO credentials (id, user_id, credential) VALUES ('c1', 'u1', '{}')")
+        .execute(&state.pool)
+        .await
+        .unwrap();
+    sqlx::query(
+        "INSERT INTO sessions (id, user_id, expires_at) VALUES ('s1', 'u1', datetime('now', '+1 day'))",
+    )
+    .execute(&state.pool)
+    .await
+    .unwrap();
+
+    sqlx::query("DELETE FROM users WHERE id = 'u1'")
+        .execute(&state.pool)
+        .await
+        .unwrap();
+
+    for table in ["credentials", "sessions"] {
+        let left: i64 = sqlx::query_scalar(&format!("SELECT count(*) FROM {table}"))
+            .fetch_one(&state.pool)
+            .await
+            .unwrap();
+        assert_eq!(left, 0, "{table} must not outlive their user");
+    }
+}
+
+#[tokio::test]
 async fn open_is_idempotent_across_restarts() {
     let dir = tempfile::tempdir().unwrap();
     {

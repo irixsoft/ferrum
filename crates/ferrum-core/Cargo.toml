@@ -7,17 +7,21 @@ repository.workspace = true
 
 [dependencies]
 anyhow.workspace = true
+base64.workspace = true
 ferrum-platform = { path = "../ferrum-platform" }
 hickory-resolver.workspace = true
 instant-acme.workspace = true
+rand.workspace = true
 rcgen.workspace = true
 reqwest.workspace = true
 rustls.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+sha2.workspace = true
 thiserror.workspace = true
 time.workspace = true
 tokio.workspace = true
+uuid.workspace = true
 x509-parser.workspace = true
 sqlx.workspace = true
 tracing.workspace = true
