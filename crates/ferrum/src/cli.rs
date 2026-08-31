@@ -14,6 +14,7 @@ pub struct Cli {
 #[derive(Subcommand)]
 pub enum Command {
     Version,
+    Doctor,
     Serve {
         #[arg(long, default_value = "/var/lib/ferrum")]
         data_dir: String,

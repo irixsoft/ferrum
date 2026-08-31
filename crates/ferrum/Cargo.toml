@@ -12,6 +12,7 @@ path = "src/main.rs"
 [dependencies]
 anyhow.workspace = true
 clap.workspace = true
+ferrum-platform = { path = "../ferrum-platform" }
 mimalloc.workspace = true
 tokio.workspace = true
 tracing.workspace = true
