@@ -7,6 +7,7 @@ repository.workspace = true
 
 [dependencies]
 anyhow.workspace = true
+ferrum-platform = { path = "../ferrum-platform" }
 serde.workspace = true
 sqlx.workspace = true
 tracing.workspace = true
