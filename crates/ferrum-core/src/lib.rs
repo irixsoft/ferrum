@@ -1,9 +1,13 @@
 pub mod acme;
+pub mod credentials;
 pub mod dns;
+pub mod enrollment;
 pub mod nginx;
+mod secret;
 pub mod setup;
 pub mod state;
 pub mod swap;
+pub mod users;
 
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
