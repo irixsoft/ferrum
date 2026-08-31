@@ -16,4 +16,5 @@ fn main() {
     println!("cargo:rustc-env=FERRUM_BUILD_ID={build_id}");
     println!("cargo:rerun-if-env-changed=FERRUM_BUILD_ID");
     println!("cargo:rerun-if-env-changed=FERRUM_COMMIT_SHA");
+    println!("cargo:rerun-if-changed=../../.git/HEAD");
 }

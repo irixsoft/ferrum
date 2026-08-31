@@ -1,14 +1,20 @@
-mod cli;
-
 use clap::Parser;
+use ferrum::cli;
 use mimalloc::MiMalloc;
 
 #[global_allocator]
 static GLOBAL: MiMalloc = MiMalloc;
 
-fn main() -> anyhow::Result<()> {
-    let args = cli::Cli::parse();
-    match args.command {
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_env("FERRUM_LOG")
+                .unwrap_or_else(|_| "info".into()),
+        )
+        .init();
+
+    match cli::Cli::parse().command {
         cli::Command::Version => {
             println!("{}", cli::version_line());
             Ok(())
@@ -24,8 +30,8 @@ fn main() -> anyhow::Result<()> {
                 std::process::exit(1);
             }
         },
-        cli::Command::Serve { .. } => {
-            anyhow::bail!("serve is not implemented yet")
+        cli::Command::Serve { data_dir } => {
+            ferrum::server::serve(std::path::Path::new(&data_dir)).await
         }
     }
 }
