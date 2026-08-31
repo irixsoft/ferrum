@@ -32,7 +32,7 @@ pub async fn run(opts: SetupOpts) -> anyhow::Result<()> {
 
     let platform = Ubuntu;
     let state = State::open(&opts.data_dir).await?;
-    let mut stage = setup::stage(&state).await?;
+    let stage = setup::stage(&state).await?;
 
     println!("\n  Ferrum setup — {}\n", host_info.pretty_name);
 
@@ -50,12 +50,15 @@ pub async fn run(opts: SetupOpts) -> anyhow::Result<()> {
     println!("  Ferrum will install the platform while you do.\n");
 
     let codename = host_info.codename.clone();
+    let already_installed = stage >= Stage::PlatformInstalled;
     let install = tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
         let platform = Ubuntu;
         if let Some(mb) = swap_mb {
             swap::create(&platform, mb)?;
         }
-        nginx::install(&platform, &codename)?;
+        if !already_installed {
+            nginx::install(&platform, &codename)?;
+        }
         Ok(())
     });
 
@@ -67,13 +70,10 @@ pub async fn run(opts: SetupOpts) -> anyhow::Result<()> {
 
     let (installed, resolved) = tokio::join!(install, wait_for_dns(&hostname, public_ip, timeout));
 
-    if stage < Stage::PlatformInstalled {
-        installed.context("the platform install task failed")??;
+    installed.context("the platform install task failed")??;
+    if !already_installed {
         setup::advance(&state, Stage::PlatformInstalled).await?;
-        stage = Stage::PlatformInstalled;
         println!("  Platform installed.");
-    } else {
-        installed.context("the platform install task failed")??;
     }
     resolved?;
 
