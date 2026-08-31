@@ -21,6 +21,9 @@ jobs:
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets
       - run: cargo test --workspace
+      - name: Host calls stay in ferrum-platform
+        run: |
+          ! grep -rn "process::Command" crates/ferrum/src crates/ferrum-core/src --include=*.rs
 
   shell:
     runs-on: ubuntu-24.04
