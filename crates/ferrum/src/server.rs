@@ -32,6 +32,8 @@ pub fn app(db: State) -> Router {
 
     let protected = Router::new()
         .route("/api/me", get(crate::routes::me::get))
+        .merge(crate::routes::users::router())
+        .merge(crate::routes::tokens::router())
         .route_layer(axum::middleware::from_fn_with_state(
             state.clone(),
             crate::auth::require_caller,

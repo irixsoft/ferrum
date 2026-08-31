@@ -33,6 +33,36 @@ pub enum Command {
         #[arg(long)]
         staging: bool,
     },
+    Passkey {
+        #[command(subcommand)]
+        command: PasskeyCommand,
+    },
+    Token {
+        #[command(subcommand)]
+        command: TokenCommand,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum PasskeyCommand {
+    Enroll {
+        #[arg(long, default_value = ferrum_core::DATA_DIR)]
+        data_dir: String,
+        #[arg(long)]
+        user: Option<String>,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum TokenCommand {
+    Create {
+        #[arg(long, default_value = ferrum_core::DATA_DIR)]
+        data_dir: String,
+        #[arg(long)]
+        name: String,
+        #[arg(long)]
+        read_only: bool,
+    },
 }
 
 pub fn version_line() -> String {

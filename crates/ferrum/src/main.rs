@@ -55,5 +55,47 @@ async fn main() -> anyhow::Result<()> {
             }
             Ok(())
         }
+        cli::Command::Passkey {
+            command: cli::PasskeyCommand::Enroll { data_dir, user },
+        } => {
+            let url = report(
+                ferrum::admin::enrollment_link(std::path::Path::new(&data_dir), user.as_deref())
+                    .await,
+            );
+            println!("\n  Create a passkey:\n");
+            println!("      {url}\n");
+            println!(
+                "  This link is single-use and expires in {} minutes.\n",
+                ferrum_core::enrollment::TTL_MINUTES
+            );
+            Ok(())
+        }
+        cli::Command::Token {
+            command:
+                cli::TokenCommand::Create {
+                    data_dir,
+                    name,
+                    read_only,
+                },
+        } => {
+            let secret = report(
+                ferrum::admin::mint_token(std::path::Path::new(&data_dir), &name, read_only).await,
+            );
+            let access = if read_only { "read-only" } else { "read-write" };
+            println!("\n  API token \"{name}\" ({access}):\n");
+            println!("      {secret}\n");
+            println!("  This is the only time it is shown.\n");
+            Ok(())
+        }
+    }
+}
+
+fn report<T>(result: anyhow::Result<T>) -> T {
+    match result {
+        Ok(value) => value,
+        Err(e) => {
+            eprintln!("\n  {e:#}\n");
+            std::process::exit(1);
+        }
     }
 }

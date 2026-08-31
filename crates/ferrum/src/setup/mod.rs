@@ -5,7 +5,7 @@ use ferrum_core::acme::{self, Directory, Issuer};
 use ferrum_core::dns::{self, Verdict};
 use ferrum_core::setup::{self, Stage};
 use ferrum_core::state::State;
-use ferrum_core::{FERRUM_UNIT, nginx, swap};
+use ferrum_core::{FERRUM_UNIT, enrollment, nginx, swap, users};
 use ferrum_platform::{Platform, ServiceAction, Ubuntu};
 use std::net::IpAddr;
 use std::os::unix::fs::MetadataExt;
@@ -104,6 +104,19 @@ pub async fn run(opts: SetupOpts) -> anyhow::Result<()> {
     setup::advance(&state, Stage::Complete).await?;
 
     println!("\n  Ferrum is running at https://{hostname}\n");
+
+    if users::count(&state).await? == 0 {
+        let user = users::create(&state, &email).await?;
+        let token = enrollment::issue(&state, &user.id).await?;
+        println!("  Create your passkey:\n");
+        println!("      {}\n", enrollment::url(&hostname, &token));
+        println!(
+            "  This link is single-use and expires in {} minutes.",
+            enrollment::TTL_MINUTES
+        );
+        println!("  Run `ferrum passkey enroll` for a new one.\n");
+    }
+
     Ok(())
 }
 

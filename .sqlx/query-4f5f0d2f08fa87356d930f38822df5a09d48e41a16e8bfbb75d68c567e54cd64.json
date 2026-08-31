@@ -1,0 +1,20 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT user_id FROM enrollments\n         WHERE hash = ? AND used_at IS NULL AND expires_at > datetime('now')",
+  "describe": {
+    "columns": [
+      {
+        "name": "user_id",
+        "ordinal": 0,
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "4f5f0d2f08fa87356d930f38822df5a09d48e41a16e8bfbb75d68c567e54cd64"
+}
