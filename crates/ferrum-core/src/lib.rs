@@ -4,6 +4,7 @@ pub mod dns;
 pub mod enrollment;
 pub mod nginx;
 mod secret;
+pub mod sessions;
 pub mod setup;
 pub mod state;
 pub mod swap;
