@@ -1,4 +1,5 @@
 use crate::state::State;
+use crate::time;
 
 #[derive(Debug, Clone)]
 pub struct StoredCredential {
@@ -45,8 +46,8 @@ pub async fn by_id(state: &State, id: &str) -> anyhow::Result<Option<StoredCrede
         label: r.label,
         credential: r.credential,
         counter: r.counter,
-        created_at: r.created_at,
-        last_used: r.last_used,
+        created_at: time::utc(r.created_at),
+        last_used: time::utc_opt(r.last_used),
     }))
 }
 
@@ -67,8 +68,8 @@ pub async fn for_user(state: &State, user_id: &str) -> anyhow::Result<Vec<Stored
             label: r.label,
             credential: r.credential,
             counter: r.counter,
-            created_at: r.created_at,
-            last_used: r.last_used,
+            created_at: time::utc(r.created_at),
+            last_used: time::utc_opt(r.last_used),
         })
         .collect())
 }

@@ -8,6 +8,7 @@ pub mod sessions;
 pub mod setup;
 pub mod state;
 pub mod swap;
+pub mod time;
 pub mod tokens;
 pub mod users;
 

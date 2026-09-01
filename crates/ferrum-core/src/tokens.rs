@@ -1,5 +1,6 @@
 use crate::secret;
 use crate::state::State;
+use crate::time;
 use uuid::Uuid;
 
 pub const PREFIX: &str = "ferr_";
@@ -45,7 +46,7 @@ pub async fn mint(state: &State, name: &str, read_only: bool) -> anyhow::Result<
             name: row.name,
             prefix: row.prefix,
             read_only,
-            created_at: row.created_at,
+            created_at: time::utc(row.created_at),
             last_used: None,
         },
         secret: plaintext,
@@ -72,8 +73,8 @@ pub async fn verify(state: &State, presented: &str) -> anyhow::Result<Option<Api
         name: r.name,
         prefix: r.prefix,
         read_only: r.read_only,
-        created_at: r.created_at,
-        last_used: r.last_used,
+        created_at: time::utc(r.created_at),
+        last_used: time::utc_opt(r.last_used),
     }))
 }
 
@@ -92,8 +93,8 @@ pub async fn list(state: &State) -> anyhow::Result<Vec<ApiToken>> {
             name: r.name,
             prefix: r.prefix,
             read_only: r.read_only,
-            created_at: r.created_at,
-            last_used: r.last_used,
+            created_at: time::utc(r.created_at),
+            last_used: time::utc_opt(r.last_used),
         })
         .collect())
 }

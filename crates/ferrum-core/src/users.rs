@@ -1,4 +1,5 @@
 use crate::state::State;
+use crate::time;
 use uuid::Uuid;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -32,7 +33,7 @@ pub async fn create(state: &State, name: &str) -> anyhow::Result<User> {
         id: row.id,
         handle: row.handle,
         name: row.name,
-        created_at: row.created_at,
+        created_at: time::utc(row.created_at),
     })
 }
 
@@ -48,7 +49,7 @@ pub async fn by_id(state: &State, id: &str) -> anyhow::Result<Option<User>> {
         id: r.id,
         handle: r.handle,
         name: r.name,
-        created_at: r.created_at,
+        created_at: time::utc(r.created_at),
     }))
 }
 
@@ -64,7 +65,7 @@ pub async fn by_handle(state: &State, handle: &str) -> anyhow::Result<Option<Use
         id: r.id,
         handle: r.handle,
         name: r.name,
-        created_at: r.created_at,
+        created_at: time::utc(r.created_at),
     }))
 }
 
@@ -79,7 +80,7 @@ pub async fn list(state: &State) -> anyhow::Result<Vec<User>> {
             id: r.id,
             handle: r.handle,
             name: r.name,
-            created_at: r.created_at,
+            created_at: time::utc(r.created_at),
         })
         .collect())
 }

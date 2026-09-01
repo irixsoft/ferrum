@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { useNavigate } from "@tanstack/react-router";
 import { useQueryClient } from "@tanstack/react-query";
 import { KeyRound } from "lucide-react";
 import { Button } from "@/components/ui/Button";
@@ -11,6 +12,7 @@ type Stage = "ready" | "working" | "done";
 
 export function EnrollPage({ token }: { token: string }) {
   const client = useQueryClient();
+  const navigate = useNavigate();
   const [stage, setStage] = useState<Stage>("ready");
   const [error, setError] = useState<string | null>(null);
   const [usable, setUsable] = useState(true);
@@ -28,6 +30,7 @@ export function EnrollPage({ token }: { token: string }) {
       await enroll(token);
       setStage("done");
       await client.invalidateQueries({ queryKey: keys.me });
+      await navigate({ to: "/" });
     } catch (e) {
       setError(e instanceof Error ? e.message : "The passkey was not created.");
       setStage("ready");

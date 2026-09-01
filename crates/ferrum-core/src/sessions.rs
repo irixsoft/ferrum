@@ -1,5 +1,6 @@
 use crate::secret;
 use crate::state::State;
+use crate::time;
 use crate::users::{self, User};
 
 pub const COOKIE: &str = "ferrum_session";
@@ -108,8 +109,8 @@ pub async fn list_for(state: &State, user_id: &str) -> anyhow::Result<Vec<Sessio
             user_id: r.user_id,
             user_agent: r.user_agent,
             ip: r.ip,
-            created_at: r.created_at,
-            last_seen: r.last_seen,
+            created_at: time::utc(r.created_at),
+            last_seen: time::utc(r.last_seen),
         })
         .collect())
 }
