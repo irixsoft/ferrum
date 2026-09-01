@@ -12,9 +12,11 @@ repository = "https://github.com/irixsoft/ferrum"
 anyhow = "1"
 axum = "0.8"
 base64 = "0.22"
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
 clap = { version = "4", features = ["derive"] }
 hickory-resolver = "0.26"
 hmac = "0.13"
+jsonwebtoken = { version = "10", default-features = false, features = ["use_pem", "rust_crypto"] }
 mimalloc = { version = "0.1", default-features = false }
 instant-acme = { version = "0.8", default-features = false, features = ["hyper-rustls", "ring", "rcgen", "time", "x509-parser"] }
 mime_guess = "2"
@@ -24,6 +26,7 @@ rcgen = "0.14"
 rust-embed = { version = "8", features = ["debug-embed"] }
 reqwest = { version = "0.13", default-features = false, features = ["rustls-no-provider", "webpki-roots", "http2", "json"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
+secrecy = "0.10"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"

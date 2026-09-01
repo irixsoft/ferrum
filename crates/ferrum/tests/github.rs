@@ -1,7 +1,9 @@
 mod support;
 
 use axum::http::StatusCode;
-use support::{HOSTNAME, harness, signed_in};
+use ferrum_core::github::Api;
+use support::github_stub::INSTALLATION_ID;
+use support::{HOSTNAME, connected_to_stub, harness, signed_in};
 
 #[tokio::test]
 async fn the_manifest_names_this_host_and_asks_for_read_only_access() {
@@ -171,5 +173,95 @@ async fn a_read_only_token_cannot_connect_or_disconnect() {
         h.get_with_bearer("/api/github/status", &token).await.json["connected"],
         true,
         "a read-only token still reads"
+    );
+}
+
+#[tokio::test]
+async fn the_installation_is_discovered_once_and_remembered() {
+    let (h, github) = connected_to_stub().await;
+
+    assert_eq!(
+        h.github_api.installation_id(&h.db).await.unwrap(),
+        INSTALLATION_ID
+    );
+    assert_eq!(
+        ferrum_core::github::load(&h.db)
+            .await
+            .unwrap()
+            .unwrap()
+            .installation_id,
+        Some(INSTALLATION_ID),
+        "the discovered installation must be written down"
+    );
+    assert_eq!(
+        h.github_api.installation_id(&h.db).await.unwrap(),
+        INSTALLATION_ID
+    );
+    assert_eq!(github.mint_calls(), 0, "discovery must not mint a token");
+}
+
+#[tokio::test]
+async fn an_uninstalled_app_says_so_rather_than_failing_obscurely() {
+    let (h, github) = connected_to_stub().await;
+    github.uninstall();
+
+    let e = h.github_api.installation_id(&h.db).await.unwrap_err();
+    assert!(format!("{e}").contains("not installed"), "{e}");
+}
+
+#[tokio::test]
+async fn a_cached_token_is_reused_and_a_stale_one_is_replaced() {
+    let (h, github) = connected_to_stub().await;
+
+    let first = h.github_api.installation_token(&h.db).await.unwrap();
+    let second = h.github_api.installation_token(&h.db).await.unwrap();
+    assert_eq!(first, second);
+    assert_eq!(
+        github.mint_calls(),
+        1,
+        "a valid token must not be re-minted"
+    );
+
+    github.tokens_expire_in(-1);
+    h.github_api.forget();
+    let third = h.github_api.installation_token(&h.db).await.unwrap();
+    assert_ne!(third, first);
+    assert_eq!(github.mint_calls(), 2);
+}
+
+#[tokio::test]
+async fn a_token_about_to_expire_is_refreshed_early() {
+    let (h, github) = connected_to_stub().await;
+
+    github.tokens_expire_in(30);
+    let first = h.github_api.installation_token(&h.db).await.unwrap();
+    let second = h.github_api.installation_token(&h.db).await.unwrap();
+
+    assert_ne!(first, second);
+    assert_eq!(
+        github.mint_calls(),
+        2,
+        "a token expiring mid-clone is a deploy that fails halfway"
+    );
+}
+
+#[tokio::test]
+async fn minting_a_token_without_a_connection_says_to_connect() {
+    let h = harness().await;
+    let e = h.github_api.installation_token(&h.db).await.unwrap_err();
+    assert!(format!("{e}").contains("not connected"), "{e}");
+}
+
+#[tokio::test]
+async fn a_fresh_api_does_not_inherit_another_ones_token() {
+    let (h, github) = connected_to_stub().await;
+    h.github_api.installation_token(&h.db).await.unwrap();
+
+    let other = Api::at(&github.base);
+    other.installation_token(&h.db).await.unwrap();
+    assert_eq!(
+        github.mint_calls(),
+        2,
+        "the cache belongs to the instance, not to the process"
     );
 }

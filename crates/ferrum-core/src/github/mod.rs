@@ -1,33 +1,51 @@
 pub mod manifest;
+pub mod token;
 
 use crate::state::State;
 use crate::time;
 use serde::Serialize;
+use std::sync::{Arc, Mutex};
 
 pub const GITHUB_API: &str = "https://api.github.com";
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct Api {
     base: String,
+    installation: Arc<Mutex<Option<token::Installed>>>,
 }
 
 impl Default for Api {
     fn default() -> Self {
-        Self {
-            base: GITHUB_API.to_string(),
-        }
+        Self::at(GITHUB_API)
     }
 }
 
 impl Api {
     pub fn at(base: impl Into<String>) -> Self {
-        Self { base: base.into() }
+        Self {
+            base: base.into(),
+            installation: Arc::new(Mutex::new(None)),
+        }
     }
 
     pub fn anonymous(&self) -> anyhow::Result<octocrab::Octocrab> {
         Ok(octocrab::Octocrab::builder()
             .base_uri(self.base.as_str())?
             .build()?)
+    }
+
+    /// Call after connecting or disconnecting, or the cached client keeps the previous app's key.
+    pub fn forget(&self) {
+        *self
+            .installation
+            .lock()
+            .expect("the cache lock is not poisoned") = None;
+    }
+}
+
+impl std::fmt::Debug for Api {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Api").field("base", &self.base).finish()
     }
 }
 

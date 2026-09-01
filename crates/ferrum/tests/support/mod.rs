@@ -1,5 +1,9 @@
 #![allow(dead_code)]
 
+pub mod github_stub;
+
+pub use github_stub::StubGithub;
+
 use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode, header};
@@ -25,6 +29,8 @@ const TIMEOUT_MS: u32 = 60_000;
 pub struct Harness {
     pub app: Router,
     pub db: State,
+    /// The very instance the routes use, so a test sees the same token cache they do.
+    pub github_api: Api,
     _dir: tempfile::TempDir,
 }
 
@@ -67,9 +73,11 @@ pub async fn harness_with_github(base: &str) -> Harness {
 pub async fn harness_without_hostname(base: &str) -> Harness {
     let dir = tempfile::tempdir().unwrap();
     let db = State::open(dir.path()).await.unwrap();
+    let github_api = Api::at(base);
     Harness {
-        app: ferrum::server::app_with_github(db.clone(), Api::at(base)),
+        app: ferrum::server::app_with_github(db.clone(), github_api.clone()),
         db,
+        github_api,
         _dir: dir,
     }
 }
@@ -86,9 +94,24 @@ pub async fn signed_in() -> (Harness, String) {
     (h, cookie)
 }
 
-pub const TEST_PEM: &str =
-    "-----BEGIN RSA PRIVATE KEY-----\nMIIEowIBAAKC\n-----END RSA PRIVATE KEY-----\n";
 pub const WEBHOOK_SECRET: &str = "whsec_test";
+
+pub async fn connected_to_stub() -> (Harness, StubGithub) {
+    let github = StubGithub::start().await;
+    let h = harness_with_github(&github.base).await;
+    h.connect_github().await;
+    (h, github)
+}
+
+pub async fn signed_in_and_connected() -> (Harness, String, StubGithub) {
+    let github = StubGithub::start().await;
+    let h = harness_with_github(&github.base).await;
+    let link = h.enrollment("Saeed").await;
+    let mut key = soft_passkey();
+    let cookie = h.register(&mut key, &link).await.session_cookie().unwrap();
+    h.connect_github().await;
+    (h, cookie, github)
+}
 
 /// `SoftPasskey` refuses `requireResidentKey`, and never returns a `userHandle`, so it cannot
 /// act as a discoverable authenticator. These two adjustments stand in for the platform
@@ -172,7 +195,7 @@ impl Harness {
                 app_slug: "ferrum-panel-example".into(),
                 app_name: "ferrum-panel-example".into(),
                 account: "irixsoft".into(),
-                private_key: TEST_PEM.into(),
+                private_key: github_stub::TEST_KEY.clone(),
                 webhook_secret: WEBHOOK_SECRET.into(),
                 client_id: "Iv1.abc".into(),
                 client_secret: "cs_abc".into(),

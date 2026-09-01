@@ -79,6 +79,7 @@ async fn exchange(app: &AppState, query: Callback) -> ApiResult<()> {
         ApiError::bad_request("GitHub refused the connection. Start again from Settings.")
     })?;
     github::save(&app.db, connection).await?;
+    app.github.forget();
     Ok(())
 }
 
@@ -92,5 +93,6 @@ async fn status(Extract(app): Extract<AppState>, _: Caller) -> ApiResult<Json<St
 
 async fn remove(Extract(app): Extract<AppState>, _: Caller) -> ApiResult<StatusCode> {
     github::disconnect(&app.db).await?;
+    app.github.forget();
     Ok(StatusCode::NO_CONTENT)
 }

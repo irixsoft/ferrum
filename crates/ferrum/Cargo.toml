@@ -35,8 +35,11 @@ webauthn-rs.workspace = true
 webauthn-rs-proto.workspace = true
 
 [dev-dependencies]
+chrono.workspace = true
+rsa = { version = "0.9", features = ["getrandom"] }
 sqlx.workspace = true
 tempfile = "3"
+tokio = { workspace = true, features = ["net"] }
 tower = "0.5"
 uuid.workspace = true
 webauthn-authenticator-rs = { version = "=0.6.1-dev", default-features = false, features = ["softpasskey"] }
