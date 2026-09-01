@@ -3,6 +3,7 @@ import { Plus } from "lucide-react";
 import { useApps } from "@/lib/api";
 import { useShell } from "@/shells/useShell";
 import { PageTitle } from "@/components/PageTitle";
+import { SampleData } from "@/components/SampleData";
 import { AppCard } from "@/components/AppCard";
 import { RuntimeMark } from "@/components/RuntimeMark";
 import { StatusPill } from "@/components/StatusPill";
@@ -19,7 +20,12 @@ export function AppsPage() {
   return (
     <>
       <PageTitle
-        above="Every application Ferrum runs on this box"
+        above={
+          <span className="inline-flex items-center gap-2 flex-wrap">
+            Every application Ferrum runs on this box
+            <SampleData />
+          </span>
+        }
         title="Apps"
         action={
           <Button variant="primary">

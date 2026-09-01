@@ -3,6 +3,7 @@ import { Link } from "@tanstack/react-router";
 import { CircleCheck, CircleX, Plus } from "lucide-react";
 import { useApps, useHost, useMetrics, useRunningDeploy } from "@/lib/api";
 import { PageTitle } from "@/components/PageTitle";
+import { SampleData } from "@/components/SampleData";
 import { AppCard } from "@/components/AppCard";
 import { DeployLadder } from "@/components/DeployLadder";
 import { ChartKey, MetricChart, type Band } from "@/components/MetricChart";
@@ -26,7 +27,12 @@ export function DashboardPage() {
   return (
     <>
       <PageTitle
-        above={`${host.os} · ${host.arch} · up ${uptime(host.uptime_secs)}`}
+        above={
+          <span className="inline-flex items-center gap-2 flex-wrap">
+            {`${host.os} · ${host.arch} · up ${uptime(host.uptime_secs)}`}
+            <SampleData />
+          </span>
+        }
         title={host.hostname}
         action={
           <>

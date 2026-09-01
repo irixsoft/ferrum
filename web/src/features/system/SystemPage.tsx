@@ -2,6 +2,7 @@ import { useState } from "react";
 import { ShieldOff } from "lucide-react";
 import { useHost, useMetrics, useSecurity } from "@/lib/api";
 import { PageTitle } from "@/components/PageTitle";
+import { SampleData } from "@/components/SampleData";
 import { ChartKey, MetricChart, type Band } from "@/components/MetricChart";
 import { Card, CardBody, CardFoot, CardHeader } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
@@ -33,7 +34,15 @@ export function SystemPage() {
 
   return (
     <>
-      <PageTitle above={`${host.os} · ${host.arch} · up ${uptime(host.uptime_secs)}`} title="System" />
+      <PageTitle
+        above={
+          <span className="inline-flex items-center gap-2 flex-wrap">
+            {`${host.os} · ${host.arch} · up ${uptime(host.uptime_secs)}`}
+            <SampleData />
+          </span>
+        }
+        title="System"
+      />
 
       <div className="grid gap-4 lg:grid-cols-12">
         <div className="lg:col-span-8">

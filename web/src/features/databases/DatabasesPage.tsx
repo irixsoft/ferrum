@@ -1,6 +1,7 @@
 import { Plus, Terminal } from "lucide-react";
 import { useDatabases } from "@/lib/api";
 import { PageTitle } from "@/components/PageTitle";
+import { SampleData } from "@/components/SampleData";
 import { Card, CardBody, CardFoot, CardHeader } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
 import { Badge } from "@/components/ui/Badge";
@@ -16,7 +17,12 @@ export function DatabasesPage() {
   return (
     <>
       <PageTitle
-        above="One PostgreSQL cluster, one Redis instance per app that asks for one"
+        above={
+          <span className="inline-flex items-center gap-2 flex-wrap">
+            One PostgreSQL cluster, one Redis instance per app that asks for one
+            <SampleData />
+          </span>
+        }
         title="Databases"
         action={
           <Button variant="primary">

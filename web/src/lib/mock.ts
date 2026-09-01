@@ -1,5 +1,8 @@
+/**
+ * Sample data, still read by: useHost, useApps, useApp, useDeploys, useRunningDeploy,
+ * useDatabases, useMetrics, useSecurity, useGithub. Delete this file with the last one.
+ */
 import type {
-  ApiToken,
   App,
   BannedIp,
   Database,
@@ -10,8 +13,6 @@ import type {
   HostStatus,
   MetricSeries,
   RedisInstance,
-  Session,
-  User,
 } from "@/types/api";
 
 const t = (minsAgo: number) => new Date(Date.now() - minsAgo * 60_000).toISOString();
@@ -356,51 +357,6 @@ export const bans: BannedIp[] = [
   { ip: "185.220.101.4", jail: "nginx-botsearch", banned_at: t(96), failures: 12 },
   { ip: "104.244.76.13", jail: "sshd", banned_at: t(310), failures: 51 },
   { ip: "91.240.118.222", jail: "nginx-limit-req", banned_at: t(640), failures: 8 },
-];
-
-export const users: User[] = [
-  {
-    id: "usr_1",
-    name: "Saeed",
-    email: "saeed@irixsoft.com",
-    enrolled: true,
-    passkeys: [
-      { id: "pk_1", label: "MacBook Pro — Touch ID", added_at: t(60 * 24 * 96), last_used_at: t(12) },
-      { id: "pk_2", label: "iPhone", added_at: t(60 * 24 * 90), last_used_at: t(60 * 30) },
-    ],
-  },
-  {
-    id: "usr_2",
-    name: "Safiya",
-    email: "safiya@irixsoft.com",
-    enrolled: true,
-    passkeys: [{ id: "pk_3", label: "1Password", added_at: t(60 * 24 * 40), last_used_at: t(60 * 26) }],
-  },
-  { id: "usr_3", name: "Bilal", email: "bilal@irixsoft.com", enrolled: false, passkeys: [] },
-];
-
-export const tokens: ApiToken[] = [
-  {
-    id: "tok_1",
-    name: "Claude Code",
-    prefix: "ferr_7Kq2",
-    read_only: false,
-    created_at: t(60 * 24 * 30),
-    last_used_at: t(41),
-  },
-  {
-    id: "tok_2",
-    name: "Status page",
-    prefix: "ferr_p04X",
-    read_only: true,
-    created_at: t(60 * 24 * 12),
-    last_used_at: t(2),
-  },
-];
-
-export const sessions: Session[] = [
-  { id: "s1", device: "Chrome on macOS", ip: "203.0.113.44", started_at: t(12), current: true },
-  { id: "s2", device: "Safari on iOS", ip: "203.0.113.90", started_at: t(60 * 26), current: false },
 ];
 
 export const github: GithubConnection = {

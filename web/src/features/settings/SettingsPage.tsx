@@ -1,6 +1,17 @@
 import { useState } from "react";
 import { Github, KeyRound, Plus } from "lucide-react";
-import { useHost, useSettings } from "@/lib/api";
+import {
+  useCreateToken,
+  useCreateUser,
+  useEnrollmentLink,
+  useGithub,
+  useRevokeSession,
+  useRevokeToken,
+  useSessions,
+  useTokens,
+  useUsers,
+  useVersion,
+} from "@/lib/api";
 import { useShell } from "@/shells/useShell";
 import { useTheme, type Theme } from "@/lib/theme";
 import { PageTitle } from "@/components/PageTitle";
@@ -11,14 +22,13 @@ import { Code } from "@/components/ui/Code";
 import { Row } from "@/components/ui/Row";
 import { Segmented } from "@/components/ui/Segmented";
 import { Tabs } from "@/components/ui/Tabs";
+import { SampleData } from "@/components/SampleData";
 import { ago } from "@/lib/utils";
 
 type Tab = "people" | "tokens" | "connections" | "appearance" | "about";
 
 export function SettingsPage() {
   const [tab, setTab] = useState<Tab>("people");
-  const { data } = useSettings();
-  if (!data) return null;
 
   return (
     <>
@@ -37,178 +47,337 @@ export function SettingsPage() {
         ]}
       />
 
-      {tab === "people" && (
-        <div className="grid gap-4">
-          <Card>
-            <CardHeader
-              title="People"
-              hint="Everyone here is a full administrator. Scoped permissions come later."
-              action={
-                <Button size="sm" variant="primary">
-                  <Plus size={14} />
-                  Invite
-                </Button>
-              }
-            />
-            <CardBody className="pb-3">
-              <ul>
-                {data.users.map((u) => (
-                  <li key={u.id} className="py-3 border-b border-line last:border-0">
-                    <div className="flex items-center gap-2 flex-wrap">
-                      <span className="text-[14px] font-medium text-ink">{u.name}</span>
-                      <span className="text-[13px] text-ink-4">{u.email}</span>
-                      {!u.enrolled ? <Badge tone="run">Enrollment link not used</Badge> : null}
-                    </div>
-                    {u.passkeys.length ? (
-                      <ul className="mt-2 grid gap-1">
-                        {u.passkeys.map((p) => (
-                          <li key={p.id} className="flex items-center gap-2 text-[12.5px] text-ink-3">
-                            <KeyRound size={12} className="text-ink-4" />
-                            {p.label}
-                            <span className="text-ink-4">
-                              · {p.last_used_at ? `used ${ago(p.last_used_at)}` : "never used"}
-                            </span>
-                          </li>
-                        ))}
-                      </ul>
-                    ) : (
-                      <p className="mt-2 text-[12.5px] text-ink-4">
-                        No passkey yet. Send them a fresh enrollment link — links are single-use and
-                        expire after an hour.
-                      </p>
-                    )}
-                  </li>
-                ))}
-              </ul>
-            </CardBody>
-            <CardFoot>
-              <span>
-                There are no passwords and no recovery codes. If every passkey is lost, run{" "}
-                <Code>ferrum passkey enroll</Code> over SSH.
-              </span>
-            </CardFoot>
-          </Card>
+      {tab === "people" && <People />}
+      {tab === "tokens" && <Tokens />}
+      {tab === "connections" && <Connections />}
+      {tab === "appearance" && <Appearance />}
+      {tab === "about" && <About />}
+    </>
+  );
+}
 
-          <Card>
-            <CardHeader title="Your sessions" />
-            <CardBody className="pb-3">
-              <ul>
-                {data.sessions.map((s) => (
-                  <li
-                    key={s.id}
-                    className="flex items-center gap-x-3 gap-y-1 flex-wrap py-2.5 border-b border-line last:border-0"
-                  >
-                    <span className="text-[13.5px] text-ink">{s.device}</span>
-                    {s.current ? <Badge tone="ok">This device</Badge> : null}
-                    <span className="ml-auto font-mono text-[12.5px] text-ink-4">{s.ip}</span>
-                    {!s.current ? (
-                      <Button size="sm" variant="ghost">
-                        Sign out
-                      </Button>
-                    ) : null}
-                  </li>
-                ))}
-              </ul>
-            </CardBody>
-          </Card>
-        </div>
-      )}
+function People() {
+  const { data: users = [] } = useUsers();
+  const createUser = useCreateUser();
+  const reissue = useEnrollmentLink();
+  const [link, setLink] = useState<string | null>(null);
+  const [name, setName] = useState("");
+  const [inviting, setInviting] = useState(false);
 
-      {tab === "tokens" && (
-        <Card>
-          <CardHeader
-            title="API tokens"
-            hint="For machines. The same tokens authenticate the MCP endpoint."
-            action={
-              <Button size="sm" variant="primary">
-                <Plus size={14} />
-                New token
+  const invite = async () => {
+    if (!name.trim()) return;
+    const created = await createUser.mutateAsync(name.trim());
+    setLink(created.enrollment_url);
+    setName("");
+    setInviting(false);
+  };
+
+  return (
+    <div className="grid gap-4">
+      <Card>
+        <CardHeader
+          title="People"
+          hint="Everyone here is a full administrator. Scoped permissions come later."
+          action={
+            <Button size="sm" variant="primary" onClick={() => setInviting(true)}>
+              <Plus size={14} />
+              Invite
+            </Button>
+          }
+        />
+        <CardBody className="pb-3">
+          {inviting ? (
+            <div className="flex gap-2 mb-4">
+              <input
+                autoFocus
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                onKeyDown={(e) => e.key === "Enter" && invite()}
+                placeholder="Their name"
+                className="flex-1 h-9 px-3 bg-inset border border-line-strong rounded-control text-sm text-ink placeholder:text-ink-4"
+              />
+              <Button variant="primary" onClick={invite} disabled={createUser.isPending}>
+                Create link
               </Button>
-            }
-          />
-          <CardBody className="pb-3">
-            <ul>
-              {data.tokens.map((t) => (
-                <li
-                  key={t.id}
-                  className="flex items-center gap-x-3 gap-y-1 flex-wrap py-3 border-b border-line last:border-0"
-                >
-                  <div className="min-w-0">
-                    <span className="text-[13.5px] text-ink">{t.name}</span>
-                    <span className="block font-mono text-[12px] text-ink-4">{t.prefix}…</span>
-                  </div>
-                  {t.read_only ? <Badge tone="accent">Read only</Badge> : <Badge>Read and write</Badge>}
-                  <span className="ml-auto text-[12.5px] text-ink-4">
-                    {t.last_used_at ? `used ${ago(t.last_used_at)}` : "never used"}
-                  </span>
-                  <Button size="sm" variant="ghost">
-                    Revoke
+              <Button variant="ghost" onClick={() => setInviting(false)}>
+                Cancel
+              </Button>
+            </div>
+          ) : null}
+
+          {link ? <Handoff label="Send them this link" value={link} onDone={() => setLink(null)} /> : null}
+
+          <ul>
+            {users.map((u) => (
+              <li key={u.id} className="py-3 border-b border-line last:border-0">
+                <div className="flex items-center gap-2 flex-wrap">
+                  <span className="text-[14px] font-medium text-ink">{u.name}</span>
+                  {!u.passkeys.length ? <Badge tone="run">No passkey yet</Badge> : null}
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    className="ml-auto"
+                    disabled={reissue.isPending}
+                    onClick={async () => setLink((await reissue.mutateAsync(u.id)).enrollment_url)}
+                  >
+                    New enrollment link
                   </Button>
-                </li>
-              ))}
-            </ul>
-          </CardBody>
-          <CardFoot>
-            <span>
-              A read-only token sees only the read tools over MCP. The write tools are absent from
-              its tool list, so an agent never proposes an action it cannot take.
-            </span>
-          </CardFoot>
-        </Card>
-      )}
+                </div>
+                {u.passkeys.length ? (
+                  <ul className="mt-2 grid gap-1">
+                    {u.passkeys.map((p) => (
+                      <li key={p.id} className="flex items-center gap-2 text-[12.5px] text-ink-3">
+                        <KeyRound size={12} className="text-ink-4" />
+                        {p.label ?? "Passkey"}
+                        <span className="text-ink-4">
+                          · added {ago(p.added_at)}
+                          {p.last_used_at ? `, used ${ago(p.last_used_at)}` : ", never used"}
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
+                ) : (
+                  <p className="mt-2 text-[12.5px] text-ink-4">
+                    Send them a fresh enrollment link — links are single-use and expire after an
+                    hour.
+                  </p>
+                )}
+              </li>
+            ))}
+          </ul>
+        </CardBody>
+        <CardFoot>
+          <span>
+            There are no passwords and no recovery codes. If every passkey is lost, run{" "}
+            <Code>ferrum passkey enroll</Code> over SSH.
+          </span>
+        </CardFoot>
+      </Card>
 
-      {tab === "connections" && (
-        <div className="grid gap-4 lg:grid-cols-2">
-          <Card>
-            <CardHeader
-              title="GitHub"
-              hint="A private GitHub App that exists only in your account"
-              action={<Github size={16} className="text-ink-3" />}
+      <Sessions />
+    </div>
+  );
+}
+
+function Sessions() {
+  const { data: sessions = [] } = useSessions();
+  const revoke = useRevokeSession();
+
+  return (
+    <Card>
+      <CardHeader title="Your sessions" />
+      <CardBody className="pb-3">
+        <ul>
+          {sessions.map((s) => (
+            <li
+              key={s.id}
+              className="flex items-center gap-x-3 gap-y-1 flex-wrap py-2.5 border-b border-line last:border-0"
+            >
+              <span className="text-[13.5px] text-ink">{s.device ?? "Unknown device"}</span>
+              {s.current ? <Badge tone="ok">This device</Badge> : null}
+              <span className="ml-auto font-mono text-[12.5px] text-ink-4">{s.ip ?? "—"}</span>
+              <span className="text-[12.5px] text-ink-4">seen {ago(s.last_seen)}</span>
+              {!s.current ? (
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  disabled={revoke.isPending}
+                  onClick={() => revoke.mutate(s.id)}
+                >
+                  Sign out
+                </Button>
+              ) : null}
+            </li>
+          ))}
+        </ul>
+      </CardBody>
+    </Card>
+  );
+}
+
+function Tokens() {
+  const { data: tokens = [] } = useTokens();
+  const create = useCreateToken();
+  const revoke = useRevokeToken();
+  const [secret, setSecret] = useState<string | null>(null);
+  const [name, setName] = useState("");
+  const [readOnly, setReadOnly] = useState(false);
+  const [creating, setCreating] = useState(false);
+
+  const mint = async () => {
+    if (!name.trim()) return;
+    const minted = await create.mutateAsync({ name: name.trim(), read_only: readOnly });
+    setSecret(minted.secret);
+    setName("");
+    setCreating(false);
+  };
+
+  return (
+    <Card>
+      <CardHeader
+        title="API tokens"
+        hint="For machines. The same tokens authenticate the MCP endpoint."
+        action={
+          <Button size="sm" variant="primary" onClick={() => setCreating(true)}>
+            <Plus size={14} />
+            New token
+          </Button>
+        }
+      />
+      <CardBody className="pb-3">
+        {creating ? (
+          <div className="flex gap-2 mb-4 flex-wrap">
+            <input
+              autoFocus
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && mint()}
+              placeholder="What is it for?"
+              className="flex-1 min-w-[160px] h-9 px-3 bg-inset border border-line-strong rounded-control text-sm text-ink placeholder:text-ink-4"
             />
-            <CardBody>
-              <dl>
-                <Row label="App">{data.github.app_name}</Row>
-                <Row label="Account">{data.github.account}</Row>
-                <Row label="Repositories">{data.github.repos_accessible} accessible</Row>
-                <Row label="Installed">{ago(data.github.installed_at)}</Row>
-              </dl>
-            </CardBody>
-            <CardFoot>
-              <span>
-                Installation tokens expire hourly and refresh themselves. No long-lived personal
-                access token is stored.
-              </span>
-            </CardFoot>
-          </Card>
+            <Segmented
+              value={readOnly ? "read" : "write"}
+              onChange={(v) => setReadOnly(v === "read")}
+              options={[
+                { value: "write", label: "Read and write" },
+                { value: "read", label: "Read only" },
+              ]}
+            />
+            <Button variant="primary" onClick={mint} disabled={create.isPending}>
+              Create
+            </Button>
+            <Button variant="ghost" onClick={() => setCreating(false)}>
+              Cancel
+            </Button>
+          </div>
+        ) : null}
 
-          <Card>
-            <CardHeader title="MCP" hint="Point your own agent at this server" />
-            <CardBody>
-              <pre className="bg-inset border border-line rounded-inset p-3 font-mono text-[12px] leading-relaxed text-ink-3 overflow-x-auto">
+        {secret ? (
+          <Handoff
+            label="Copy it now — this is the only time it is shown"
+            value={secret}
+            onDone={() => setSecret(null)}
+          />
+        ) : null}
+
+        <ul>
+          {tokens.map((t) => (
+            <li
+              key={t.id}
+              className="flex items-center gap-x-3 gap-y-1 flex-wrap py-3 border-b border-line last:border-0"
+            >
+              <div className="min-w-0">
+                <span className="text-[13.5px] text-ink">{t.name}</span>
+                <span className="block font-mono text-[12px] text-ink-4">{t.prefix}…</span>
+              </div>
+              {t.read_only ? <Badge tone="accent">Read only</Badge> : <Badge>Read and write</Badge>}
+              <span className="ml-auto text-[12.5px] text-ink-4">
+                {t.last_used ? `used ${ago(t.last_used)}` : "never used"}
+              </span>
+              <Button
+                size="sm"
+                variant="ghost"
+                disabled={revoke.isPending}
+                onClick={() => revoke.mutate(t.id)}
+              >
+                Revoke
+              </Button>
+            </li>
+          ))}
+        </ul>
+      </CardBody>
+      <CardFoot>
+        <span>
+          A read-only token sees only the read tools over MCP. The write tools are absent from its
+          tool list, so an agent never proposes an action it cannot take.
+        </span>
+      </CardFoot>
+    </Card>
+  );
+}
+
+function Handoff({
+  label,
+  value,
+  onDone,
+}: {
+  label: string;
+  value: string;
+  onDone: () => void;
+}) {
+  return (
+    <div className="mb-4 bg-inset border border-line rounded-inset p-3">
+      <p className="text-[12.5px] text-ink-3 mb-2">{label}</p>
+      <div className="flex items-center gap-2">
+        <code className="flex-1 font-mono text-[12px] text-ink break-all">{value}</code>
+        <Button size="sm" onClick={() => navigator.clipboard?.writeText(value)}>
+          Copy
+        </Button>
+        <Button size="sm" variant="ghost" onClick={onDone}>
+          Done
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+function Connections() {
+  const { data: github } = useGithub();
+
+  return (
+    <div className="grid gap-4 lg:grid-cols-2">
+      <Card>
+        <CardHeader
+          title="GitHub"
+          hint="A private GitHub App that exists only in your account"
+          action={
+            <span className="flex items-center gap-2">
+              <SampleData />
+              <Github size={16} className="text-ink-3" />
+            </span>
+          }
+        />
+        <CardBody>
+          {github ? (
+            <dl>
+              <Row label="App">{github.app_name}</Row>
+              <Row label="Account">{github.account}</Row>
+              <Row label="Repositories">{github.repos_accessible} accessible</Row>
+              <Row label="Installed">{ago(github.installed_at)}</Row>
+            </dl>
+          ) : null}
+        </CardBody>
+        <CardFoot>
+          <span>
+            Installation tokens expire hourly and refresh themselves. No long-lived personal access
+            token is stored.
+          </span>
+        </CardFoot>
+      </Card>
+
+      <Card>
+        <CardHeader title="MCP" hint="Point your own agent at this server" />
+        <CardBody>
+          <pre className="bg-inset border border-line rounded-inset p-3 font-mono text-[12px] leading-relaxed text-ink-3 overflow-x-auto">
 {`{
   "mcpServers": {
     "ferrum": {
       "type": "http",
-      "url": "https://panel.example.com/mcp",
+      "url": "${location.origin}/mcp",
       "headers": { "Authorization": "Bearer ferr_…" }
     }
   }
 }`}
-              </pre>
-            </CardBody>
-            <CardFoot>
-              <span>
-                Deleting apps or databases, user management and firewall changes are never exposed
-                over MCP. Those stay behind type-the-name confirmations here.
-              </span>
-            </CardFoot>
-          </Card>
-        </div>
-      )}
-
-      {tab === "appearance" && <Appearance />}
-      {tab === "about" && <About />}
-    </>
+          </pre>
+        </CardBody>
+        <CardFoot>
+          <span>
+            Deleting apps or databases, user management and firewall changes are never exposed over
+            MCP. Those stay behind type-the-name confirmations here.
+          </span>
+        </CardFoot>
+      </Card>
+    </div>
   );
 }
 
@@ -257,36 +426,36 @@ function Appearance() {
 
 /** AGPL §13: the running commit must stay linked here, not reduced to a version. */
 function About() {
-  const { data: host } = useHost();
-  if (!host) return null;
+  const { data: version } = useVersion();
+  if (!version) return null;
+
+  const source = "https://github.com/irixsoft/ferrum";
 
   return (
     <Card>
       <CardHeader title="About Ferrum" />
       <CardBody>
         <dl>
-          <Row label="Version">{host.ferrum_version}</Row>
+          <Row label="Version">{version.version}</Row>
           <Row label="Build">
-            <Code>{host.build_id}</Code>
+            <Code>{version.build_id}</Code>
           </Row>
           <Row label="Built from commit">
             <a
-              href={`https://github.com/irixsoft/ferrum/commit/${host.commit_sha}`}
+              href={`${source}/commit/${version.commit_sha}`}
               target="_blank"
               rel="noreferrer"
               className="font-mono text-[13px] text-accent hover:underline"
             >
-              {host.commit_sha.slice(0, 12)}
+              {version.commit_sha.slice(0, 12)}
             </a>
+          </Row>
+          <Row label="Host">
+            {version.os} · {version.arch}
           </Row>
           <Row label="Licence">AGPL-3.0-only</Row>
           <Row label="Source">
-            <a
-              href="https://github.com/irixsoft/ferrum"
-              target="_blank"
-              rel="noreferrer"
-              className="text-accent hover:underline"
-            >
+            <a href={source} target="_blank" rel="noreferrer" className="text-accent hover:underline">
               github.com/irixsoft/ferrum
             </a>
           </Row>

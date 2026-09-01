@@ -3,6 +3,7 @@ import { ExternalLink, RotateCcw, Upload } from "lucide-react";
 import { useApp, useDeploys } from "@/lib/api";
 import { useShell } from "@/shells/useShell";
 import { PageTitle } from "@/components/PageTitle";
+import { SampleData } from "@/components/SampleData";
 import { RuntimeMark } from "@/components/RuntimeMark";
 import { StatusPill } from "@/components/StatusPill";
 import { DeployLadder, DeployRail } from "@/components/DeployLadder";
@@ -47,6 +48,7 @@ export function AppDetailPage({ slug }: { slug: string }) {
           <span className="inline-flex items-center gap-2 flex-wrap">
             <StatusPill status={app.status} />
             <RuntimeMark runtime={app.runtime} version={app.runtime_version} />
+            <SampleData />
           </span>
         }
         title={app.name}

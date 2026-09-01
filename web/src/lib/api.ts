@@ -1,15 +1,45 @@
 /** The one seam between the panel and the server. Nothing else may fetch. */
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import * as mock from "./mock";
-import type { App, Deploy, HostStatus, MetricSeries } from "@/types/api";
+import type {
+  ApiToken,
+  App,
+  Deploy,
+  Enrolled,
+  HostStatus,
+  Me,
+  MetricSeries,
+  MintedToken,
+  Session,
+  User,
+  VersionInfo,
+} from "@/types/api";
+
+export class ApiError extends Error {
+  readonly status: number;
+  constructor(status: number, message: string) {
+    super(message);
+    this.status = status;
+  }
+}
 
 export async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(`/api${path}`, {
-    credentials: "same-origin",
-    headers: { "content-type": "application/json", ...(init?.headers ?? {}) },
-    ...init,
-  });
-  if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+  let res: Response;
+  try {
+    res = await fetch(`/api${path}`, {
+      credentials: "same-origin",
+      headers: { "content-type": "application/json", ...(init?.headers ?? {}) },
+      ...init,
+    });
+  } catch {
+    throw new ApiError(0, "Could not reach the server.");
+  }
+
+  if (!res.ok) {
+    const body = await res.json().catch(() => null);
+    throw new ApiError(res.status, body?.error ?? `${res.status} ${res.statusText}`);
+  }
+  if (res.status === 204) return undefined as T;
   return res.json() as Promise<T>;
 }
 
@@ -17,6 +47,8 @@ const settle = <T>(value: T, ms = 120) =>
   new Promise<T>((resolve) => setTimeout(() => resolve(value), ms));
 
 export const keys = {
+  me: ["me"] as const,
+  version: ["version"] as const,
   host: ["host"] as const,
   apps: ["apps"] as const,
   app: (slug: string) => ["apps", slug] as const,
@@ -25,8 +57,29 @@ export const keys = {
   redis: ["redis"] as const,
   metrics: ["metrics"] as const,
   security: ["security"] as const,
-  settings: ["settings"] as const,
+  users: ["users"] as const,
+  sessions: ["sessions"] as const,
+  tokens: ["tokens"] as const,
+  github: ["github"] as const,
 };
+
+export function useMe(enabled = true) {
+  return useQuery({
+    queryKey: keys.me,
+    queryFn: () => request<Me>("/me"),
+    enabled,
+    retry: false,
+    staleTime: 30_000,
+  });
+}
+
+export function useVersion() {
+  return useQuery({
+    queryKey: keys.version,
+    queryFn: () => request<VersionInfo>("/version"),
+    staleTime: Infinity,
+  });
+}
 
 export function useHost() {
   return useQuery({ queryKey: keys.host, queryFn: () => settle<HostStatus>(mock.host) });
@@ -72,15 +125,69 @@ export function useSecurity() {
   });
 }
 
-export function useSettings() {
-  return useQuery({
-    queryKey: keys.settings,
-    queryFn: () =>
-      settle({
-        users: mock.users,
-        tokens: mock.tokens,
-        sessions: mock.sessions,
-        github: mock.github,
-      }),
+export function useUsers() {
+  return useQuery({ queryKey: keys.users, queryFn: () => request<User[]>("/users") });
+}
+
+export function useSessions() {
+  return useQuery({ queryKey: keys.sessions, queryFn: () => request<Session[]>("/sessions") });
+}
+
+export function useTokens() {
+  return useQuery({ queryKey: keys.tokens, queryFn: () => request<ApiToken[]>("/tokens") });
+}
+
+export function useGithub() {
+  return useQuery({ queryKey: keys.github, queryFn: () => settle(mock.github) });
+}
+
+function useInvalidating<TArgs, TResult>(
+  key: readonly unknown[],
+  run: (args: TArgs) => Promise<TResult>,
+) {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: run,
+    onSuccess: () => client.invalidateQueries({ queryKey: key }),
+  });
+}
+
+const body = (value: unknown) => ({ method: "POST", body: JSON.stringify(value) });
+
+export function useCreateUser() {
+  return useInvalidating(keys.users, (name: string) =>
+    request<Enrolled>("/users", body({ name })),
+  );
+}
+
+export function useEnrollmentLink() {
+  return useInvalidating(keys.users, (id: string) =>
+    request<{ enrollment_url: string }>(`/users/${id}/enrollment`, { method: "POST" }),
+  );
+}
+
+export function useCreateToken() {
+  return useInvalidating(keys.tokens, (token: { name: string; read_only: boolean }) =>
+    request<MintedToken>("/tokens", body(token)),
+  );
+}
+
+export function useRevokeToken() {
+  return useInvalidating(keys.tokens, (id: string) =>
+    request<void>(`/tokens/${id}`, { method: "DELETE" }),
+  );
+}
+
+export function useRevokeSession() {
+  return useInvalidating(keys.sessions, (id: string) =>
+    request<void>(`/sessions/${id}`, { method: "DELETE" }),
+  );
+}
+
+export function useSignOut() {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: () => request<void>("/auth/logout", { method: "POST" }),
+    onSuccess: () => client.clear(),
   });
 }

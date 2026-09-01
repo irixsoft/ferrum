@@ -151,9 +151,23 @@ export interface FirewallRule {
   note: string;
 }
 
+export interface Me {
+  kind: "user" | "machine";
+  name: string;
+  read_only: boolean;
+}
+
+export interface VersionInfo {
+  version: string;
+  build_id: string;
+  commit_sha: string;
+  os: string;
+  arch: string;
+}
+
 export interface Passkey {
   id: string;
-  label: string;
+  label: string | null;
   added_at: string;
   last_used_at: string | null;
 }
@@ -161,9 +175,9 @@ export interface Passkey {
 export interface User {
   id: string;
   name: string;
-  email: string;
+  created_at: string;
+  credential_count: number;
   passkeys: Passkey[];
-  enrolled: boolean;
 }
 
 export interface ApiToken {
@@ -172,14 +186,25 @@ export interface ApiToken {
   prefix: string;
   read_only: boolean;
   created_at: string;
-  last_used_at: string | null;
+  last_used: string | null;
+}
+
+export interface MintedToken {
+  token: ApiToken;
+  secret: string;
+}
+
+export interface Enrolled {
+  user: User;
+  enrollment_url: string;
 }
 
 export interface Session {
   id: string;
-  device: string;
-  ip: string;
+  device: string | null;
+  ip: string | null;
   started_at: string;
+  last_seen: string;
   current: boolean;
 }
 
