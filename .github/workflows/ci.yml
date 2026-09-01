@@ -10,10 +10,33 @@ env:
   SQLX_OFFLINE: "true"
 
 jobs:
+  panel:
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v5
+      - uses: oven-sh/setup-bun@v2
+      - run: bun install --frozen-lockfile
+      - run: bun run typecheck
+      - run: bun test
+      - run: bun run build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: panel
+          path: web/dist
+          if-no-files-found: error
+
   check:
+    needs: panel
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v5
+      - uses: actions/download-artifact@v4
+        with:
+          name: panel
+          path: web/dist
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
@@ -24,6 +47,9 @@ jobs:
       - name: Host calls stay in ferrum-platform
         run: |
           ! grep -rn "process::Command" crates/ferrum/src crates/ferrum-core/src --include=*.rs
+      - name: Ferrum's own tooling is Bun only
+        run: |
+          ! grep -rn "\bnpm \|\bnpx \|\bnode " web/package.json web/scripts .github/workflows
 
   shell:
     runs-on: ubuntu-24.04
@@ -33,12 +59,17 @@ jobs:
       - run: shellcheck -s sh -e SC1091 install.sh
 
   build:
+    needs: panel
     runs-on: ubuntu-24.04
     strategy:
       matrix:
         target: [x86_64-unknown-linux-musl, aarch64-unknown-linux-musl]
     steps:
       - uses: actions/checkout@v5
+      - uses: actions/download-artifact@v4
+        with:
+          name: panel
+          path: web/dist
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
