@@ -41,6 +41,7 @@ pub fn app(db: State) -> Router {
 
     public
         .merge(protected)
+        .merge(crate::panel::router())
         .layer(TraceLayer::new_for_http())
         .with_state(state)
 }

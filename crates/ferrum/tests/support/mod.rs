@@ -29,10 +29,16 @@ pub struct Harness {
 pub struct Res {
     pub status: StatusCode,
     pub json: Value,
+    pub text: String,
+    pub headers: axum::http::HeaderMap,
     pub set_cookie: Vec<String>,
 }
 
 impl Res {
+    pub fn header(&self, name: &str) -> Option<&str> {
+        self.headers.get(name).and_then(|v| v.to_str().ok())
+    }
+
     pub fn session_cookie(&self) -> Option<String> {
         self.set_cookie
             .iter()
@@ -88,15 +94,15 @@ impl Harness {
     pub async fn send(&self, req: Request<Body>) -> Res {
         let res = self.app.clone().oneshot(req).await.unwrap();
         let status = res.status();
-        let set_cookie = res
-            .headers()
+        let headers = res.headers().clone();
+        let set_cookie = headers
             .get_all(header::SET_COOKIE)
             .iter()
             .filter_map(|v| v.to_str().ok())
             .map(str::to_string)
             .collect();
 
-        let bytes = axum::body::to_bytes(res.into_body(), 1024 * 1024)
+        let bytes = axum::body::to_bytes(res.into_body(), 4 * 1024 * 1024)
             .await
             .unwrap();
         let json = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
@@ -104,6 +110,8 @@ impl Harness {
         Res {
             status,
             json,
+            text: String::from_utf8_lossy(&bytes).into_owned(),
+            headers,
             set_cookie,
         }
     }
@@ -175,7 +183,7 @@ impl Harness {
     pub async fn try_register_begin(
         &self,
         link: &str,
-    ) -> Result<Begun<PublicKeyCredentialCreationOptions>, Res> {
+    ) -> Result<Begun<PublicKeyCredentialCreationOptions>, Box<Res>> {
         let res = self
             .post(
                 "/api/auth/register/begin",
@@ -183,7 +191,7 @@ impl Harness {
             )
             .await;
         if res.status != StatusCode::OK {
-            return Err(res);
+            return Err(Box::new(res));
         }
 
         let mut options: PublicKeyCredentialCreationOptions =
@@ -205,7 +213,7 @@ impl Harness {
     pub async fn register(&self, key: &mut SoftPasskey, link: &str) -> Res {
         let begun = match self.try_register_begin(link).await {
             Ok(begun) => begun,
-            Err(res) => return res,
+            Err(res) => return *res,
         };
         let credential = key
             .register(&self.origin(), &begun)

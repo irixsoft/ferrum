@@ -1,6 +1,14 @@
 use std::process::Command;
 
+const PANEL: &str = "../../web/dist/index.html";
+
 fn main() {
+    if std::env::var("PROFILE").as_deref() == Ok("release") && !std::path::Path::new(PANEL).exists()
+    {
+        panic!("the panel is missing: run `bun install && bun run build` in web/");
+    }
+    println!("cargo:rerun-if-changed=../../web/dist");
+
     let commit = std::env::var("FERRUM_COMMIT_SHA").ok().unwrap_or_else(|| {
         Command::new("git")
             .args(["rev-parse", "--short=12", "HEAD"])

@@ -21,7 +21,9 @@ clap.workspace = true
 ferrum-core = { path = "../ferrum-core" }
 ferrum-platform = { path = "../ferrum-platform" }
 mimalloc.workspace = true
+mime_guess.workspace = true
 reqwest.workspace = true
+rust-embed.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
