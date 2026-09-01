@@ -1,0 +1,226 @@
+@import "tailwindcss";
+
+/* Self-hosted: the panel ships inside the binary and must work with no network. */
+@import "@fontsource-variable/archivo";
+@import "@fontsource/ibm-plex-sans/400.css";
+@import "@fontsource/ibm-plex-sans/500.css";
+@import "@fontsource/ibm-plex-sans/600.css";
+@import "@fontsource/ibm-plex-mono/400.css";
+@import "@fontsource/ibm-plex-mono/500.css";
+@import "uplot/dist/uPlot.min.css";
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+:root {
+  color-scheme: light;
+
+  --c-shell: #e3e6ea;
+  --c-canvas: #f3f4f7;
+  --c-surface: #ffffff;
+  --c-inset: #f4f5f8;
+  --c-line: #e9ebef;
+  --c-line-strong: #cfd4d9;
+
+  --c-ink: #14171a;
+  --c-ink-2: #4b5054;
+  --c-ink-3: #61666a; /* the mark's grey */
+  --c-ink-4: #9aa1a8;
+
+  --c-accent: #3d52d5;
+  --c-accent-ink: #ffffff;
+  --c-accent-soft: #e8ebfb;
+
+  --c-ok: #15794a;
+  --c-ok-soft: #e2f3ea;
+  --c-run: #96590a;
+  --c-run-soft: #fbeedb;
+  --c-fail: #c02f2a;
+  --c-fail-soft: #fbe9e7;
+  --c-hold: #6b46c1;
+  --c-hold-soft: #efe9fb;
+
+  --c-node: #4d8a3e;
+  --c-bun: #b05c85;
+  --c-dotnet: #5b2fd6;
+  --c-static: #61666a;
+
+  --shadow-lift: 0 12px 32px -12px rgb(20 23 26 / 0.28), 0 2px 6px -2px rgb(20 23 26 / 0.12);
+}
+
+.dark {
+  color-scheme: dark;
+
+  --c-shell: #08090b;
+  --c-canvas: #101316;
+  --c-surface: #181c20;
+  --c-inset: #1d2226;
+  --c-line: #242a2e;
+  --c-line-strong: #3a4045;
+
+  --c-ink: #e8ebed;
+  --c-ink-2: #b4bac0;
+  --c-ink-3: #8b9198;
+  --c-ink-4: #61666a; /* the mark's grey */
+
+  --c-accent: #8a9bff;
+  --c-accent-ink: #10131f;
+  --c-accent-soft: #1e2440;
+
+  --c-ok: #4ec78d;
+  --c-ok-soft: #12291f;
+  --c-run: #eaa33a;
+  --c-run-soft: #2b2013;
+  --c-fail: #ff7a72;
+  --c-fail-soft: #2e1817;
+  --c-hold: #b49bff;
+  --c-hold-soft: #221c33;
+
+  --c-node: #7dc46a;
+  --c-bun: #f0a6c8;
+  --c-dotnet: #a98cff;
+  --c-static: #8b9198;
+
+  --shadow-lift: 0 16px 40px -12px rgb(0 0 0 / 0.7), 0 2px 8px -2px rgb(0 0 0 / 0.5);
+}
+
+@theme inline {
+  --color-shell: var(--c-shell);
+  --color-canvas: var(--c-canvas);
+  --color-surface: var(--c-surface);
+  --color-inset: var(--c-inset);
+  --color-line: var(--c-line);
+  --color-line-strong: var(--c-line-strong);
+
+  --color-ink: var(--c-ink);
+  --color-ink-2: var(--c-ink-2);
+  --color-ink-3: var(--c-ink-3);
+  --color-ink-4: var(--c-ink-4);
+
+  --color-accent: var(--c-accent);
+  --color-accent-ink: var(--c-accent-ink);
+  --color-accent-soft: var(--c-accent-soft);
+
+  --color-ok: var(--c-ok);
+  --color-ok-soft: var(--c-ok-soft);
+  --color-run: var(--c-run);
+  --color-run-soft: var(--c-run-soft);
+  --color-fail: var(--c-fail);
+  --color-fail-soft: var(--c-fail-soft);
+  --color-hold: var(--c-hold);
+  --color-hold-soft: var(--c-hold-soft);
+
+  --color-node: var(--c-node);
+  --color-bun: var(--c-bun);
+  --color-dotnet: var(--c-dotnet);
+  --color-static: var(--c-static);
+
+  --font-display: "Archivo Variable", "Archivo", ui-sans-serif, system-ui, sans-serif;
+  --font-sans: "IBM Plex Sans", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, "SF Mono", monospace;
+
+  --radius-shell: 26px;
+  --radius-card: 20px;
+  --radius-control: 12px;
+  --radius-inset: 14px;
+
+  --shadow-lift: var(--shadow-lift);
+}
+
+@layer base {
+  * {
+    border-color: var(--c-line);
+  }
+
+  html {
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  body {
+    background-color: var(--c-shell);
+    color: var(--c-ink);
+    font-family: var(--font-sans);
+    font-size: 14px;
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+    overscroll-behavior-y: none;
+  }
+
+  .font-display {
+    font-family: var(--font-display);
+    font-variation-settings: "wdth" 100;
+    letter-spacing: -0.022em;
+  }
+
+  .tnum {
+    font-variant-numeric: tabular-nums;
+  }
+
+  :focus-visible {
+    outline: 2px solid var(--c-accent);
+    outline-offset: 2px;
+    border-radius: 4px;
+  }
+
+  ::selection {
+    background: var(--c-accent-soft);
+    color: var(--c-ink);
+  }
+
+  ::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+  ::-webkit-scrollbar-track,
+  ::-webkit-scrollbar-corner {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: var(--c-line-strong);
+    border: 3px solid transparent;
+    background-clip: padding-box;
+    border-radius: 999px;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: var(--c-ink-4);
+    background-clip: padding-box;
+  }
+
+  /* No keyframes belong in this stylesheet: no spinners, no pulse, no shimmer. */
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      transition-duration: 0.01ms !important;
+      scroll-behavior: auto !important;
+    }
+  }
+}
+
+@layer utilities {
+  .pt-safe {
+    padding-top: env(safe-area-inset-top);
+  }
+  .pb-safe {
+    padding-bottom: env(safe-area-inset-bottom);
+  }
+  .h-tabbar {
+    height: calc(56px + env(safe-area-inset-bottom));
+  }
+
+  .no-scrollbar {
+    scrollbar-width: none;
+    -ms-overflow-style: none;
+  }
+  .no-scrollbar::-webkit-scrollbar {
+    display: none;
+  }
+}
+
+.uplot,
+.uplot * {
+  font-family: var(--font-sans) !important;
+}
+.u-legend {
+  display: none;
+}

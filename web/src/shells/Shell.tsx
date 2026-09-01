@@ -1,0 +1,19 @@
+import type { ReactNode } from "react";
+import { DesktopShell } from "./DesktopShell";
+import { MobileShell } from "./MobileShell";
+import { useShell } from "./useShell";
+import { ConnectionBanner } from "@/components/ConnectionBanner";
+import { UpdatePrompt } from "@/components/UpdatePrompt";
+
+export function Shell({ children }: { children: ReactNode }) {
+  const { shell } = useShell();
+  const Chrome = shell === "desktop" ? DesktopShell : MobileShell;
+
+  return (
+    <>
+      <ConnectionBanner />
+      <Chrome>{children}</Chrome>
+      <UpdatePrompt />
+    </>
+  );
+}
