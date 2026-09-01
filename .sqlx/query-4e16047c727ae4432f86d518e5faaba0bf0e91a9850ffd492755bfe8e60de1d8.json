@@ -1,0 +1,50 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT app_id AS \"app_id!\", app_slug AS \"app_slug!\", app_name AS \"app_name!\",\n                  account AS \"account!\", installation_id, connected_at AS \"connected_at!\"\n           FROM github_app WHERE id = 1",
+  "describe": {
+    "columns": [
+      {
+        "name": "app_id!",
+        "ordinal": 0,
+        "type_info": "Integer"
+      },
+      {
+        "name": "app_slug!",
+        "ordinal": 1,
+        "type_info": "Text"
+      },
+      {
+        "name": "app_name!",
+        "ordinal": 2,
+        "type_info": "Text"
+      },
+      {
+        "name": "account!",
+        "ordinal": 3,
+        "type_info": "Text"
+      },
+      {
+        "name": "installation_id",
+        "ordinal": 4,
+        "type_info": "Integer"
+      },
+      {
+        "name": "connected_at!",
+        "ordinal": 5,
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      true,
+      false
+    ]
+  },
+  "hash": "4e16047c727ae4432f86d518e5faaba0bf0e91a9850ffd492755bfe8e60de1d8"
+}

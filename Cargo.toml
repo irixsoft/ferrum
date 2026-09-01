@@ -14,9 +14,11 @@ axum = "0.8"
 base64 = "0.22"
 clap = { version = "4", features = ["derive"] }
 hickory-resolver = "0.26"
+hmac = "0.13"
 mimalloc = { version = "0.1", default-features = false }
 instant-acme = { version = "0.8", default-features = false, features = ["hyper-rustls", "ring", "rcgen", "time", "x509-parser"] }
 mime_guess = "2"
+octocrab = "0.54"
 rand = "0.9"
 rcgen = "0.14"
 rust-embed = { version = "8", features = ["debug-embed"] }

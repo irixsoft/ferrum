@@ -10,7 +10,9 @@ anyhow.workspace = true
 base64.workspace = true
 ferrum-platform = { path = "../ferrum-platform" }
 hickory-resolver.workspace = true
+hmac.workspace = true
 instant-acme.workspace = true
+octocrab.workspace = true
 rand.workspace = true
 rcgen.workspace = true
 reqwest.workspace = true
