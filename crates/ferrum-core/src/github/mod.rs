@@ -1,4 +1,5 @@
 pub mod manifest;
+pub mod repos;
 pub mod token;
 
 use crate::state::State;

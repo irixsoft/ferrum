@@ -16,6 +16,7 @@ pub fn router() -> Router<AppState> {
     Router::new()
         .route("/api/github/connect", axum::routing::post(connect))
         .route("/api/github/status", get(status))
+        .route("/api/github/repos", get(repos))
         .route("/api/github", axum::routing::delete(remove))
 }
 
@@ -89,6 +90,23 @@ async fn status(Extract(app): Extract<AppState>, _: Caller) -> ApiResult<Json<St
         connected: connection.is_some(),
         connection,
     }))
+}
+
+async fn repos(
+    Extract(app): Extract<AppState>,
+    _: Caller,
+) -> ApiResult<Json<Vec<github::repos::Repo>>> {
+    app.github.repos(&app.db).await.map(Json).map_err(reachable)
+}
+
+/// "Not connected" and "not installed" are the user's to fix, so they must survive as a sentence
+/// rather than collapsing into a 500.
+fn reachable(e: anyhow::Error) -> ApiError {
+    let message = format!("{e}");
+    if message == github::token::NOT_CONNECTED || message == github::token::NOT_INSTALLED {
+        return ApiError::unavailable(message);
+    }
+    e.into()
 }
 
 async fn remove(Extract(app): Extract<AppState>, _: Caller) -> ApiResult<StatusCode> {

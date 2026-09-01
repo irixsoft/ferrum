@@ -3,7 +3,7 @@ mod support;
 use axum::http::StatusCode;
 use ferrum_core::github::Api;
 use support::github_stub::INSTALLATION_ID;
-use support::{HOSTNAME, connected_to_stub, harness, signed_in};
+use support::{HOSTNAME, connected_to_stub, harness, signed_in, signed_in_and_connected};
 
 #[tokio::test]
 async fn the_manifest_names_this_host_and_asks_for_read_only_access() {
@@ -263,5 +263,64 @@ async fn a_fresh_api_does_not_inherit_another_ones_token() {
         github.mint_calls(),
         2,
         "the cache belongs to the instance, not to the process"
+    );
+}
+
+#[tokio::test]
+async fn repositories_come_back_for_the_installation_only() {
+    let (h, cookie, github) = signed_in_and_connected().await;
+
+    let res = h.get_with_cookie("/api/github/repos", &cookie).await;
+    assert_eq!(res.status, StatusCode::OK, "{}", res.json);
+
+    let repos = res.json.as_array().unwrap();
+    assert_eq!(repos.len(), 3, "both pages must be followed: {}", res.json);
+    assert_eq!(repos[0]["full_name"], "irixsoft/ledger");
+    assert_eq!(repos[0]["default_branch"], "main");
+    assert_eq!(repos[0]["private"], false);
+    assert_eq!(repos[2]["full_name"], "irixsoft/panel");
+    assert_eq!(
+        github.repo_page_calls(),
+        2,
+        "a listing that stops at page one hides repositories with no error"
+    );
+}
+
+#[tokio::test]
+async fn listing_repositories_without_a_connection_says_so() {
+    let (h, cookie) = signed_in().await;
+    let res = h.get_with_cookie("/api/github/repos", &cookie).await;
+
+    assert_eq!(res.status, StatusCode::SERVICE_UNAVAILABLE);
+    assert!(
+        res.json["error"].as_str().unwrap().contains("GitHub"),
+        "{}",
+        res.json
+    );
+}
+
+#[tokio::test]
+async fn listing_repositories_before_the_app_is_installed_says_so() {
+    let (h, cookie, github) = signed_in_and_connected().await;
+    github.uninstall();
+
+    let res = h.get_with_cookie("/api/github/repos", &cookie).await;
+    assert_eq!(res.status, StatusCode::SERVICE_UNAVAILABLE);
+    assert!(
+        res.json["error"]
+            .as_str()
+            .unwrap()
+            .contains("not installed"),
+        "{}",
+        res.json
+    );
+}
+
+#[tokio::test]
+async fn listing_repositories_requires_authentication() {
+    let h = harness().await;
+    assert_eq!(
+        h.get("/api/github/repos").await.status,
+        StatusCode::UNAUTHORIZED
     );
 }
