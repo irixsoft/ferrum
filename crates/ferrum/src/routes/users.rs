@@ -18,6 +18,15 @@ pub struct UserSummary {
     pub name: String,
     pub created_at: String,
     pub credential_count: i64,
+    pub passkeys: Vec<PasskeySummary>,
+}
+
+#[derive(Serialize)]
+pub struct PasskeySummary {
+    pub id: String,
+    pub label: Option<String>,
+    pub added_at: String,
+    pub last_used_at: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -86,10 +95,22 @@ async fn issue_link(app: &AppState, user_id: &str) -> ApiResult<String> {
 }
 
 async fn summarise(app: &AppState, user: users::User) -> ApiResult<UserSummary> {
+    let passkeys: Vec<PasskeySummary> = credentials::for_user(&app.db, &user.id)
+        .await?
+        .into_iter()
+        .map(|c| PasskeySummary {
+            id: c.id,
+            label: c.label,
+            added_at: c.created_at,
+            last_used_at: c.last_used,
+        })
+        .collect();
+
     Ok(UserSummary {
-        credential_count: credentials::count_for_user(&app.db, &user.id).await?,
+        credential_count: passkeys.len() as i64,
         id: user.id,
         name: user.name,
         created_at: user.created_at,
+        passkeys,
     })
 }

@@ -183,6 +183,161 @@ async fn token_management_requires_authentication() {
 }
 
 #[tokio::test]
+async fn a_user_lists_their_passkeys() {
+    let (h, cookie) = signed_in().await;
+    let users = h.get_with_cookie("/api/users", &cookie).await.json;
+    let passkeys = users[0]["passkeys"].as_array().unwrap();
+
+    assert_eq!(passkeys.len(), 1);
+    assert!(passkeys[0]["added_at"].is_string());
+    assert!(passkeys[0]["id"].is_string());
+    assert!(
+        !users.to_string().contains("\"credential\""),
+        "the stored public key is not the panel's business: {users}"
+    );
+}
+
+#[tokio::test]
+async fn the_current_session_is_marked_as_current() {
+    let (h, cookie) = signed_in().await;
+    let sessions = h.get_with_cookie("/api/sessions", &cookie).await.json;
+    let current: Vec<_> = sessions
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|s| s["current"] == true)
+        .collect();
+
+    assert_eq!(current.len(), 1, "exactly one session is the one asking");
+    assert_eq!(current[0]["device"], "ferrum-tests");
+}
+
+#[tokio::test]
+async fn one_user_never_sees_or_revokes_another_users_sessions() {
+    let (h, cookie) = signed_in().await;
+    let other = ferrum_core::users::create(&h.db, "Someone else")
+        .await
+        .unwrap();
+    ferrum_core::sessions::issue(
+        &h.db,
+        &other.id,
+        ferrum_core::sessions::Device {
+            user_agent: Some("Their laptop"),
+            ip: None,
+        },
+    )
+    .await
+    .unwrap();
+
+    let listed = h.get_with_cookie("/api/sessions", &cookie).await.json;
+    assert_eq!(
+        listed.as_array().unwrap().len(),
+        1,
+        "one user must not see another's sessions: {listed}"
+    );
+
+    let theirs = ferrum_core::sessions::list_for(&h.db, &other.id)
+        .await
+        .unwrap();
+    assert_eq!(
+        h.delete_with_cookie(&format!("/api/sessions/{}", theirs[0].id), &cookie)
+            .await
+            .status,
+        StatusCode::NOT_FOUND,
+        "one user must not sign another out"
+    );
+    assert_eq!(
+        ferrum_core::sessions::list_for(&h.db, &other.id)
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+}
+
+#[tokio::test]
+async fn a_session_can_be_revoked_and_stops_working() {
+    let (h, cookie) = signed_in().await;
+    let second = ferrum_core::sessions::issue(
+        &h.db,
+        &ferrum_core::users::list(&h.db).await.unwrap()[0].id,
+        ferrum_core::sessions::Device::default(),
+    )
+    .await
+    .unwrap();
+
+    let sessions = h.get_with_cookie("/api/sessions", &cookie).await.json;
+    let other = sessions
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|s| s["current"] == false)
+        .unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    assert_eq!(
+        h.delete_with_cookie(&format!("/api/sessions/{other}"), &cookie)
+            .await
+            .status,
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(
+        h.get_with_cookie("/api/me", &second).await.status,
+        StatusCode::UNAUTHORIZED
+    );
+}
+
+#[tokio::test]
+async fn a_token_prefix_identifies_it_without_revealing_it() {
+    let (h, cookie) = signed_in().await;
+    let created = h
+        .post_with_cookie("/api/tokens", r#"{"name":"agent"}"#, &cookie)
+        .await;
+    let secret = created.json["secret"].as_str().unwrap().to_string();
+    let prefix = created.json["token"]["prefix"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    assert!(secret.starts_with(&prefix), "{prefix} vs {secret}");
+    assert!(
+        prefix.len() < 16,
+        "a prefix must not be most of the secret: {prefix}"
+    );
+
+    let listed = h.get_with_cookie("/api/tokens", &cookie).await;
+    assert_eq!(listed.json[0]["prefix"], prefix);
+    assert!(!listed.json.to_string().contains(&secret));
+}
+
+#[tokio::test]
+async fn a_machine_has_no_sessions_to_list() {
+    let (h, cookie) = signed_in().await;
+    let secret = h
+        .post_with_cookie("/api/tokens", r#"{"name":"agent"}"#, &cookie)
+        .await
+        .json["secret"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let res = h.get_with_bearer("/api/sessions", &secret).await;
+    assert_eq!(res.status, StatusCode::OK);
+    assert!(res.json.as_array().unwrap().is_empty(), "{}", res.json);
+}
+
+#[tokio::test]
+async fn session_management_requires_authentication() {
+    let h = harness().await;
+    assert_eq!(
+        h.get("/api/sessions").await.status,
+        StatusCode::UNAUTHORIZED
+    );
+}
+
+#[tokio::test]
 async fn a_read_only_token_can_still_reach_the_api_it_is_allowed() {
     let (h, cookie) = signed_in().await;
     let secret = h

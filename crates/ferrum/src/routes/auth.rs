@@ -1,5 +1,5 @@
 use crate::auth::webauthn::{self, Pending};
-use crate::auth::{cleared_session_cookie, cookie, session_cookie, user_agent};
+use crate::auth::{cleared_session_cookie, cookie, device, session_cookie};
 use crate::routes::error::{ApiError, ApiResult};
 use crate::server::AppState;
 use axum::extract::State as Extract;
@@ -200,7 +200,7 @@ async fn logout(Extract(app): Extract<AppState>, headers: HeaderMap) -> ApiResul
 }
 
 async fn issue_session(app: &AppState, user_id: &str, headers: &HeaderMap) -> ApiResult<Response> {
-    let token = sessions::issue(&app.db, user_id, user_agent(headers)).await?;
+    let token = sessions::issue(&app.db, user_id, device(headers)).await?;
     Ok((
         StatusCode::NO_CONTENT,
         [(header::SET_COOKIE, session_cookie(&token))],

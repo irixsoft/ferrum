@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT id, user_id, user_agent, created_at, last_seen\n         FROM sessions WHERE user_id = ? ORDER BY created_at",
+  "query": "SELECT id, user_id, user_agent, ip, created_at, last_seen\n         FROM sessions WHERE user_id = ? AND expires_at > datetime('now')\n         ORDER BY created_at",
   "describe": {
     "columns": [
       {
@@ -19,13 +19,18 @@
         "type_info": "Text"
       },
       {
-        "name": "created_at",
+        "name": "ip",
         "ordinal": 3,
         "type_info": "Text"
       },
       {
-        "name": "last_seen",
+        "name": "created_at",
         "ordinal": 4,
+        "type_info": "Text"
+      },
+      {
+        "name": "last_seen",
+        "ordinal": 5,
         "type_info": "Text"
       }
     ],
@@ -36,9 +41,10 @@
       false,
       false,
       true,
+      true,
       false,
       false
     ]
   },
-  "hash": "83025e5d15f9db47625cc895d9a67ae4eaad478e13268b7bb95f6989343d9407"
+  "hash": "952a06c6dec8f878e504694c00bcf80b4d7f07a92617384caf1029d60cab36f8"
 }

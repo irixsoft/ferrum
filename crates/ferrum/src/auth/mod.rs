@@ -111,10 +111,20 @@ pub fn bearer(headers: &HeaderMap) -> Option<String> {
         .filter(|v| !v.is_empty())
 }
 
-pub fn user_agent(headers: &HeaderMap) -> Option<&str> {
+/// nginx sets `X-Real-IP`, and the daemon is loopback-only, so nothing else can set it.
+pub fn device(headers: &HeaderMap) -> sessions::Device<'_> {
+    sessions::Device {
+        user_agent: header(headers, axum::http::header::USER_AGENT.as_str()),
+        ip: header(headers, "x-real-ip"),
+    }
+}
+
+fn header<'h>(headers: &'h HeaderMap, name: &str) -> Option<&'h str> {
     headers
-        .get(axum::http::header::USER_AGENT)
+        .get(name)
         .and_then(|v| v.to_str().ok())
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
 }
 
 pub fn session_cookie(token: &str) -> String {

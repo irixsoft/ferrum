@@ -17,6 +17,7 @@ pub fn router() -> Router<AppState> {
 pub struct TokenSummary {
     pub id: String,
     pub name: String,
+    pub prefix: String,
     pub read_only: bool,
     pub created_at: String,
     pub last_used: Option<String>,
@@ -27,6 +28,7 @@ impl From<tokens::ApiToken> for TokenSummary {
         Self {
             id: t.id,
             name: t.name,
+            prefix: t.prefix,
             read_only: t.read_only,
             created_at: t.created_at,
             last_used: t.last_used,

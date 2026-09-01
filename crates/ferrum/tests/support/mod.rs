@@ -18,6 +18,7 @@ use webauthn_rs_proto::{
 };
 
 pub const HOSTNAME: &str = "panel.example.com";
+pub const USER_AGENT: &str = "ferrum-tests";
 const TIMEOUT_MS: u32 = 60_000;
 
 pub struct Harness {
@@ -91,7 +92,10 @@ impl Harness {
         enrollment::issue(&self.db, &user.id).await.unwrap()
     }
 
-    pub async fn send(&self, req: Request<Body>) -> Res {
+    pub async fn send(&self, mut req: Request<Body>) -> Res {
+        req.headers_mut()
+            .entry(header::USER_AGENT)
+            .or_insert(USER_AGENT.parse().unwrap());
         let res = self.app.clone().oneshot(req).await.unwrap();
         let status = res.status();
         let headers = res.headers().clone();

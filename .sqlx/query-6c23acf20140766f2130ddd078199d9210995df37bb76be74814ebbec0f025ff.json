@@ -1,0 +1,38 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO api_tokens (id, name, hash, prefix, read_only) VALUES (?, ?, ?, ?, ?)\n           RETURNING id AS \"id!\", name AS \"name!\", prefix AS \"prefix!\",\n                     created_at AS \"created_at!\"",
+  "describe": {
+    "columns": [
+      {
+        "name": "id!",
+        "ordinal": 0,
+        "type_info": "Text"
+      },
+      {
+        "name": "name!",
+        "ordinal": 1,
+        "type_info": "Text"
+      },
+      {
+        "name": "prefix!",
+        "ordinal": 2,
+        "type_info": "Text"
+      },
+      {
+        "name": "created_at!",
+        "ordinal": 3,
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Right": 5
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "6c23acf20140766f2130ddd078199d9210995df37bb76be74814ebbec0f025ff"
+}

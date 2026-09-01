@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT id, name, read_only AS \"read_only: bool\", created_at, last_used\n           FROM api_tokens WHERE revoked_at IS NULL ORDER BY created_at",
+  "query": "SELECT id, name, prefix, read_only AS \"read_only: bool\", created_at, last_used\n           FROM api_tokens WHERE revoked_at IS NULL ORDER BY created_at",
   "describe": {
     "columns": [
       {
@@ -14,18 +14,23 @@
         "type_info": "Text"
       },
       {
-        "name": "read_only: bool",
+        "name": "prefix",
         "ordinal": 2,
+        "type_info": "Text"
+      },
+      {
+        "name": "read_only: bool",
+        "ordinal": 3,
         "type_info": "Integer"
       },
       {
         "name": "created_at",
-        "ordinal": 3,
+        "ordinal": 4,
         "type_info": "Text"
       },
       {
         "name": "last_used",
-        "ordinal": 4,
+        "ordinal": 5,
         "type_info": "Text"
       }
     ],
@@ -37,8 +42,9 @@
       false,
       false,
       false,
+      false,
       true
     ]
   },
-  "hash": "da471b93b6c170a9b408c35ecde8c83a01b2d84e702952c8802b112392e6c72e"
+  "hash": "e16e66e07511348a26f92b66d12e412a3cc0731fc2b4b8198801c05cb479a569"
 }
