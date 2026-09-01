@@ -46,12 +46,17 @@ impl Caller {
     }
 }
 
+const READ_ONLY: &str = "That API token is read-only.";
+
 pub async fn require_caller(
     Extract(app): Extract<AppState>,
     mut request: Request,
     next: Next,
 ) -> Result<Response, ApiError> {
     let caller = resolve(&app, request.headers()).await?;
+    if caller.is_read_only() && !request.method().is_safe() {
+        return Err(ApiError::new(axum::http::StatusCode::FORBIDDEN, READ_ONLY));
+    }
     request.extensions_mut().insert(caller);
     Ok(next.run(request).await)
 }

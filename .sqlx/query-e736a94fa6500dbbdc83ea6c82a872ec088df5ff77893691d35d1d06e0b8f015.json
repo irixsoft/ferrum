@@ -1,0 +1,20 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE github_state SET used_at = datetime('now')\n         WHERE hash = ? AND used_at IS NULL AND expires_at > datetime('now')\n         RETURNING hash",
+  "describe": {
+    "columns": [
+      {
+        "name": "hash",
+        "ordinal": 0,
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "e736a94fa6500dbbdc83ea6c82a872ec088df5ff77893691d35d1d06e0b8f015"
+}

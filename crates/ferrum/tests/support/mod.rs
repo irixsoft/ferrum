@@ -5,6 +5,7 @@ use axum::body::Body;
 use axum::http::{Request, StatusCode, header};
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use ferrum_core::github::Api;
 use ferrum_core::state::State;
 use ferrum_core::{enrollment, setup, users};
 use serde_json::Value;
@@ -49,17 +50,25 @@ impl Res {
     }
 }
 
+/// Nothing listens here, so a test that reaches for github.com fails at once instead of
+/// silently making a real request.
+pub const NO_GITHUB: &str = "http://127.0.0.1:1";
+
 pub async fn harness() -> Harness {
-    let h = harness_without_hostname().await;
+    harness_with_github(NO_GITHUB).await
+}
+
+pub async fn harness_with_github(base: &str) -> Harness {
+    let h = harness_without_hostname(base).await;
     setup::set_hostname(&h.db, HOSTNAME).await.unwrap();
     h
 }
 
-pub async fn harness_without_hostname() -> Harness {
+pub async fn harness_without_hostname(base: &str) -> Harness {
     let dir = tempfile::tempdir().unwrap();
     let db = State::open(dir.path()).await.unwrap();
     Harness {
-        app: ferrum::server::app(db.clone()),
+        app: ferrum::server::app_with_github(db.clone(), Api::at(base)),
         db,
         _dir: dir,
     }
@@ -68,6 +77,18 @@ pub async fn harness_without_hostname() -> Harness {
 pub fn soft_passkey() -> SoftPasskey {
     SoftPasskey::new(true)
 }
+
+pub async fn signed_in() -> (Harness, String) {
+    let h = harness().await;
+    let link = h.enrollment("Saeed").await;
+    let mut key = soft_passkey();
+    let cookie = h.register(&mut key, &link).await.session_cookie().unwrap();
+    (h, cookie)
+}
+
+pub const TEST_PEM: &str =
+    "-----BEGIN RSA PRIVATE KEY-----\nMIIEowIBAAKC\n-----END RSA PRIVATE KEY-----\n";
+pub const WEBHOOK_SECRET: &str = "whsec_test";
 
 /// `SoftPasskey` refuses `requireResidentKey`, and never returns a `userHandle`, so it cannot
 /// act as a discoverable authenticator. These two adjustments stand in for the platform
@@ -130,6 +151,65 @@ impl Harness {
             Request::builder()
                 .uri(uri)
                 .header(header::COOKIE, format!("ferrum_session={cookie}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+    }
+
+    pub async fn machine_token(&self, read_only: bool) -> String {
+        ferrum_core::tokens::mint(&self.db, "agent", read_only)
+            .await
+            .unwrap()
+            .secret
+    }
+
+    pub async fn connect_github(&self) -> ferrum_core::github::Connection {
+        ferrum_core::github::save(
+            &self.db,
+            ferrum_core::github::NewConnection {
+                app_id: 12345,
+                app_slug: "ferrum-panel-example".into(),
+                app_name: "ferrum-panel-example".into(),
+                account: "irixsoft".into(),
+                private_key: TEST_PEM.into(),
+                webhook_secret: WEBHOOK_SECRET.into(),
+                client_id: "Iv1.abc".into(),
+                client_secret: "cs_abc".into(),
+            },
+        )
+        .await
+        .unwrap()
+    }
+
+    pub async fn connect_state(&self, cookie: &str) -> String {
+        self.post_with_cookie("/api/github/connect", "", cookie)
+            .await
+            .json["state"]
+            .as_str()
+            .expect("connect returns a state")
+            .to_string()
+    }
+
+    pub async fn post_with_bearer(&self, uri: &str, body: &str, token: &str) -> Res {
+        self.send(
+            Request::builder()
+                .method("POST")
+                .uri(uri)
+                .header(header::CONTENT_TYPE, "application/json")
+                .header(header::AUTHORIZATION, format!("Bearer {token}"))
+                .body(Body::from(body.to_string()))
+                .unwrap(),
+        )
+        .await
+    }
+
+    pub async fn delete_with_bearer(&self, uri: &str, token: &str) -> Res {
+        self.send(
+            Request::builder()
+                .method("DELETE")
+                .uri(uri)
+                .header(header::AUTHORIZATION, format!("Bearer {token}"))
                 .body(Body::empty())
                 .unwrap(),
         )

@@ -3,14 +3,6 @@ mod support;
 use axum::http::StatusCode;
 use support::*;
 
-async fn signed_in() -> (Harness, String) {
-    let h = harness().await;
-    let link = h.enrollment("Saeed").await;
-    let mut key = soft_passkey();
-    let cookie = h.register(&mut key, &link).await.session_cookie().unwrap();
-    (h, cookie)
-}
-
 #[tokio::test]
 async fn creating_a_user_returns_a_usable_enrollment_url() {
     let (h, cookie) = signed_in().await;

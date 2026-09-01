@@ -1,5 +1,6 @@
 pub mod auth;
 pub mod error;
+pub mod github;
 pub mod health;
 pub mod me;
 pub mod sessions;

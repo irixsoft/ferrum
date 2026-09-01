@@ -128,3 +128,41 @@ async fn an_unauthenticated_error_is_json() {
         res.json
     );
 }
+
+#[tokio::test]
+async fn a_read_only_token_reads_everywhere_and_writes_nowhere() {
+    let h = harness().await;
+    let token = h.machine_token(true).await;
+
+    for route in ["/api/me", "/api/users", "/api/tokens", "/api/github/status"] {
+        assert_eq!(
+            h.get_with_bearer(route, &token).await.status,
+            StatusCode::OK,
+            "{route}"
+        );
+    }
+
+    for route in ["/api/users", "/api/tokens", "/api/github/connect"] {
+        assert_eq!(
+            h.post_with_bearer(route, "{}", &token).await.status,
+            StatusCode::FORBIDDEN,
+            "a read-only token wrote to {route}"
+        );
+    }
+    assert_eq!(
+        h.delete_with_bearer("/api/tokens/any", &token).await.status,
+        StatusCode::FORBIDDEN
+    );
+}
+
+#[tokio::test]
+async fn a_writing_token_is_not_stopped_by_the_read_only_check() {
+    let h = harness().await;
+    let token = h.machine_token(false).await;
+    assert_eq!(
+        h.post_with_bearer("/api/users", r#"{"name":"Teammate"}"#, &token)
+            .await
+            .status,
+        StatusCode::OK
+    );
+}

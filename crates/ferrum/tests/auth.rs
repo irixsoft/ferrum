@@ -258,7 +258,7 @@ async fn signing_out_without_a_session_is_still_fine() {
 
 #[tokio::test]
 async fn auth_is_unavailable_before_setup_names_a_hostname() {
-    let h = harness_without_hostname().await;
+    let h = harness_without_hostname(NO_GITHUB).await;
     let user = users::create(&h.db, "Saeed").await.unwrap();
     let link = enrollment::issue(&h.db, &user.id).await.unwrap();
 

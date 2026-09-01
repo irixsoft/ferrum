@@ -1,6 +1,35 @@
+pub mod manifest;
+
 use crate::state::State;
 use crate::time;
 use serde::Serialize;
+
+pub const GITHUB_API: &str = "https://api.github.com";
+
+#[derive(Debug, Clone)]
+pub struct Api {
+    base: String,
+}
+
+impl Default for Api {
+    fn default() -> Self {
+        Self {
+            base: GITHUB_API.to_string(),
+        }
+    }
+}
+
+impl Api {
+    pub fn at(base: impl Into<String>) -> Self {
+        Self { base: base.into() }
+    }
+
+    pub fn anonymous(&self) -> anyhow::Result<octocrab::Octocrab> {
+        Ok(octocrab::Octocrab::builder()
+            .base_uri(self.base.as_str())?
+            .build()?)
+    }
+}
 
 #[derive(Debug, Clone, Serialize)]
 pub struct Connection {
