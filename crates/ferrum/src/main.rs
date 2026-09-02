@@ -10,7 +10,8 @@ async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_env("FERRUM_LOG")
-                .unwrap_or_else(|_| "info".into()),
+                .unwrap_or_else(|_| "info".into())
+                .add_directive("rmcp::service=warn".parse()?),
         )
         .init();
 
