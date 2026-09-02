@@ -27,14 +27,17 @@ pub fn extract_tar_gz(archive: &[u8], dest: &Path, strip_components: u32) -> io:
     Ok(())
 }
 
-pub fn extract_zip(archive: &[u8], dest: &Path) -> io::Result<()> {
+pub fn extract_zip(archive: &[u8], dest: &Path, strip_components: u32) -> io::Result<()> {
     std::fs::create_dir_all(dest)?;
     let mut zip = zip::ZipArchive::new(io::Cursor::new(archive)).map_err(io::Error::other)?;
     for i in 0..zip.len() {
         let mut file = zip.by_index(i).map_err(io::Error::other)?;
-        let rel = file
+        let enclosed = file
             .enclosed_name()
             .ok_or_else(|| escapes(Path::new(file.name())))?;
+        let Some(rel) = inside(&enclosed, strip_components as usize) else {
+            continue;
+        };
         let target = dest.join(rel);
         if file.is_dir() {
             std::fs::create_dir_all(&target)?;
@@ -136,8 +139,8 @@ pub(crate) mod tests {
     fn a_bun_style_zip_is_unpacked_and_the_binary_is_executable() {
         let dir = tempfile::tempdir().unwrap();
         let archive = zip_of(&[("bun-linux-x64/bun", b"ELF", 0o755)]);
-        extract_zip(&archive, dir.path()).unwrap();
-        let mode = std::fs::metadata(dir.path().join("bun-linux-x64/bun"))
+        extract_zip(&archive, dir.path(), 1).unwrap();
+        let mode = std::fs::metadata(dir.path().join("bun"))
             .unwrap()
             .permissions()
             .mode();
@@ -153,7 +156,7 @@ pub(crate) mod tests {
         assert!(!outer.path().join("etc/passwd").exists());
 
         let archive = zip_of(&[("../evil", b"x", 0o644)]);
-        assert!(extract_zip(&archive, &dest).is_err());
+        assert!(extract_zip(&archive, &dest, 0).is_err());
         assert!(!outer.path().join("a/evil").exists());
     }
 

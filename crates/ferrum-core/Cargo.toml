@@ -30,7 +30,10 @@ uuid.workspace = true
 x509-parser.workspace = true
 sqlx.workspace = true
 tracing.workspace = true
+toml = "1"
 
 [dev-dependencies]
+flate2 = "1"
+tar = "0.4"
 tempfile = "3"
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "net", "io-util"] }

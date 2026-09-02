@@ -182,9 +182,21 @@ impl Platform for FakePlatform {
         )?)
     }
 
-    fn extract_zip(&self, archive: &[u8], dest: &Path) -> Result<(), PlatformError> {
-        self.record(format!("extract_zip {}", dest.to_string_lossy()))?;
-        Ok(crate::archive::extract_zip(archive, dest)?)
+    fn extract_zip(
+        &self,
+        archive: &[u8],
+        dest: &Path,
+        strip_components: u32,
+    ) -> Result<(), PlatformError> {
+        self.record(format!(
+            "extract_zip {} {strip_components}",
+            dest.to_string_lossy()
+        ))?;
+        Ok(crate::archive::extract_zip(
+            archive,
+            dest,
+            strip_components,
+        )?)
     }
 
     fn run_installer(

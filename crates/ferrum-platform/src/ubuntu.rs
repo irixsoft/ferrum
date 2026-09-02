@@ -10,8 +10,14 @@ pub const SYSCTL_FILE: &str = "/etc/sysctl.d/99-ferrum.conf";
 pub const FSTAB: &str = "/etc/fstab";
 pub const SYSTEMD_UNIT_DIR: &str = "/etc/systemd/system";
 pub const NGINX_CUSTOM_DIR: &str = "/etc/nginx/ferrum-custom";
+pub const SYSTEM_PATH: &str = "/usr/local/bin:/usr/bin:/bin";
+pub const SH: &str = "/bin/sh";
 const NOLOGIN: &str = "/usr/sbin/nologin";
 const CPUINFO: &str = "/proc/cpuinfo";
+const OS_RELEASE: &str = "/etc/os-release";
+
+const ICU_BY_CODENAME: [(&str, &str); 2] = [("jammy", "libicu70"), ("noble", "libicu74")];
+const ICU_FALLBACK: &str = "libicu-dev";
 
 const USERADD_EXISTS: i32 = 9;
 const USERDEL_MISSING: i32 = 6;
@@ -43,6 +49,15 @@ pub fn upsert_conf_line(existing: &str, key: &str, value: &str) -> String {
     let mut text = out.join("\n");
     text.push('\n');
     text
+}
+
+/// Ubuntu names the ICU runtime by its major version, and .NET dies on start without it.
+pub fn icu_package(codename: &str) -> &'static str {
+    ICU_BY_CODENAME
+        .iter()
+        .find(|(name, _)| *name == codename)
+        .map(|(_, pkg)| *pkg)
+        .unwrap_or(ICU_FALLBACK)
 }
 
 pub fn cpu_flags_have(cpuinfo: &str, flag: &str) -> bool {
@@ -82,6 +97,14 @@ fn atomic_write(path: &Path, contents: &str, mode: u32) -> Result<(), PlatformEr
 
 impl Platform for Ubuntu {
     fn resolve_package(&self, name: &str) -> Vec<String> {
+        if name == "libicu" {
+            let codename = std::fs::read_to_string(OS_RELEASE)
+                .ok()
+                .and_then(|text| crate::parse_os_release(&text))
+                .map(|os| os.codename)
+                .unwrap_or_default();
+            return vec![icu_package(&codename).to_string()];
+        }
         vec![name.to_string()]
     }
 
@@ -186,8 +209,17 @@ impl Platform for Ubuntu {
         )?)
     }
 
-    fn extract_zip(&self, archive: &[u8], dest: &Path) -> Result<(), PlatformError> {
-        Ok(crate::archive::extract_zip(archive, dest)?)
+    fn extract_zip(
+        &self,
+        archive: &[u8],
+        dest: &Path,
+        strip_components: u32,
+    ) -> Result<(), PlatformError> {
+        Ok(crate::archive::extract_zip(
+            archive,
+            dest,
+            strip_components,
+        )?)
     }
 
     fn run_installer(
@@ -286,6 +318,13 @@ mod tests {
         let first = upsert_conf_line("", "vm.swappiness", "10");
         let second = upsert_conf_line(&first, "vm.swappiness", "20");
         assert_eq!(second, "vm.swappiness = 20\n");
+    }
+
+    #[test]
+    fn icu_follows_the_release_and_falls_back_to_the_dev_package() {
+        assert_eq!(icu_package("noble"), "libicu74");
+        assert_eq!(icu_package("jammy"), "libicu70");
+        assert_eq!(icu_package("plucky"), "libicu-dev");
     }
 
     #[test]

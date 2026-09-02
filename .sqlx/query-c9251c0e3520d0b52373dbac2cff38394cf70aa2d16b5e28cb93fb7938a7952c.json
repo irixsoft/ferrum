@@ -1,0 +1,44 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT kind AS \"kind!: RuntimeKind\", version AS \"version!\", path AS \"path!\",\n                  size_bytes AS \"size_bytes!\", installed_at AS \"installed_at!\"\n           FROM toolchains ORDER BY kind, version",
+  "describe": {
+    "columns": [
+      {
+        "name": "kind!: RuntimeKind",
+        "ordinal": 0,
+        "type_info": "Text"
+      },
+      {
+        "name": "version!",
+        "ordinal": 1,
+        "type_info": "Text"
+      },
+      {
+        "name": "path!",
+        "ordinal": 2,
+        "type_info": "Text"
+      },
+      {
+        "name": "size_bytes!",
+        "ordinal": 3,
+        "type_info": "Integer"
+      },
+      {
+        "name": "installed_at!",
+        "ordinal": 4,
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "c9251c0e3520d0b52373dbac2cff38394cf70aa2d16b5e28cb93fb7938a7952c"
+}

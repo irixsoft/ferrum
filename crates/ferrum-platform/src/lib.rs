@@ -70,7 +70,12 @@ pub trait Platform: Send + Sync {
         dest: &Path,
         strip_components: u32,
     ) -> Result<(), PlatformError>;
-    fn extract_zip(&self, archive: &[u8], dest: &Path) -> Result<(), PlatformError>;
+    fn extract_zip(
+        &self,
+        archive: &[u8],
+        dest: &Path,
+        strip_components: u32,
+    ) -> Result<(), PlatformError>;
     fn run_installer(
         &self,
         script: &Path,

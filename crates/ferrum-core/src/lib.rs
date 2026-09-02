@@ -1,10 +1,12 @@
 pub mod acme;
 pub mod credentials;
+pub mod detect;
 pub mod dns;
 pub mod enrollment;
 pub mod github;
 pub mod http;
 pub mod nginx;
+pub mod runtime;
 mod secret;
 pub mod sessions;
 pub mod setup;
