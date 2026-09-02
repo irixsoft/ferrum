@@ -1,24 +1,47 @@
-use crate::{Platform, PlatformError, ServiceAction};
-use std::collections::HashMap;
-use std::path::Path;
-use std::sync::Mutex;
+use crate::exec::{Exit, Stream};
+use crate::{Platform, PlatformError, RunSpec, ServiceAction};
+use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Condvar, Mutex};
+
+const FAKE_HEAD: &str = "0000000000000000000000000000000000000000";
+
+type Latch = Arc<(Mutex<bool>, Condvar)>;
 
 #[derive(Default)]
 struct Inner {
     calls: Vec<String>,
     files: HashMap<String, String>,
+    dirs: HashSet<String>,
+    links: HashMap<String, String>,
     fail_next: Option<String>,
     active: Vec<String>,
     cpu_flags: Vec<String>,
     memory_kb: u64,
     swap_kb: u64,
+    disk_free: u64,
     sql: Vec<String>,
     answers: Vec<(String, String)>,
     postgres_major: Option<u32>,
+    head: String,
+    scripts: Vec<(String, Vec<String>, Exit)>,
+    runs: Vec<RunSpec>,
+    gates: Vec<(String, Latch)>,
 }
 
 pub struct FakePlatform {
     inner: Mutex<Inner>,
+}
+
+/// Holds a scripted command until `open` is called, so a test can watch the queue behind it.
+pub struct Gate(Latch);
+
+impl Gate {
+    pub fn open(&self) {
+        let (opened, wake) = &*self.0;
+        *opened.lock().unwrap() = true;
+        wake.notify_all();
+    }
 }
 
 impl Default for FakePlatform {
@@ -32,9 +55,45 @@ impl FakePlatform {
         Self {
             inner: Mutex::new(Inner {
                 memory_kb: 2_097_152,
+                disk_free: 50 * 1024 * 1024 * 1024,
+                head: FAKE_HEAD.into(),
                 ..Inner::default()
             }),
         }
+    }
+
+    pub fn script_run(&self, contains: &str, lines: &[&str], exit: Exit) {
+        self.inner.lock().unwrap().scripts.push((
+            contains.to_string(),
+            lines.iter().map(|l| l.to_string()).collect(),
+            exit,
+        ));
+    }
+
+    pub fn gate(&self, contains: &str) -> Gate {
+        let gate = Arc::new((Mutex::new(false), Condvar::new()));
+        self.inner
+            .lock()
+            .unwrap()
+            .gates
+            .push((contains.to_string(), gate.clone()));
+        Gate(gate)
+    }
+
+    pub fn runs(&self) -> Vec<RunSpec> {
+        self.inner.lock().unwrap().runs.clone()
+    }
+
+    pub fn set_head(&self, sha: &str) {
+        self.inner.lock().unwrap().head = sha.to_string();
+    }
+
+    pub fn set_disk_free(&self, bytes: u64) {
+        self.inner.lock().unwrap().disk_free = bytes;
+    }
+
+    pub fn link(&self, path: &str) -> Option<String> {
+        self.inner.lock().unwrap().links.get(path).cloned()
     }
 
     pub fn calls(&self) -> Vec<String> {
@@ -152,7 +211,9 @@ impl Platform for FakePlatform {
     }
 
     fn file_exists(&self, path: &Path) -> bool {
-        self.written(&path.to_string_lossy()).is_some()
+        let p = path.to_string_lossy().to_string();
+        let inner = self.inner.lock().unwrap();
+        inner.files.contains_key(&p) || inner.dirs.contains(&p) || inner.links.contains_key(&p)
     }
 
     fn remove_file(&self, path: &Path) -> Result<(), PlatformError> {
@@ -163,17 +224,20 @@ impl Platform for FakePlatform {
     }
 
     fn make_dirs(&self, path: &Path, mode: u32) -> Result<(), PlatformError> {
-        self.record(format!("make_dirs {} {mode:o}", path.to_string_lossy()))
+        let p = path.to_string_lossy().to_string();
+        self.record(format!("make_dirs {p} {mode:o}"))?;
+        self.inner.lock().unwrap().dirs.insert(p);
+        Ok(())
     }
 
     fn remove_tree(&self, path: &Path) -> Result<(), PlatformError> {
         let p = path.to_string_lossy().to_string();
         self.record(format!("remove_tree {p}"))?;
-        self.inner
-            .lock()
-            .unwrap()
-            .files
-            .retain(|k, _| !k.starts_with(&format!("{p}/")));
+        let mut inner = self.inner.lock().unwrap();
+        let under = format!("{p}/");
+        inner.files.retain(|k, _| !k.starts_with(&under));
+        inner.links.retain(|k, _| !k.starts_with(&under));
+        inner.dirs.retain(|k| k != &p && !k.starts_with(&under));
         Ok(())
     }
 
@@ -263,6 +327,136 @@ impl Platform for FakePlatform {
 
     fn postgres_major_installed(&self) -> Option<u32> {
         self.inner.lock().unwrap().postgres_major
+    }
+
+    fn postgres_dump(&self, database: &str, to: &Path) -> Result<(), PlatformError> {
+        let p = to.to_string_lossy().to_string();
+        self.record(format!("postgres_dump {database} {p}"))?;
+        self.inner.lock().unwrap().files.insert(p, String::new());
+        Ok(())
+    }
+
+    fn postgres_restore(&self, database: &str, from: &Path) -> Result<(), PlatformError> {
+        self.record(format!(
+            "postgres_restore {database} {}",
+            from.to_string_lossy()
+        ))
+    }
+
+    fn git_clone(
+        &self,
+        url: &str,
+        git_ref: Option<&str>,
+        dest: &Path,
+        depth: u32,
+    ) -> Result<(), PlatformError> {
+        let dest = dest.to_string_lossy().to_string();
+        self.record(format!(
+            "git_clone {} {} {dest} {depth}",
+            crate::ubuntu::redact_url(url, url),
+            git_ref.unwrap_or("HEAD")
+        ))?;
+        let mut inner = self.inner.lock().unwrap();
+        inner.dirs.insert(dest.clone());
+        inner
+            .files
+            .insert(format!("{dest}/.git/HEAD"), "ref: refs/heads/main".into());
+        Ok(())
+    }
+
+    fn git_checkout(&self, dir: &Path, commit_sha: &str) -> Result<(), PlatformError> {
+        self.record(format!(
+            "git_checkout {} {commit_sha}",
+            dir.to_string_lossy()
+        ))
+    }
+
+    fn git_head(&self, dir: &Path) -> Result<String, PlatformError> {
+        self.record(format!("git_head {}", dir.to_string_lossy()))?;
+        Ok(self.inner.lock().unwrap().head.clone())
+    }
+
+    fn git_scrub_remote(&self, dir: &Path, public_url: &str) -> Result<(), PlatformError> {
+        self.record(format!(
+            "git_scrub_remote {} {public_url}",
+            dir.to_string_lossy()
+        ))
+    }
+
+    fn run_scoped(
+        &self,
+        spec: &RunSpec,
+        on_line: &mut dyn FnMut(Stream, &str),
+    ) -> Result<Exit, PlatformError> {
+        self.record(format!(
+            "run_scoped {} {} {} MemoryMax={} {}",
+            spec.unit,
+            spec.user,
+            spec.cwd.to_string_lossy(),
+            spec.memory_max_mb,
+            spec.command
+        ))?;
+        let (script, gate) = {
+            let mut inner = self.inner.lock().unwrap();
+            inner.runs.push(spec.clone());
+            let script = inner
+                .scripts
+                .iter()
+                .rev()
+                .find(|(needle, _, _)| spec.command.contains(needle.as_str()))
+                .map(|(_, lines, exit)| (lines.clone(), exit.clone()));
+            let gate = inner
+                .gates
+                .iter()
+                .find(|(needle, _)| spec.command.contains(needle.as_str()))
+                .map(|(_, gate)| gate.clone());
+            (script, gate)
+        };
+        if let Some(gate) = gate {
+            let (opened, wake) = &*gate;
+            let mut open = opened.lock().unwrap();
+            while !*open {
+                open = wake.wait(open).unwrap();
+            }
+        }
+        let (lines, exit) = script.unwrap_or((Vec::new(), Exit::Code(0)));
+        for line in &lines {
+            on_line(Stream::Stdout, line);
+        }
+        Ok(exit)
+    }
+
+    fn symlink_swap(&self, target: &Path, link: &Path) -> Result<(), PlatformError> {
+        let target = target.to_string_lossy().to_string();
+        let link = link.to_string_lossy().to_string();
+        self.record(format!("symlink_swap {target} {link}"))?;
+        self.inner.lock().unwrap().links.insert(link, target);
+        Ok(())
+    }
+
+    fn read_link(&self, link: &Path) -> Result<Option<PathBuf>, PlatformError> {
+        Ok(self.link(&link.to_string_lossy()).map(PathBuf::from))
+    }
+
+    fn list_dir(&self, dir: &Path) -> Result<Vec<String>, PlatformError> {
+        let prefix = format!("{}/", dir.to_string_lossy());
+        let inner = self.inner.lock().unwrap();
+        let mut names: Vec<String> = inner
+            .files
+            .keys()
+            .chain(inner.links.keys())
+            .chain(inner.dirs.iter())
+            .filter_map(|p| p.strip_prefix(&prefix))
+            .map(|rest| rest.split('/').next().unwrap_or(rest).to_string())
+            .collect();
+        names.sort();
+        names.dedup();
+        Ok(names)
+    }
+
+    fn disk_free_bytes(&self, path: &Path) -> Result<u64, PlatformError> {
+        self.record(format!("disk_free_bytes {}", path.to_string_lossy()))?;
+        Ok(self.inner.lock().unwrap().disk_free)
     }
 
     fn nginx_test(&self) -> Result<(), PlatformError> {
@@ -379,6 +573,108 @@ mod tests {
         assert_eq!(p.postgres_major_installed(), Some(18));
         p.fail_next("DROP DATABASE");
         assert!(p.postgres_sql("postgres", "DROP DATABASE \"x\";").is_err());
+    }
+
+    fn spec(command: &str) -> RunSpec {
+        RunSpec {
+            unit: "ferrum-build-ledger-1".into(),
+            user: "ferrum-ledger".into(),
+            cwd: PathBuf::from("/var/lib/ferrum/apps/ledger/releases/r1"),
+            command: command.into(),
+            env: Vec::new(),
+            memory_max_mb: 1200,
+            cpu_weight: 50,
+            io_weight: 50,
+            timeout: std::time::Duration::from_secs(60),
+        }
+    }
+
+    #[test]
+    fn a_scoped_run_plays_scripted_output_and_exit_and_records_the_spec() {
+        let p = FakePlatform::new();
+        p.script_run("bun run build", &["building…", "done"], Exit::Code(0));
+        let mut seen = vec![];
+        let exit = p
+            .run_scoped(&spec("bun run build"), &mut |_, l| seen.push(l.to_string()))
+            .unwrap();
+        assert_eq!(exit, Exit::Code(0));
+        assert_eq!(seen, vec!["building…", "done"]);
+        assert!(p.calls().iter().any(
+            |c| c.starts_with("run_scoped ferrum-build-ledger") && c.contains("MemoryMax=1200")
+        ));
+        assert_eq!(p.runs()[0].command, "bun run build");
+        p.script_run(
+            "bun run build",
+            &["FATAL ERROR: heap out of memory"],
+            Exit::Killed { signal: 9 },
+        );
+        assert_eq!(
+            p.run_scoped(&spec("bun run build"), &mut |_, _| {})
+                .unwrap(),
+            Exit::Killed { signal: 9 }
+        );
+        assert_eq!(
+            p.run_scoped(&spec("something else"), &mut |_, _| {})
+                .unwrap(),
+            Exit::Code(0)
+        );
+    }
+
+    #[test]
+    fn symlinks_listings_and_clones_are_kept_in_the_fake_filesystem() {
+        let p = FakePlatform::new();
+        p.symlink_swap(Path::new("/a/releases/r1"), Path::new("/a/current"))
+            .unwrap();
+        assert_eq!(
+            p.read_link(Path::new("/a/current")).unwrap(),
+            Some(PathBuf::from("/a/releases/r1"))
+        );
+        p.write_file(Path::new("/a/releases/r1/x"), "", 0o644)
+            .unwrap();
+        p.git_clone(
+            "https://x-access-token:ghs_abc@github.com/irixsoft/ledger.git",
+            Some("main"),
+            Path::new("/a/releases/r2"),
+            1,
+        )
+        .unwrap();
+        assert!(p.file_exists(Path::new("/a/releases/r2/.git/HEAD")));
+        assert!(p.file_exists(Path::new("/a/releases/r2")));
+        assert!(
+            p.calls()
+                .iter()
+                .any(|c| c
+                    == "git_clone https://github.com/irixsoft/ledger.git main /a/releases/r2 1")
+        );
+        assert!(!p.calls().join("\n").contains("ghs_abc"));
+        assert_eq!(
+            p.list_dir(Path::new("/a/releases")).unwrap(),
+            vec!["r1", "r2"]
+        );
+        p.remove_tree(Path::new("/a/releases/r1")).unwrap();
+        assert_eq!(p.list_dir(Path::new("/a/releases")).unwrap(), vec!["r2"]);
+        assert_eq!(p.git_head(Path::new("/a/releases/r2")).unwrap().len(), 40);
+        p.set_head("a3f9c2d4e81b06f5c9a2");
+        assert_eq!(
+            p.git_head(Path::new("/a/releases/r2")).unwrap(),
+            "a3f9c2d4e81b06f5c9a2"
+        );
+        p.set_disk_free(200);
+        assert_eq!(p.disk_free_bytes(Path::new("/a")).unwrap(), 200);
+    }
+
+    #[test]
+    fn a_gate_holds_a_scripted_command_until_it_is_opened() {
+        let p = Arc::new(FakePlatform::new());
+        let gate = p.gate("bun run build");
+        let worker = {
+            let p = p.clone();
+            std::thread::spawn(move || p.run_scoped(&spec("bun run build"), &mut |_, _| {}))
+        };
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        assert!(!worker.is_finished(), "the command must wait for the gate");
+        gate.open();
+        assert_eq!(worker.join().unwrap().unwrap(), Exit::Code(0));
     }
 
     #[test]

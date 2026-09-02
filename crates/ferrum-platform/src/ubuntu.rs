@@ -1,4 +1,5 @@
-use crate::{Platform, PlatformError, ServiceAction, exec};
+use crate::exec::{Exit, Spawn, Stream};
+use crate::{Platform, PlatformError, RunSpec, ServiceAction, exec};
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
@@ -18,7 +19,9 @@ pub const PGDG_KEY_URL: &str = "https://www.postgresql.org/media/keys/ACCC4CF8.a
 pub const REDIS_SERVER: &str = "/usr/bin/redis-server";
 pub const REDIS_DISTRO_UNIT: &str = "redis-server";
 pub const REDIS_KEY_URL: &str = "https://packages.redis.io/gpg";
-const PG_USER: &str = "postgres";
+pub const GIT: &str = "/usr/bin/git";
+pub const PG_USER: &str = "postgres";
+const GIT_ENV: [(&str, &str); 1] = [("GIT_TERMINAL_PROMPT", "0")];
 const NOLOGIN: &str = "/usr/sbin/nologin";
 const CPUINFO: &str = "/proc/cpuinfo";
 const OS_RELEASE: &str = "/etc/os-release";
@@ -100,6 +103,66 @@ pub fn cpu_flags_have(cpuinfo: &str, flag: &str) -> bool {
         .lines()
         .filter(|l| l.starts_with("flags"))
         .any(|l| l.split_whitespace().any(|f| f == flag))
+}
+
+/// The scope accounts the build in its own cgroup, so `MemoryMax=` kills the build and nothing else.
+pub fn scope_argv(spec: &RunSpec) -> Vec<String> {
+    vec![
+        "systemd-run".into(),
+        "--scope".into(),
+        "--quiet".into(),
+        "--collect".into(),
+        format!("--unit={}", spec.unit),
+        format!("--uid={}", spec.user),
+        format!("--gid={}", spec.user),
+        format!("--working-directory={}", spec.cwd.display()),
+        "-p".into(),
+        format!("MemoryMax={}M", spec.memory_max_mb),
+        "-p".into(),
+        format!("CPUWeight={}", spec.cpu_weight),
+        "-p".into(),
+        format!("IOWeight={}", spec.io_weight),
+        "--".into(),
+        SH.into(),
+        "-c".into(),
+        spec.command.clone(),
+    ]
+}
+
+pub fn scope_unit(unit: &str) -> String {
+    format!("{unit}.scope")
+}
+
+/// `df --output=avail -B1 <path>` prints a header line and then the number.
+pub fn parse_df_avail(output: &str) -> Option<u64> {
+    output.lines().nth(1)?.trim().parse().ok()
+}
+
+pub fn redact_url(text: &str, url: &str) -> String {
+    match url.split_once('@') {
+        Some((credentials, _)) if credentials.contains("://") => {
+            let scheme_end = credentials.find("://").map(|i| i + 3).unwrap_or(0);
+            let public = format!(
+                "{}{}",
+                &credentials[..scheme_end],
+                &url[credentials.len() + 1..]
+            );
+            text.replace(url, &public)
+        }
+        _ => text.to_string(),
+    }
+}
+
+fn redacted(result: Result<String, PlatformError>, url: &str) -> Result<(), PlatformError> {
+    match result {
+        Ok(_) => Ok(()),
+        Err(PlatformError::Command { cmd, code, stderr }) => Err(PlatformError::Command {
+            cmd: redact_url(&cmd, url),
+            code,
+            stderr: redact_url(&stderr, url),
+        }),
+        Err(other) => Err(other),
+    }
 }
 
 fn tolerate(result: Result<String, PlatformError>, exit: i32) -> Result<(), PlatformError> {
@@ -322,6 +385,149 @@ impl Platform for Ubuntu {
         )
     }
 
+    fn postgres_dump(&self, database: &str, to: &Path) -> Result<(), PlatformError> {
+        let to = to.to_string_lossy();
+        exec::run(&[
+            "runuser", "-u", PG_USER, "--", "pg_dump", "-Fc", "-f", &to, database,
+        ])
+        .map(|_| ())
+    }
+
+    fn postgres_restore(&self, database: &str, from: &Path) -> Result<(), PlatformError> {
+        let from = from.to_string_lossy();
+        exec::run(&[
+            "runuser",
+            "-u",
+            PG_USER,
+            "--",
+            "pg_restore",
+            "--single-transaction",
+            "--exit-on-error",
+            "-d",
+            database,
+            &from,
+        ])
+        .map(|_| ())
+    }
+
+    fn git_clone(
+        &self,
+        url: &str,
+        git_ref: Option<&str>,
+        dest: &Path,
+        depth: u32,
+    ) -> Result<(), PlatformError> {
+        let depth = depth.to_string();
+        let dest = dest.to_string_lossy();
+        let mut argv = vec![
+            "git",
+            "clone",
+            "--quiet",
+            "--depth",
+            &depth,
+            "--single-branch",
+        ];
+        if let Some(git_ref) = git_ref {
+            argv.extend(["--branch", git_ref]);
+        }
+        argv.extend([url, &dest]);
+        redacted(exec::run_env(&argv, &GIT_ENV), url)
+    }
+
+    fn git_checkout(&self, dir: &Path, commit_sha: &str) -> Result<(), PlatformError> {
+        let dir = dir.to_string_lossy();
+        exec::run_env(
+            &[
+                "git", "-C", &dir, "fetch", "--quiet", "--depth", "1", "origin", commit_sha,
+            ],
+            &GIT_ENV,
+        )?;
+        exec::run_env(
+            &[
+                "git", "-C", &dir, "checkout", "--quiet", "--detach", commit_sha,
+            ],
+            &GIT_ENV,
+        )
+        .map(|_| ())
+    }
+
+    fn git_head(&self, dir: &Path) -> Result<String, PlatformError> {
+        let dir = dir.to_string_lossy();
+        exec::run_env(&["git", "-C", &dir, "rev-parse", "HEAD"], &GIT_ENV)
+            .map(|out| out.trim().to_string())
+    }
+
+    fn git_scrub_remote(&self, dir: &Path, public_url: &str) -> Result<(), PlatformError> {
+        let dir = dir.to_string_lossy();
+        exec::run_env(
+            &["git", "-C", &dir, "remote", "set-url", "origin", public_url],
+            &GIT_ENV,
+        )
+        .map(|_| ())
+    }
+
+    fn run_scoped(
+        &self,
+        spec: &RunSpec,
+        on_line: &mut dyn FnMut(Stream, &str),
+    ) -> Result<Exit, PlatformError> {
+        let argv = scope_argv(spec);
+        let argv: Vec<&str> = argv.iter().map(String::as_str).collect();
+        let env: Vec<(&str, &str)> = spec
+            .env
+            .iter()
+            .map(|(k, v)| (k.as_str(), v.as_str()))
+            .collect();
+        let scope = scope_unit(&spec.unit);
+        let kill = ["systemctl", "kill", "--signal=KILL", &scope];
+        exec::run_streaming(
+            &Spawn {
+                argv: &argv,
+                env: &env,
+                clear_env: true,
+                cwd: Some(&spec.cwd),
+                timeout: Some(spec.timeout),
+                on_timeout: Some(&kill),
+            },
+            on_line,
+        )
+    }
+
+    fn symlink_swap(&self, target: &Path, link: &Path) -> Result<(), PlatformError> {
+        let tmp = link.with_extension("tmp");
+        ignore_missing(std::fs::remove_file(&tmp))?;
+        std::os::unix::fs::symlink(target, &tmp)?;
+        std::fs::rename(&tmp, link)?;
+        Ok(())
+    }
+
+    fn read_link(&self, link: &Path) -> Result<Option<PathBuf>, PlatformError> {
+        match std::fs::read_link(link) {
+            Ok(target) => Ok(Some(target)),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    fn list_dir(&self, dir: &Path) -> Result<Vec<String>, PlatformError> {
+        let entries = match std::fs::read_dir(dir) {
+            Ok(entries) => entries,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(e) => return Err(e.into()),
+        };
+        let mut names: Vec<String> = entries
+            .flatten()
+            .filter_map(|e| e.file_name().to_str().map(str::to_string))
+            .collect();
+        names.sort();
+        Ok(names)
+    }
+
+    fn disk_free_bytes(&self, path: &Path) -> Result<u64, PlatformError> {
+        let out = exec::run(&["df", "--output=avail", "-B1", &path.to_string_lossy()])?;
+        Ok(parse_df_avail(&out).unwrap_or(0))
+    }
+
     fn nginx_test(&self) -> Result<(), PlatformError> {
         exec::run(&["nginx", "-t"]).map(|_| ())
     }
@@ -465,6 +671,85 @@ mod tests {
             Some(18)
         );
         assert_eq!(installed_pg_majors(entries.into_iter(), |_| false), None);
+    }
+
+    fn spec(command: &str) -> RunSpec {
+        RunSpec {
+            unit: "ferrum-build-ledger-1".into(),
+            user: "ferrum-ledger".into(),
+            cwd: PathBuf::from("/var/lib/ferrum/apps/ledger/releases/r1"),
+            command: command.into(),
+            env: vec![("PATH".into(), "/bin".into())],
+            memory_max_mb: 1200,
+            cpu_weight: 50,
+            io_weight: 50,
+            timeout: std::time::Duration::from_secs(60),
+        }
+    }
+
+    #[test]
+    fn the_scope_argv_carries_the_limits_and_never_the_command_as_more_than_one_element() {
+        let argv = scope_argv(&spec("bun run build && echo 100%"));
+        assert_eq!(argv[0], "systemd-run");
+        assert!(argv.contains(&"--scope".to_string()));
+        assert!(argv.contains(&"--uid=ferrum-ledger".to_string()));
+        assert!(argv.contains(&"--unit=ferrum-build-ledger-1".to_string()));
+        assert!(argv.windows(2).any(|w| w == ["-p", "MemoryMax=1200M"]));
+        assert!(argv.windows(2).any(|w| w == ["-p", "CPUWeight=50"]));
+        let sh = argv.iter().position(|a| a == "/bin/sh").unwrap();
+        assert_eq!(argv[sh + 1], "-c");
+        assert_eq!(argv[sh + 2], "bun run build && echo 100%");
+        assert_eq!(argv.len(), sh + 3);
+        assert!(
+            !argv.iter().any(|a| a.contains("PATH")),
+            "the environment travels on the process, not the command line"
+        );
+        assert_eq!(
+            scope_unit("ferrum-build-ledger-1"),
+            "ferrum-build-ledger-1.scope"
+        );
+    }
+
+    #[test]
+    fn df_output_is_read_past_its_header() {
+        assert_eq!(
+            parse_df_avail("      Avail\n41552420864\n"),
+            Some(41_552_420_864)
+        );
+        assert_eq!(parse_df_avail(""), None);
+    }
+
+    #[test]
+    fn credentials_are_stripped_from_an_error_that_echoes_the_url() {
+        let url = "https://x-access-token:ghs_abc@github.com/irixsoft/ledger.git";
+        let text = format!("git clone {url} failed for {url}");
+        let clean = redact_url(&text, url);
+        assert!(!clean.contains("ghs_abc"), "{clean}");
+        assert!(clean.contains("https://github.com/irixsoft/ledger.git"));
+        assert_eq!(redact_url("plain", "https://github.com/x.git"), "plain");
+    }
+
+    #[test]
+    fn a_symlink_swap_is_a_rename_and_listings_are_sorted() {
+        let dir = tempfile::tempdir().unwrap();
+        let link = dir.path().join("current");
+        std::fs::create_dir(dir.path().join("b")).unwrap();
+        std::fs::create_dir(dir.path().join("a")).unwrap();
+        Ubuntu.symlink_swap(&dir.path().join("a"), &link).unwrap();
+        Ubuntu.symlink_swap(&dir.path().join("b"), &link).unwrap();
+        assert_eq!(Ubuntu.read_link(&link).unwrap(), Some(dir.path().join("b")));
+        assert_eq!(Ubuntu.read_link(&dir.path().join("nope")).unwrap(), None);
+        assert!(!dir.path().join("current.tmp").exists());
+        assert_eq!(
+            Ubuntu.list_dir(dir.path()).unwrap(),
+            vec!["a", "b", "current"]
+        );
+        assert!(
+            Ubuntu
+                .list_dir(&dir.path().join("nope"))
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[test]

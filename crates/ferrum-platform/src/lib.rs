@@ -4,13 +4,29 @@ pub mod exec;
 pub mod fake;
 pub mod ubuntu;
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 pub use detect::{
     Arch, HostInfo, OsRelease, Unsupported, check_supported, detect, parse_os_release,
 };
+pub use exec::{Exit, Stream};
 pub use fake::FakePlatform;
 pub use ubuntu::Ubuntu;
+
+/// One command in a transient scope. `command` reaches `/bin/sh -c` as a single argument.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RunSpec {
+    pub unit: String,
+    pub user: String,
+    pub cwd: PathBuf,
+    pub command: String,
+    pub env: Vec<(String, String)>,
+    pub memory_max_mb: u64,
+    pub cpu_weight: u32,
+    pub io_weight: u32,
+    pub timeout: Duration,
+}
 
 #[derive(Debug, thiserror::Error)]
 pub enum PlatformError {
@@ -89,6 +105,27 @@ pub trait Platform: Send + Sync {
     fn cpu_has(&self, flag: &str) -> bool;
     fn postgres_sql(&self, database: &str, sql: &str) -> Result<String, PlatformError>;
     fn postgres_major_installed(&self) -> Option<u32>;
+    fn postgres_dump(&self, database: &str, to: &Path) -> Result<(), PlatformError>;
+    fn postgres_restore(&self, database: &str, from: &Path) -> Result<(), PlatformError>;
+    fn git_clone(
+        &self,
+        url: &str,
+        git_ref: Option<&str>,
+        dest: &Path,
+        depth: u32,
+    ) -> Result<(), PlatformError>;
+    fn git_checkout(&self, dir: &Path, commit_sha: &str) -> Result<(), PlatformError>;
+    fn git_head(&self, dir: &Path) -> Result<String, PlatformError>;
+    fn git_scrub_remote(&self, dir: &Path, public_url: &str) -> Result<(), PlatformError>;
+    fn run_scoped(
+        &self,
+        spec: &RunSpec,
+        on_line: &mut dyn FnMut(Stream, &str),
+    ) -> Result<Exit, PlatformError>;
+    fn symlink_swap(&self, target: &Path, link: &Path) -> Result<(), PlatformError>;
+    fn read_link(&self, link: &Path) -> Result<Option<PathBuf>, PlatformError>;
+    fn list_dir(&self, dir: &Path) -> Result<Vec<String>, PlatformError>;
+    fn disk_free_bytes(&self, path: &Path) -> Result<u64, PlatformError>;
     fn nginx_test(&self) -> Result<(), PlatformError>;
     fn total_memory_kb(&self) -> Result<u64, PlatformError>;
     fn swap_total_kb(&self) -> Result<u64, PlatformError>;
