@@ -1,10 +1,15 @@
 use crate::exec::{Exit, Stream};
-use crate::{Platform, PlatformError, RunSpec, ServiceAction};
+use crate::{
+    CgroupStats, DiskUsage, JournalLine, MemInfo, Platform, PlatformError, ProcStat, RunSpec,
+    ServiceAction,
+};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Condvar, Mutex};
+use std::time::Duration;
 
 const FAKE_HEAD: &str = "0000000000000000000000000000000000000000";
+const FOLLOW_POLL: Duration = Duration::from_millis(10);
 
 type Latch = Arc<(Mutex<bool>, Condvar)>;
 
@@ -27,6 +32,14 @@ struct Inner {
     scripts: Vec<(String, Vec<String>, Exit)>,
     runs: Vec<RunSpec>,
     gates: Vec<(String, Latch)>,
+    journal: HashMap<String, Vec<JournalLine>>,
+    cgroups: HashMap<String, CgroupStats>,
+    proc_stat: ProcStat,
+    meminfo: MemInfo,
+    uptime: u64,
+    net: (u64, u64),
+    disk_usage: DiskUsage,
+    follows_ended: usize,
 }
 
 pub struct FakePlatform {
@@ -57,9 +70,73 @@ impl FakePlatform {
                 memory_kb: 2_097_152,
                 disk_free: 50 * 1024 * 1024 * 1024,
                 head: FAKE_HEAD.into(),
+                proc_stat: ProcStat {
+                    busy_ticks: 1000,
+                    total_ticks: 4000,
+                },
+                meminfo: MemInfo {
+                    total_kb: 2_097_152,
+                    available_kb: 1_048_576,
+                    swap_total_kb: 0,
+                    swap_free_kb: 0,
+                },
+                uptime: 3600,
+                disk_usage: DiskUsage {
+                    used_bytes: 20 * 1024 * 1024 * 1024,
+                    total_bytes: 80 * 1024 * 1024 * 1024,
+                },
                 ..Inner::default()
             }),
         }
+    }
+
+    pub fn journal(&self, unit: &str, lines: &[(u8, &str)]) {
+        let mut inner = self.inner.lock().unwrap();
+        let entries = inner.journal.entry(unit.to_string()).or_default();
+        let mut at_usec = 1_788_348_289_288_518 + entries.len() as u64 * 1_000_000;
+        for (priority, message) in lines {
+            entries.push(JournalLine {
+                at_usec,
+                priority: *priority,
+                message: (*message).to_string(),
+            });
+            at_usec += 1_000_000;
+        }
+    }
+
+    pub fn set_cgroup(&self, unit: &str, stats: CgroupStats) {
+        self.inner
+            .lock()
+            .unwrap()
+            .cgroups
+            .insert(unit.to_string(), stats);
+    }
+
+    pub fn clear_cgroup(&self, unit: &str) {
+        self.inner.lock().unwrap().cgroups.remove(unit);
+    }
+
+    pub fn set_proc_stat(&self, stat: ProcStat) {
+        self.inner.lock().unwrap().proc_stat = stat;
+    }
+
+    pub fn set_meminfo(&self, info: MemInfo) {
+        let mut inner = self.inner.lock().unwrap();
+        inner.meminfo = info;
+        inner.memory_kb = info.total_kb;
+        inner.swap_kb = info.swap_total_kb;
+    }
+
+    pub fn set_net(&self, rx: u64, tx: u64) {
+        self.inner.lock().unwrap().net = (rx, tx);
+    }
+
+    pub fn set_disk_usage(&self, usage: DiskUsage) {
+        self.inner.lock().unwrap().disk_usage = usage;
+    }
+
+    pub fn follows_ended(&self) -> usize {
+        self.inner.lock().unwrap().follows_ended
     }
 
     pub fn script_run(&self, contains: &str, lines: &[&str], exit: Exit) {
@@ -461,6 +538,86 @@ impl Platform for FakePlatform {
         Ok(self.inner.lock().unwrap().disk_free)
     }
 
+    fn journal_tail(&self, unit: &str, lines: u32) -> Result<Vec<JournalLine>, PlatformError> {
+        self.record(format!("journal_tail {unit} {lines}"))?;
+        let inner = self.inner.lock().unwrap();
+        let all = inner.journal.get(unit).cloned().unwrap_or_default();
+        let skip = all.len().saturating_sub(lines as usize);
+        Ok(all.into_iter().skip(skip).collect())
+    }
+
+    fn journal_follow(
+        &self,
+        unit: &str,
+        lines: u32,
+        on_line: &mut dyn FnMut(JournalLine),
+        stopped: &dyn Fn() -> bool,
+    ) -> Result<(), PlatformError> {
+        self.record(format!("journal_follow {unit} {lines}"))?;
+        let mut seen = 0;
+        loop {
+            let pending: Vec<JournalLine> = {
+                let inner = self.inner.lock().unwrap();
+                let all = inner.journal.get(unit).cloned().unwrap_or_default();
+                if seen == 0 {
+                    seen = all.len().saturating_sub(lines as usize);
+                }
+                let fresh = all.into_iter().skip(seen).collect::<Vec<_>>();
+                seen += fresh.len();
+                fresh
+            };
+            for line in pending {
+                on_line(line);
+            }
+            if stopped() {
+                break;
+            }
+            std::thread::sleep(FOLLOW_POLL);
+        }
+        self.inner.lock().unwrap().follows_ended += 1;
+        Ok(())
+    }
+
+    fn cgroup_stats(&self, unit: &str) -> Result<Option<CgroupStats>, PlatformError> {
+        Ok(self.inner.lock().unwrap().cgroups.get(unit).copied())
+    }
+
+    fn proc_stat(&self) -> Result<ProcStat, PlatformError> {
+        Ok(self.inner.lock().unwrap().proc_stat)
+    }
+
+    fn proc_meminfo(&self) -> Result<MemInfo, PlatformError> {
+        Ok(self.inner.lock().unwrap().meminfo)
+    }
+
+    fn uptime_secs(&self) -> Result<u64, PlatformError> {
+        Ok(self.inner.lock().unwrap().uptime)
+    }
+
+    fn cpu_count(&self) -> usize {
+        2
+    }
+
+    fn net_bytes(&self) -> Result<(u64, u64), PlatformError> {
+        Ok(self.inner.lock().unwrap().net)
+    }
+
+    fn disk_usage(&self, path: &Path) -> Result<DiskUsage, PlatformError> {
+        self.record(format!("disk_usage {}", path.to_string_lossy()))?;
+        Ok(self.inner.lock().unwrap().disk_usage)
+    }
+
+    fn tail_file(&self, path: &Path, lines: u32) -> Result<Vec<String>, PlatformError> {
+        let all: Vec<String> = self
+            .written(&path.to_string_lossy())
+            .unwrap_or_default()
+            .lines()
+            .map(str::to_string)
+            .collect();
+        let skip = all.len().saturating_sub(lines as usize);
+        Ok(all.into_iter().skip(skip).collect())
+    }
+
     fn nginx_test(&self) -> Result<(), PlatformError> {
         self.record("nginx_test".to_string())
     }
@@ -686,5 +843,75 @@ mod tests {
         p.set_swap_kb(0);
         assert_eq!(p.total_memory_kb().unwrap(), 2_048_000);
         assert_eq!(p.swap_total_kb().unwrap(), 0);
+    }
+
+    #[test]
+    fn scripted_journal_lines_are_tailed_and_a_follow_ends_when_told_to() {
+        let p = Arc::new(FakePlatform::new());
+        p.journal(
+            "ferrum-app-ledger",
+            &[(6, "Listening on 41204"), (4, "slow query"), (3, "boom")],
+        );
+        let tail = p.journal_tail("ferrum-app-ledger", 2).unwrap();
+        assert_eq!(tail.len(), 2);
+        assert_eq!(tail[0].message, "slow query");
+        assert!(tail[1].at_usec > tail[0].at_usec);
+        assert!(p.journal_tail("nope", 5).unwrap().is_empty());
+
+        let stop = Arc::new(Mutex::new(false));
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let worker = {
+            let (p, stop, seen) = (p.clone(), stop.clone(), seen.clone());
+            std::thread::spawn(move || {
+                p.journal_follow(
+                    "ferrum-app-ledger",
+                    1,
+                    &mut |line| seen.lock().unwrap().push(line.message),
+                    &|| *stop.lock().unwrap(),
+                )
+            })
+        };
+        std::thread::sleep(Duration::from_millis(30));
+        p.journal("ferrum-app-ledger", &[(6, "later")]);
+        std::thread::sleep(Duration::from_millis(30));
+        assert!(!worker.is_finished());
+        *stop.lock().unwrap() = true;
+        worker.join().unwrap().unwrap();
+        assert_eq!(*seen.lock().unwrap(), vec!["boom", "later"]);
+        assert_eq!(p.follows_ended(), 1);
+    }
+
+    #[test]
+    fn host_readings_are_settable_and_a_missing_cgroup_is_none() {
+        let p = FakePlatform::new();
+        assert_eq!(p.cgroup_stats("ferrum-app-ledger").unwrap(), None);
+        p.set_cgroup(
+            "ferrum-app-ledger",
+            CgroupStats {
+                memory_current: 10,
+                memory_peak: 20,
+                cpu_usage_usec: 30,
+            },
+        );
+        assert_eq!(
+            p.cgroup_stats("ferrum-app-ledger")
+                .unwrap()
+                .unwrap()
+                .memory_peak,
+            20
+        );
+        p.clear_cgroup("ferrum-app-ledger");
+        assert_eq!(p.cgroup_stats("ferrum-app-ledger").unwrap(), None);
+        p.set_net(5, 7);
+        assert_eq!(p.net_bytes().unwrap(), (5, 7));
+        p.write_file(Path::new("/var/log/nginx/x.log"), "a\nb\nc\n", 0o644)
+            .unwrap();
+        assert_eq!(
+            p.tail_file(Path::new("/var/log/nginx/x.log"), 2).unwrap(),
+            vec!["b", "c"]
+        );
+        assert!(p.tail_file(Path::new("/nope"), 2).unwrap().is_empty());
+        assert_eq!(p.proc_meminfo().unwrap().total_kb, 2_097_152);
+        assert_eq!(p.cpu_count(), 2);
     }
 }

@@ -1,5 +1,9 @@
 use crate::exec::{Exit, Spawn, Stream};
-use crate::{Platform, PlatformError, RunSpec, ServiceAction, exec};
+use crate::{
+    CgroupStats, DiskUsage, JournalLine, MemInfo, Platform, PlatformError, ProcStat, RunSpec,
+    ServiceAction, exec,
+};
+use std::io::{Read, Seek, SeekFrom};
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
@@ -21,10 +25,19 @@ pub const REDIS_DISTRO_UNIT: &str = "redis-server";
 pub const REDIS_KEY_URL: &str = "https://packages.redis.io/gpg";
 pub const GIT: &str = "/usr/bin/git";
 pub const PG_USER: &str = "postgres";
+pub const NGINX_LOG_DIR: &str = "/var/log/nginx";
 const GIT_ENV: [(&str, &str); 1] = [("GIT_TERMINAL_PROMPT", "0")];
 const NOLOGIN: &str = "/usr/sbin/nologin";
 const CPUINFO: &str = "/proc/cpuinfo";
 const OS_RELEASE: &str = "/etc/os-release";
+const CGROUP_SYSTEM_SLICE: &str = "/sys/fs/cgroup/system.slice";
+const PROC_STAT: &str = "/proc/stat";
+const PROC_MEMINFO: &str = "/proc/meminfo";
+const PROC_UPTIME: &str = "/proc/uptime";
+const PROC_NET_DEV: &str = "/proc/net/dev";
+const JOURNAL_FIELDS: &str = "MESSAGE,PRIORITY,__REALTIME_TIMESTAMP";
+const DEFAULT_PRIORITY: u8 = 6;
+const TAIL_BLOCK: usize = 64 * 1024;
 
 const ICU_BY_CODENAME: [(&str, &str); 2] = [("jammy", "libicu70"), ("noble", "libicu74")];
 const ICU_FALLBACK: &str = "libicu-dev";
@@ -136,6 +149,140 @@ pub fn scope_unit(unit: &str) -> String {
 /// `df --output=avail -B1 <path>` prints a header line and then the number.
 pub fn parse_df_avail(output: &str) -> Option<u64> {
     output.lines().nth(1)?.trim().parse().ok()
+}
+
+pub fn parse_df_used_size(output: &str) -> Option<DiskUsage> {
+    let mut fields = output.lines().nth(1)?.split_whitespace();
+    Some(DiskUsage {
+        used_bytes: fields.next()?.parse().ok()?,
+        total_bytes: fields.next()?.parse().ok()?,
+    })
+}
+
+pub fn journal_argv(unit: &str, lines: &str, follow: bool) -> Vec<String> {
+    let mut argv = vec![
+        "journalctl".to_string(),
+        "-u".into(),
+        unit.into(),
+        "-o".into(),
+        "json".into(),
+        "-n".into(),
+        lines.into(),
+        "-q".into(),
+        "--no-pager".into(),
+        format!("--output-fields={JOURNAL_FIELDS}"),
+    ];
+    if follow {
+        argv.push("--follow".into());
+    }
+    argv
+}
+
+/// `MESSAGE` is a JSON string, or an array of bytes when the line was not UTF-8.
+pub fn parse_journal_line(line: &str) -> Option<JournalLine> {
+    let value: serde_json::Value = serde_json::from_str(line).ok()?;
+    let at_usec = value
+        .get("__REALTIME_TIMESTAMP")
+        .and_then(|v| v.as_str())
+        .and_then(|s| s.parse().ok())?;
+    let priority = value
+        .get("PRIORITY")
+        .and_then(|v| v.as_str())
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(DEFAULT_PRIORITY);
+    let message = match value.get("MESSAGE") {
+        Some(serde_json::Value::String(s)) => s.clone(),
+        Some(serde_json::Value::Array(bytes)) => {
+            let raw: Vec<u8> = bytes
+                .iter()
+                .filter_map(|b| b.as_u64())
+                .map(|b| b as u8)
+                .collect();
+            String::from_utf8_lossy(&raw).into_owned()
+        }
+        _ => String::new(),
+    };
+    Some(JournalLine {
+        at_usec,
+        priority,
+        message,
+    })
+}
+
+/// The first line of `/proc/stat`: `cpu user nice system idle iowait irq softirq steal …`.
+pub fn parse_proc_stat(text: &str) -> Option<ProcStat> {
+    let line = text.lines().find(|l| l.starts_with("cpu "))?;
+    let ticks: Vec<u64> = line
+        .split_whitespace()
+        .skip(1)
+        .filter_map(|f| f.parse().ok())
+        .collect();
+    if ticks.len() < 5 {
+        return None;
+    }
+    let total: u64 = ticks.iter().sum();
+    let idle = ticks[3] + ticks[4];
+    Some(ProcStat {
+        busy_ticks: total - idle,
+        total_ticks: total,
+    })
+}
+
+pub fn parse_cpu_stat_usec(text: &str) -> Option<u64> {
+    text.lines()
+        .find_map(|l| l.strip_prefix("usage_usec "))
+        .and_then(|v| v.trim().parse().ok())
+}
+
+pub fn parse_uptime_secs(text: &str) -> Option<u64> {
+    let first = text.split_whitespace().next()?;
+    Some(first.parse::<f64>().ok()? as u64)
+}
+
+/// Sums every interface but `lo`; `/proc/net/dev` puts received bytes first and sent bytes ninth.
+pub fn parse_net_dev(text: &str) -> (u64, u64) {
+    text.lines()
+        .filter_map(|l| l.split_once(':'))
+        .filter(|(name, _)| name.trim() != "lo")
+        .fold((0, 0), |(rx, tx), (_, rest)| {
+            let fields: Vec<u64> = rest
+                .split_whitespace()
+                .filter_map(|f| f.parse().ok())
+                .collect();
+            match (fields.first(), fields.get(8)) {
+                (Some(r), Some(t)) => (rx + r, tx + t),
+                _ => (rx, tx),
+            }
+        })
+}
+
+/// Reads backwards in blocks, so the tail of a large log costs the tail and not the file.
+pub fn tail_lines<R: Read + Seek>(mut file: R, lines: usize) -> Result<Vec<String>, PlatformError> {
+    if lines == 0 {
+        return Ok(Vec::new());
+    }
+    let mut end = file.seek(SeekFrom::End(0))?;
+    let mut collected: Vec<u8> = Vec::new();
+    while end > 0 {
+        let size = (end as usize).min(TAIL_BLOCK);
+        end -= size as u64;
+        file.seek(SeekFrom::Start(end))?;
+        let mut block = vec![0u8; size];
+        file.read_exact(&mut block)?;
+        block.extend_from_slice(&collected);
+        collected = block;
+        let newlines = collected.iter().filter(|&&b| b == b'\n').count();
+        let trailing = usize::from(collected.last() == Some(&b'\n'));
+        if newlines - trailing >= lines {
+            break;
+        }
+    }
+    let text = String::from_utf8_lossy(&collected);
+    let mut out: Vec<String> = text.lines().map(str::to_string).collect();
+    if out.len() > lines {
+        out.drain(..out.len() - lines);
+    }
+    Ok(out)
 }
 
 pub fn redact_url(text: &str, url: &str) -> String {
@@ -488,9 +635,123 @@ impl Platform for Ubuntu {
                 cwd: Some(&spec.cwd),
                 timeout: Some(spec.timeout),
                 on_timeout: Some(&kill),
+                stop: None,
             },
             on_line,
         )
+    }
+
+    fn journal_tail(&self, unit: &str, lines: u32) -> Result<Vec<JournalLine>, PlatformError> {
+        let lines = lines.to_string();
+        let argv = journal_argv(unit, &lines, false);
+        let argv: Vec<&str> = argv.iter().map(String::as_str).collect();
+        let out = exec::run(&argv)?;
+        Ok(out.lines().filter_map(parse_journal_line).collect())
+    }
+
+    fn journal_follow(
+        &self,
+        unit: &str,
+        lines: u32,
+        on_line: &mut dyn FnMut(JournalLine),
+        stopped: &dyn Fn() -> bool,
+    ) -> Result<(), PlatformError> {
+        let lines = lines.to_string();
+        let argv = journal_argv(unit, &lines, true);
+        let argv: Vec<&str> = argv.iter().map(String::as_str).collect();
+        exec::run_streaming(
+            &Spawn {
+                argv: &argv,
+                env: &[],
+                clear_env: false,
+                cwd: None,
+                timeout: None,
+                on_timeout: None,
+                stop: Some(stopped),
+            },
+            &mut |stream, line| {
+                if stream == Stream::Stdout
+                    && let Some(parsed) = parse_journal_line(line)
+                {
+                    on_line(parsed);
+                }
+            },
+        )?;
+        Ok(())
+    }
+
+    fn cgroup_stats(&self, unit: &str) -> Result<Option<CgroupStats>, PlatformError> {
+        let dir = Path::new(CGROUP_SYSTEM_SLICE).join(format!("{unit}.service"));
+        let current = match std::fs::read_to_string(dir.join("memory.current")) {
+            Ok(text) => text.trim().parse().unwrap_or(0),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(e) => return Err(e.into()),
+        };
+        let peak = std::fs::read_to_string(dir.join("memory.peak"))
+            .ok()
+            .and_then(|text| text.trim().parse().ok())
+            .unwrap_or(current);
+        let cpu = std::fs::read_to_string(dir.join("cpu.stat"))
+            .ok()
+            .and_then(|text| parse_cpu_stat_usec(&text))
+            .unwrap_or(0);
+        Ok(Some(CgroupStats {
+            memory_current: current,
+            memory_peak: peak,
+            cpu_usage_usec: cpu,
+        }))
+    }
+
+    fn proc_stat(&self) -> Result<ProcStat, PlatformError> {
+        let text = std::fs::read_to_string(PROC_STAT)?;
+        Ok(parse_proc_stat(&text).unwrap_or(ProcStat {
+            busy_ticks: 0,
+            total_ticks: 0,
+        }))
+    }
+
+    fn proc_meminfo(&self) -> Result<MemInfo, PlatformError> {
+        let text = std::fs::read_to_string(PROC_MEMINFO)?;
+        let field = |name| parse_meminfo_kb(&text, name).unwrap_or(0);
+        Ok(MemInfo {
+            total_kb: field("MemTotal"),
+            available_kb: field("MemAvailable"),
+            swap_total_kb: field("SwapTotal"),
+            swap_free_kb: field("SwapFree"),
+        })
+    }
+
+    fn uptime_secs(&self) -> Result<u64, PlatformError> {
+        let text = std::fs::read_to_string(PROC_UPTIME)?;
+        Ok(parse_uptime_secs(&text).unwrap_or(0))
+    }
+
+    fn cpu_count(&self) -> usize {
+        std::thread::available_parallelism()
+            .map(usize::from)
+            .unwrap_or(1)
+    }
+
+    fn net_bytes(&self) -> Result<(u64, u64), PlatformError> {
+        let text = std::fs::read_to_string(PROC_NET_DEV)?;
+        Ok(parse_net_dev(&text))
+    }
+
+    fn disk_usage(&self, path: &Path) -> Result<DiskUsage, PlatformError> {
+        let out = exec::run(&["df", "--output=used,size", "-B1", &path.to_string_lossy()])?;
+        Ok(parse_df_used_size(&out).unwrap_or(DiskUsage {
+            used_bytes: 0,
+            total_bytes: 0,
+        }))
+    }
+
+    fn tail_file(&self, path: &Path, lines: u32) -> Result<Vec<String>, PlatformError> {
+        let file = match std::fs::File::open(path) {
+            Ok(file) => file,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(e) => return Err(e.into()),
+        };
+        tail_lines(file, lines as usize)
     }
 
     fn symlink_swap(&self, target: &Path, link: &Path) -> Result<(), PlatformError> {
@@ -750,6 +1011,119 @@ mod tests {
                 .unwrap()
                 .is_empty()
         );
+    }
+
+    const JOURNAL: &str = r#"{"PRIORITY":"6","__REALTIME_TIMESTAMP":"1788348289288518","__CURSOR":"s=34b3;i=1c3a8","_BOOT_ID":"ec6f","MESSAGE":"<info>  [1788348289.2882] device (wlp3s0): Activation: successful, device activated.","__SEQNUM":"115624"}"#;
+
+    #[test]
+    fn a_journal_line_is_read_with_its_priority_and_microsecond_stamp() {
+        let line = parse_journal_line(JOURNAL).unwrap();
+        assert_eq!(line.at_usec, 1_788_348_289_288_518);
+        assert_eq!(line.priority, 6);
+        assert!(line.message.starts_with("<info>  [1788348289.2882] device"));
+    }
+
+    #[test]
+    fn a_non_utf8_message_arrives_lossy_and_a_missing_priority_is_info() {
+        let raw = r#"{"__REALTIME_TIMESTAMP":"1788348290015095","MESSAGE":[104,105,255,33]}"#;
+        let line = parse_journal_line(raw).unwrap();
+        assert_eq!(line.message, "hi\u{fffd}!");
+        assert_eq!(line.priority, 6);
+        assert!(parse_journal_line("-- No entries --").is_none());
+        assert!(parse_journal_line(r#"{"MESSAGE":"no stamp"}"#).is_none());
+    }
+
+    #[test]
+    fn the_journal_argv_names_the_unit_the_fields_and_follows_on_request() {
+        let argv = journal_argv("ferrum-app-ledger", "200", true);
+        assert_eq!(argv[0], "journalctl");
+        assert!(argv.windows(2).any(|w| w == ["-u", "ferrum-app-ledger"]));
+        assert!(argv.windows(2).any(|w| w == ["-o", "json"]));
+        assert!(argv.windows(2).any(|w| w == ["-n", "200"]));
+        assert!(argv.contains(&"--no-pager".to_string()));
+        assert!(
+            argv.contains(&"--output-fields=MESSAGE,PRIORITY,__REALTIME_TIMESTAMP".to_string())
+        );
+        assert_eq!(argv.last().unwrap(), "--follow");
+        assert!(!journal_argv("x", "10", false).contains(&"--follow".to_string()));
+    }
+
+    #[test]
+    fn proc_stat_counts_busy_as_everything_but_idle_and_iowait() {
+        let stat = parse_proc_stat(
+            "cpu  1373644 872 299553 7623781 58382 81792 24374 0 0 0\ncpu0 1 2 3 4 5 6 7 0 0 0\n",
+        )
+        .unwrap();
+        assert_eq!(stat.total_ticks, 9_462_398);
+        assert_eq!(stat.busy_ticks, 9_462_398 - 7_623_781 - 58_382);
+        assert!(parse_proc_stat("intr 1 2 3\n").is_none());
+    }
+
+    #[test]
+    fn cgroup_uptime_and_net_readings_are_parsed_from_what_the_kernel_prints() {
+        assert_eq!(
+            parse_cpu_stat_usec("usage_usec 283900\nuser_usec 135230\nsystem_usec 148669\n"),
+            Some(283_900)
+        );
+        assert_eq!(parse_uptime_secs("64914.25 76237.82\n"), Some(64_914));
+        let dev = "Inter-|   Receive |  Transmit\n face |bytes    packets errs drop fifo frame compressed multicast|bytes    packets errs drop fifo colls carrier compressed\n    lo: 2860571   30270    0    0    0     0          0         0  2860571   30270    0    0    0     0       0          0\nwlp3s0: 11560694   64357    0    0    0     0          0       109 73429128   79395    0    0    0     0       0          0\n";
+        assert_eq!(parse_net_dev(dev), (11_560_694, 73_429_128));
+        assert_eq!(
+            parse_df_used_size("        Used    1B-blocks\n120622612480 248833376256\n"),
+            Some(DiskUsage {
+                used_bytes: 120_622_612_480,
+                total_bytes: 248_833_376_256
+            })
+        );
+    }
+
+    #[test]
+    fn a_tail_reads_only_the_end_of_a_large_file() {
+        let mut text = String::new();
+        for i in 0..50_000 {
+            text.push_str(&format!("line {i} with some padding to make it longer\n"));
+        }
+        let file = std::io::Cursor::new(text.into_bytes());
+        let tail = tail_lines(file, 3).unwrap();
+        assert_eq!(
+            tail,
+            vec![
+                "line 49997 with some padding to make it longer",
+                "line 49998 with some padding to make it longer",
+                "line 49999 with some padding to make it longer"
+            ]
+        );
+        let short = tail_lines(std::io::Cursor::new(b"only\ntwo".to_vec()), 5).unwrap();
+        assert_eq!(short, vec!["only", "two"]);
+        assert!(
+            tail_lines(std::io::Cursor::new(Vec::new()), 5)
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn the_real_readers_answer_on_this_machine() {
+        let stat = Ubuntu.proc_stat().unwrap();
+        assert!(stat.total_ticks > stat.busy_ticks);
+        let mem = Ubuntu.proc_meminfo().unwrap();
+        assert!(mem.total_kb > mem.available_kb);
+        assert!(Ubuntu.uptime_secs().unwrap() > 0);
+        assert!(Ubuntu.cpu_count() >= 1);
+        let disk = Ubuntu.disk_usage(Path::new("/")).unwrap();
+        assert!(disk.total_bytes > disk.used_bytes);
+        assert_eq!(
+            Ubuntu.cgroup_stats("ferrum-app-no-such-unit").unwrap(),
+            None
+        );
+        if exec::status(&["journalctl", "--version"]) {
+            assert!(
+                Ubuntu
+                    .journal_tail("ferrum-app-no-such-unit", 5)
+                    .unwrap()
+                    .is_empty()
+            );
+        }
     }
 
     #[test]

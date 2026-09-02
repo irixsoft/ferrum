@@ -33,6 +33,8 @@ impl Exit {
     }
 }
 
+const STOP_POLL: Duration = Duration::from_secs(1);
+
 pub struct Spawn<'a> {
     pub argv: &'a [&'a str],
     pub env: &'a [(&'a str, &'a str)],
@@ -41,6 +43,8 @@ pub struct Spawn<'a> {
     pub timeout: Option<Duration>,
     /// Run when the deadline passes and before the child is reaped, e.g. to kill a whole cgroup.
     pub on_timeout: Option<&'a [&'a str]>,
+    /// Polled every second; a never-ending child such as `journalctl --follow` is killed once it answers true.
+    pub stop: Option<&'a dyn Fn() -> bool>,
 }
 
 pub fn run(argv: &[&str]) -> Result<String, PlatformError> {
@@ -108,13 +112,34 @@ pub fn run_streaming(
 
     let started = Instant::now();
     let mut timed_out = false;
+    let mut stopped = false;
     loop {
-        let received = match spawn.timeout {
-            None => rx.recv().map_err(|_| RecvTimeoutError::Disconnected),
+        let left = match spawn.timeout {
             Some(limit) => match limit.checked_sub(started.elapsed()) {
-                Some(left) => rx.recv_timeout(left),
-                None => Err(RecvTimeoutError::Timeout),
+                Some(left) => Some(left),
+                None => {
+                    timed_out = true;
+                    break;
+                }
             },
+            None => None,
+        };
+        let received = match (left, spawn.stop) {
+            (None, None) => rx.recv().map_err(|_| RecvTimeoutError::Disconnected),
+            (Some(left), None) => rx.recv_timeout(left),
+            (left, Some(stop)) => {
+                let wait = left.map_or(STOP_POLL, |l| l.min(STOP_POLL));
+                match rx.recv_timeout(wait) {
+                    Err(RecvTimeoutError::Timeout) => {
+                        if stop() {
+                            stopped = true;
+                            break;
+                        }
+                        continue;
+                    }
+                    other => other,
+                }
+            }
         };
         match received {
             Ok((stream, line)) => on_line(stream, &line),
@@ -125,13 +150,17 @@ pub fn run_streaming(
             Err(RecvTimeoutError::Disconnected) => break,
         }
     }
-    if timed_out {
-        if let Some(kill) = spawn.on_timeout {
-            let _ = run(kill);
-        }
+    if timed_out && let Some(kill) = spawn.on_timeout {
+        let _ = run(kill);
+    }
+    if timed_out || stopped {
         let _ = child.kill();
     }
     let status = child.wait()?;
+    if stopped {
+        drop(rx);
+        return Ok(Exit::of(status));
+    }
     for handle in readers {
         let _ = handle.join();
     }
@@ -200,6 +229,7 @@ mod tests {
             cwd: None,
             timeout,
             on_timeout: None,
+            stop: None,
         }
     }
 
@@ -245,8 +275,29 @@ mod tests {
             cwd: None,
             timeout: None,
             on_timeout: None,
+            stop: None,
         };
         run_streaming(&s, &mut |_, l| seen.push(l.to_string())).unwrap();
         assert_eq!(seen, vec!["one", "home="]);
+    }
+
+    #[test]
+    fn a_never_ending_command_is_killed_once_the_stop_check_answers_true() {
+        let started = Instant::now();
+        let stop = move || started.elapsed() > Duration::from_millis(300);
+        let mut seen = Vec::new();
+        let s = Spawn {
+            argv: &["sh", "-c", "echo first; sleep 30; echo never"],
+            env: &[],
+            clear_env: false,
+            cwd: None,
+            timeout: None,
+            on_timeout: None,
+            stop: Some(&stop),
+        };
+        let exit = run_streaming(&s, &mut |_, l| seen.push(l.to_string())).unwrap();
+        assert_eq!(seen, vec!["first"]);
+        assert_eq!(exit, Exit::Killed { signal: 9 });
+        assert!(started.elapsed() < Duration::from_secs(5));
     }
 }

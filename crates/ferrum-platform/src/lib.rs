@@ -28,6 +28,40 @@ pub struct RunSpec {
     pub timeout: Duration,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct JournalLine {
+    pub at_usec: u64,
+    pub priority: u8,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CgroupStats {
+    pub memory_current: u64,
+    pub memory_peak: u64,
+    pub cpu_usage_usec: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct ProcStat {
+    pub busy_ticks: u64,
+    pub total_ticks: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct MemInfo {
+    pub total_kb: u64,
+    pub available_kb: u64,
+    pub swap_total_kb: u64,
+    pub swap_free_kb: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct DiskUsage {
+    pub used_bytes: u64,
+    pub total_bytes: u64,
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum PlatformError {
     #[error("{cmd} exited with {code}: {stderr}")]
@@ -126,6 +160,23 @@ pub trait Platform: Send + Sync {
     fn read_link(&self, link: &Path) -> Result<Option<PathBuf>, PlatformError>;
     fn list_dir(&self, dir: &Path) -> Result<Vec<String>, PlatformError>;
     fn disk_free_bytes(&self, path: &Path) -> Result<u64, PlatformError>;
+    fn journal_tail(&self, unit: &str, lines: u32) -> Result<Vec<JournalLine>, PlatformError>;
+    /// Blocks until `stopped` answers true; the unit's newest `lines` come first, then live ones.
+    fn journal_follow(
+        &self,
+        unit: &str,
+        lines: u32,
+        on_line: &mut dyn FnMut(JournalLine),
+        stopped: &dyn Fn() -> bool,
+    ) -> Result<(), PlatformError>;
+    fn cgroup_stats(&self, unit: &str) -> Result<Option<CgroupStats>, PlatformError>;
+    fn proc_stat(&self) -> Result<ProcStat, PlatformError>;
+    fn proc_meminfo(&self) -> Result<MemInfo, PlatformError>;
+    fn uptime_secs(&self) -> Result<u64, PlatformError>;
+    fn cpu_count(&self) -> usize;
+    fn net_bytes(&self) -> Result<(u64, u64), PlatformError>;
+    fn disk_usage(&self, path: &Path) -> Result<DiskUsage, PlatformError>;
+    fn tail_file(&self, path: &Path, lines: u32) -> Result<Vec<String>, PlatformError>;
     fn nginx_test(&self) -> Result<(), PlatformError>;
     fn total_memory_kb(&self) -> Result<u64, PlatformError>;
     fn swap_total_kb(&self) -> Result<u64, PlatformError>;
