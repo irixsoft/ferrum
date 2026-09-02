@@ -42,7 +42,8 @@ fn router(state: AppState) -> Router {
         .route("/api/health", get(crate::routes::health::get))
         .route("/api/version", get(crate::routes::version::get))
         .merge(crate::routes::auth::router())
-        .merge(crate::routes::github::public_router());
+        .merge(crate::routes::github::public_router())
+        .merge(crate::routes::webhook::router());
 
     let protected = Router::new()
         .route("/api/me", get(crate::routes::me::get))

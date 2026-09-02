@@ -96,6 +96,34 @@ pub async fn signed_in() -> (Harness, String) {
 
 pub const WEBHOOK_SECRET: &str = "whsec_test";
 
+#[derive(sqlx::FromRow, Debug)]
+pub struct Delivery {
+    pub id: String,
+    pub event: String,
+    pub repository: String,
+    pub git_ref: Option<String>,
+    pub commit_sha: Option<String>,
+}
+
+pub fn push_payload(repository: &str, git_ref: &str, commit_sha: &str) -> Vec<u8> {
+    serde_json::json!({
+        "ref": git_ref,
+        "after": commit_sha,
+        "repository": { "full_name": repository },
+    })
+    .to_string()
+    .into_bytes()
+}
+
+pub fn release_payload(repository: &str, tag: &str) -> Vec<u8> {
+    serde_json::json!({
+        "release": { "tag_name": tag },
+        "repository": { "full_name": repository },
+    })
+    .to_string()
+    .into_bytes()
+}
+
 pub async fn connected_to_stub() -> (Harness, StubGithub) {
     let github = StubGithub::start().await;
     let h = harness_with_github(&github.base).await;
@@ -212,6 +240,30 @@ impl Harness {
             .as_str()
             .expect("connect returns a state")
             .to_string()
+    }
+
+    pub async fn webhook(&self, event: &str, delivery: &str, signature: &str, body: &[u8]) -> Res {
+        let mut req = Request::builder()
+            .method("POST")
+            .uri("/api/github/webhook")
+            .header(header::CONTENT_TYPE, "application/json")
+            .header("x-github-event", event)
+            .header("x-github-delivery", delivery);
+        if !signature.is_empty() {
+            req = req.header("x-hub-signature-256", signature);
+        }
+        self.send(req.body(Body::from(body.to_vec())).unwrap())
+            .await
+    }
+
+    pub async fn deliveries(&self) -> Vec<Delivery> {
+        sqlx::query_as(
+            "SELECT id, event, repository, git_ref, commit_sha FROM github_deliveries
+             ORDER BY received_at, id",
+        )
+        .fetch_all(&self.db.pool)
+        .await
+        .unwrap()
     }
 
     pub async fn post_with_bearer(&self, uri: &str, body: &str, token: &str) -> Res {

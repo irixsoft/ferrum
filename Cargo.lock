@@ -1169,7 +1169,7 @@ dependencies = [
  "chrono",
  "ferrum-platform",
  "hickory-resolver",
- "hmac 0.13.0",
+ "hmac 0.12.1",
  "instant-acme",
  "jsonwebtoken",
  "octocrab",

@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO github_deliveries (id, event, repository, git_ref, commit_sha, payload)\n         VALUES (?, ?, ?, ?, ?, ?)\n         ON CONFLICT(id) DO NOTHING",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 6
+    },
+    "nullable": []
+  },
+  "hash": "ee490f0c5560d7b40b924030701e082dd5ca7f651ab69ae1368e685c0ca806c0"
+}

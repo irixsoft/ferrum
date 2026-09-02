@@ -15,7 +15,7 @@ base64 = "0.22"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 clap = { version = "4", features = ["derive"] }
 hickory-resolver = "0.26"
-hmac = "0.13"
+hmac = "0.12"
 jsonwebtoken = { version = "10", default-features = false, features = ["use_pem", "rust_crypto"] }
 mimalloc = { version = "0.1", default-features = false }
 instant-acme = { version = "0.8", default-features = false, features = ["hyper-rustls", "ring", "rcgen", "time", "x509-parser"] }
@@ -41,6 +41,12 @@ uuid = { version = "1", features = ["v4", "serde"] }
 webauthn-rs = { version = "0.6.1-dev", features = ["conditional-ui"] }
 webauthn-rs-proto = "=0.6.1-dev"
 x509-parser = "0.18"
+
+[profile.dev.package.num-bigint-dig]
+opt-level = 3
+
+[profile.dev.package.rsa]
+opt-level = 3
 
 [profile.release]
 lto = "thin"
