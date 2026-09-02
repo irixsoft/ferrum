@@ -25,6 +25,7 @@ pub mod state;
 pub mod swap;
 pub mod time;
 pub mod tokens;
+pub mod update;
 pub mod users;
 
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
