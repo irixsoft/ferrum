@@ -12,7 +12,7 @@ import { Meter } from "@/components/ui/Meter";
 import { Row } from "@/components/ui/Row";
 import { Segmented } from "@/components/ui/Segmented";
 import { ago, pct, uptime } from "@/lib/utils";
-import { sliceRange, useRange } from "@/lib/range";
+import { useRange } from "@/lib/range";
 
 const BANDS: Record<"cpu" | "memory", Band[]> = {
   cpu: [{ key: "cpu", label: "CPU", varName: "--c-accent", fill: true }],
@@ -21,10 +21,10 @@ const BANDS: Record<"cpu" | "memory", Band[]> = {
 
 export function SystemPage() {
   const { data: host } = useHost();
-  const { data: metrics } = useMetrics();
+  const { range } = useRange();
+  const { data: metrics } = useMetrics("host", range);
   const { data: security } = useSecurity();
   const [band, setBand] = useState<"cpu" | "memory">("cpu");
-  const { range } = useRange();
 
   if (!host || !security) return null;
 
@@ -34,15 +34,7 @@ export function SystemPage() {
 
   return (
     <>
-      <PageTitle
-        above={
-          <span className="inline-flex items-center gap-2 flex-wrap">
-            {`${host.os} · ${host.arch} · up ${uptime(host.uptime_secs)}`}
-            <SampleData />
-          </span>
-        }
-        title="System"
-      />
+      <PageTitle above={`${host.os} · ${host.arch} · up ${uptime(host.uptime_secs)}`} title="System" />
 
       <div className="grid gap-4 lg:grid-cols-12">
         <div className="lg:col-span-8">
@@ -64,7 +56,7 @@ export function SystemPage() {
             <CardBody>
               {metrics ? (
                 <>
-                  <MetricChart {...sliceRange(metrics, range)} bands={BANDS[band]} height={210} />
+                  <MetricChart {...metrics} bands={BANDS[band]} height={210} />
                   <div className="mt-3">
                     <ChartKey bands={BANDS[band]} />
                   </div>
@@ -97,7 +89,7 @@ export function SystemPage() {
 
         <div className="lg:col-span-5">
           <Card className="h-full">
-            <CardHeader title="Firewall" hint="Default deny inbound, allow outbound" />
+            <CardHeader title="Firewall" hint="Default deny inbound, allow outbound" action={<SampleData />} />
             <CardBody>
               <dl>
                 {security.firewall.map((r) => (
@@ -119,7 +111,12 @@ export function SystemPage() {
             <CardHeader
               title="Banned addresses"
               hint={`${security.bans.length} currently banned by fail2ban`}
-              action={<Button size="sm" variant="ghost">Allowlist an IP</Button>}
+              action={
+                <>
+                  <SampleData />
+                  <Button size="sm" variant="ghost">Allowlist an IP</Button>
+                </>
+              }
             />
             <CardBody className="pb-3">
               <ul>

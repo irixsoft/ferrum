@@ -6,13 +6,17 @@ import {
   useCancelDeploy,
   useDeleteApp,
   useDeploys,
+  useMetrics,
   useReleases,
+  useRestartApp,
   useRestoreSnapshot,
   useRetryCertificate,
   useTriggerDeploy,
   useUpdateApp,
 } from "@/lib/api";
 import { useApp } from "@/lib/api";
+import { ChartKey, MetricChart, type Band } from "@/components/MetricChart";
+import { Meter } from "@/components/ui/Meter";
 import { useShell } from "@/shells/useShell";
 import { PageTitle } from "@/components/PageTitle";
 import { RuntimeMark, runtimeLabel } from "@/components/RuntimeMark";
@@ -25,6 +29,7 @@ import { Code } from "@/components/ui/Code";
 import { Row } from "@/components/ui/Row";
 import { Tabs } from "@/components/ui/Tabs";
 import { Sheet } from "@/components/ui/Sheet";
+import { Segmented } from "@/components/ui/Segmented";
 import { ConfigForm, draftFromApp, toChanges, type Draft } from "./ConfigForm";
 import { DataCard } from "./DataCard";
 import { DeployLog } from "./DeployLog";
@@ -32,18 +37,23 @@ import { EnvironmentPanel } from "./EnvironmentPanel";
 import { NginxPanel } from "./NginxPanel";
 import { LogPanel } from "./LogPanel";
 import { RollbackDialog } from "./RollbackDialog";
-import { ago, daysUntil, duration } from "@/lib/utils";
+import { ago, bytes, daysUntil, duration } from "@/lib/utils";
 import type { AppDetail, CertStatus, Deploy, Release } from "@/types/api";
 
 type Tab = "overview" | "configuration" | "environment" | "deploys" | "logs" | "nginx";
 
 const message = (e: unknown) => (e instanceof ApiError ? e.message : e ? String(e) : null);
 const short = (sha: string | null) => (sha ? sha.slice(0, 7) : "");
+const MB = 1024 * 1024;
+
+const MEMORY_BAND: Band[] = [{ key: "memory", label: "Memory (MB)", varName: "--c-hold", fill: true }];
+const CPU_BAND: Band[] = [{ key: "cpu", label: "CPU (% of a core)", varName: "--c-accent", fill: true }];
 
 export function AppDetailPage({ slug }: { slug: string }) {
   const { data: app, isLoading } = useApp(slug);
   const { data: deploys = [] } = useDeploys(slug);
   const trigger = useTriggerDeploy(slug);
+  const restart = useRestartApp(slug);
   const [tab, setTab] = useState<Tab>("overview");
 
   if (isLoading) return null;
@@ -79,8 +89,21 @@ export function AppDetailPage({ slug }: { slug: string }) {
         title={app.name}
         action={
           <div className="flex items-center gap-2">
-            {trigger.error ? (
-              <span className="text-[12.5px] text-fail">{message(trigger.error)}</span>
+            {trigger.error || restart.error ? (
+              <span className="text-[12.5px] text-fail">{message(trigger.error ?? restart.error)}</span>
+            ) : restart.isSuccess && !restart.isPending ? (
+              <span className="text-[12.5px] text-ok">Restarted.</span>
+            ) : null}
+            {app.runtime !== "static" ? (
+              <Button
+                size="md"
+                variant="ghost"
+                disabled={active !== undefined || !app.current_release || restart.isPending}
+                title={app.current_release ? "systemctl restart the unit" : "Nothing to restart before the first deploy"}
+                onClick={() => restart.mutate(undefined)}
+              >
+                Restart
+              </Button>
             ) : null}
             <Button
               size="md"
@@ -135,7 +158,7 @@ export function AppDetailPage({ slug }: { slug: string }) {
         />
       )}
       {tab === "deploys" && <Deploys app={app} deploys={deploys} />}
-      {tab === "logs" && <LogPanel slug={app.slug} />}
+      {tab === "logs" && <LogPanel slug={app.slug} hasProcess={app.runtime !== "static"} />}
       {tab === "nginx" && <NginxPanel slug={app.slug} />}
     </>
   );
@@ -266,6 +289,8 @@ function Overview({ app }: { app: AppDetail }) {
           </CardBody>
         </Card>
 
+        {isStatic ? null : <Resources app={app} />}
+
         {isStatic ? null : (
           <Card>
             <CardHeader title="Limits" hint="Real cgroup limits from the systemd unit" />
@@ -321,6 +346,60 @@ function Overview({ app }: { app: AppDetail }) {
         </Card>
       </div>
     </div>
+  );
+}
+
+/** Memory and CPU straight from the unit's cgroup, with the last hour sampled every 10 seconds. */
+function Resources({ app }: { app: AppDetail }) {
+  const { data: series } = useMetrics(app.slug, "1h");
+  const [band, setBand] = useState<"memory" | "cpu">("memory");
+  const limit = app.memory_mb * MB;
+  const running = app.memory_bytes !== null;
+  const used = app.memory_bytes ?? 0;
+  const peak = app.memory_peak_bytes ?? 0;
+  const share = limit ? Math.round((used / limit) * 100) : 0;
+
+  return (
+    <Card>
+      <CardHeader
+        title="Resources"
+        hint={running ? "From the unit's cgroup, exact rather than sampled" : "No process is running"}
+        action={
+          <Segmented
+            value={band}
+            onChange={setBand}
+            options={[
+              { value: "memory", label: "Memory" },
+              { value: "cpu", label: "CPU" },
+            ]}
+          />
+        }
+      />
+      <CardBody className="grid gap-4">
+        <div>
+          <div className="flex items-baseline justify-between mb-1.5">
+            <span className="text-[13px] text-ink-3">Memory</span>
+            <span className="font-mono text-[12.5px] text-ink-4 tnum">
+              {running ? `${bytes(used)} now · ${bytes(peak)} peak · ${app.memory_mb} MB limit` : `${app.memory_mb} MB limit`}
+            </span>
+          </div>
+          <Meter value={share} tone={share > 90 ? "fail" : share > 75 ? "run" : "accent"} />
+        </div>
+        <dl>
+          <Row label="CPU" hint="of one core, over the last 10 seconds">
+            {running && app.cpu_pct !== null ? `${app.cpu_pct.toFixed(1)}%` : <span className="text-ink-4">—</span>}
+          </Row>
+        </dl>
+        {series && series.t.length > 1 ? (
+          <>
+            <MetricChart {...series} bands={band === "memory" ? MEMORY_BAND : CPU_BAND} height={150} unit={band === "memory" ? " MB" : "%"} />
+            <ChartKey bands={band === "memory" ? MEMORY_BAND : CPU_BAND} />
+          </>
+        ) : (
+          <p className="text-[12.5px] text-ink-4">The chart fills in after a minute of running.</p>
+        )}
+      </CardBody>
+    </Card>
   );
 }
 

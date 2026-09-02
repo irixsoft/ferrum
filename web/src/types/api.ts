@@ -150,7 +150,22 @@ export interface AppDetail extends App {
   databases: string[];
   redis: RedisInstance | null;
   managed: string[];
+  /** From the unit's cgroup; null while no process runs. */
+  memory_bytes: number | null;
+  memory_peak_bytes: number | null;
+  cpu_pct: number | null;
 }
+
+export type LogSource = "app" | "access" | "error";
+export type LogLevel = "info" | "warn" | "error";
+
+export interface AppLogLine {
+  at: string;
+  level: LogLevel;
+  text: string;
+}
+
+export type MetricRange = "1h" | "24h" | "7d";
 
 export interface EnvVar {
   key: string;

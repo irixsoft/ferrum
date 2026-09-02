@@ -6,6 +6,7 @@ import type {
   App,
   AppChanges,
   AppDetail,
+  AppLogLine,
   Database,
   Deploy,
   DeployOutcome,
@@ -17,7 +18,9 @@ import type {
   GithubStatus,
   HostStatus,
   LogLine,
+  LogSource,
   Me,
+  MetricRange,
   MetricSeries,
   MintedToken,
   NewApp,
@@ -79,7 +82,8 @@ export const keys = {
   postgres: ["postgres"] as const,
   databases: ["databases"] as const,
   redis: ["redis"] as const,
-  metrics: ["metrics"] as const,
+  metrics: (scope: string, range: MetricRange) => ["metrics", scope, range] as const,
+  logs: (slug: string, source: LogSource) => ["logs", slug, source] as const,
   security: ["security"] as const,
   users: ["users"] as const,
   sessions: ["sessions"] as const,
@@ -108,7 +112,11 @@ export function useVersion() {
 }
 
 export function useHost() {
-  return useQuery({ queryKey: keys.host, queryFn: () => settle<HostStatus>(mock.host) });
+  return useQuery({
+    queryKey: keys.host,
+    queryFn: () => request<HostStatus>("/host"),
+    refetchInterval: 10_000,
+  });
 }
 
 export function useApps() {
@@ -178,8 +186,22 @@ export function useRedisInstances() {
   return useQuery({ queryKey: keys.redis, queryFn: () => request<RedisListed[]>("/redis") });
 }
 
-export function useMetrics() {
-  return useQuery({ queryKey: keys.metrics, queryFn: () => settle<MetricSeries>(mock.hostMetrics()) });
+/** `scope` is "host" or an app slug; the server buckets the window to at most 360 points. */
+export function useMetrics(scope: string, range: MetricRange) {
+  const path = scope === "host" ? `/metrics?range=${range}` : `/apps/${scope}/metrics?range=${range}`;
+  return useQuery({
+    queryKey: keys.metrics(scope, range),
+    queryFn: () => request<MetricSeries>(path),
+    refetchInterval: 30_000,
+  });
+}
+
+export function useAppLogs(slug: string, source: LogSource, lines = 200, enabled = true) {
+  return useQuery({
+    queryKey: keys.logs(slug, source),
+    queryFn: () => request<AppLogLine[]>(`/apps/${slug}/logs?source=${source}&lines=${lines}`),
+    enabled,
+  });
 }
 
 export function useSecurity() {
@@ -369,13 +391,19 @@ export function useRetryCertificate(slug: string) {
   );
 }
 
-/** Stored lines first, then live ones; resolves with the outcome once the deploy ends. */
-export async function followDeployLog(
-  id: string,
-  onLine: (line: LogLine) => void,
+export function useRestartApp(slug: string) {
+  return useInvalidating([keys.apps, keys.app(slug)], () =>
+    request<void>(`/apps/${slug}/restart`, { method: "POST" }),
+  );
+}
+
+/** Opens an SSE response and hands each `event`/`data` frame over until the body ends. */
+async function readFrames(
+  path: string,
+  onFrame: (event: string, data: string) => boolean | void,
   signal?: AbortSignal,
-): Promise<DeployOutcome> {
-  const res = await fetch(`/api/deploys/${id}/log`, {
+): Promise<void> {
+  const res = await fetch(`/api${path}`, {
     credentials: "same-origin",
     headers: { accept: "text/event-stream" },
     signal,
@@ -389,7 +417,7 @@ export async function followDeployLog(
   let buffered = "";
   for (;;) {
     const { value, done } = await reader.read();
-    if (done) break;
+    if (done) return;
     buffered += decoder.decode(value, { stream: true });
     const frames = buffered.split("\n\n");
     buffered = frames.pop() ?? "";
@@ -401,12 +429,50 @@ export async function followDeployLog(
         else if (line.startsWith("data:")) data.push(line.slice(5).trim());
       }
       if (data.length === 0) continue;
-      const parsed = JSON.parse(data.join("\n")) as LogLine | { outcome: DeployOutcome };
-      if (event === "done") return (parsed as { outcome: DeployOutcome }).outcome;
-      if (event === "line") onLine(parsed as LogLine);
+      if (onFrame(event, data.join("\n")) === true) {
+        await reader.cancel();
+        return;
+      }
     }
   }
-  throw new ApiError(0, "The log ended before the deploy did.");
+}
+
+/** Stored lines first, then live ones; resolves with the outcome once the deploy ends. */
+export async function followDeployLog(
+  id: string,
+  onLine: (line: LogLine) => void,
+  signal?: AbortSignal,
+): Promise<DeployOutcome> {
+  let outcome: DeployOutcome | null = null;
+  await readFrames(
+    `/deploys/${id}/log`,
+    (event, data) => {
+      if (event === "done") {
+        outcome = (JSON.parse(data) as { outcome: DeployOutcome }).outcome;
+        return true;
+      }
+      if (event === "line") onLine(JSON.parse(data) as LogLine);
+    },
+    signal,
+  );
+  if (outcome === null) throw new ApiError(0, "The log ended before the deploy did.");
+  return outcome;
+}
+
+/** The last lines, then live ones from journald; ends only when `signal` aborts. */
+export async function followAppLog(
+  slug: string,
+  lines: number,
+  onLine: (line: AppLogLine) => void,
+  signal?: AbortSignal,
+): Promise<void> {
+  await readFrames(
+    `/apps/${slug}/logs?follow=1&lines=${lines}`,
+    (event, data) => {
+      if (event === "line") onLine(JSON.parse(data) as AppLogLine);
+    },
+    signal,
+  );
 }
 
 export async function resolveVersion(kind: Toolchain, wanted: string | null): Promise<string> {

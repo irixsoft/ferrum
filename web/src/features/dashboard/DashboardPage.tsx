@@ -4,7 +4,6 @@ import { CircleCheck, CircleX, Plus } from "lucide-react";
 import { useApps, useCancelDeploy, useDeploys, useHost, useMetrics, useRunningDeploy } from "@/lib/api";
 import { ago, duration } from "@/lib/utils";
 import { PageTitle } from "@/components/PageTitle";
-import { SampleData } from "@/components/SampleData";
 import { AppCard } from "@/components/AppCard";
 import { DeployLadder } from "@/components/DeployLadder";
 import { ChartKey, MetricChart, type Band } from "@/components/MetricChart";
@@ -12,7 +11,7 @@ import { Card, CardBody, CardFoot, CardHeader } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
 import { Badge } from "@/components/ui/Badge";
 import { uptime } from "@/lib/utils";
-import { sliceRange, useRange } from "@/lib/range";
+import { useRange } from "@/lib/range";
 import { SearchPill } from "@/components/SearchPill";
 import { Segmented } from "@/components/ui/Segmented";
 
@@ -31,12 +30,7 @@ export function DashboardPage() {
   return (
     <>
       <PageTitle
-        above={
-          <span className="inline-flex items-center gap-2 flex-wrap">
-            {`${host.os} · ${host.arch} · up ${uptime(host.uptime_secs)}`}
-            <SampleData />
-          </span>
-        }
+        above={`${host.os} · ${host.arch} · up ${uptime(host.uptime_secs)}`}
         title={host.hostname}
         action={
           <>
@@ -194,11 +188,10 @@ const BANDS: Record<"cpu" | "memory", Band[]> = {
 };
 
 function HostMetrics() {
-  const { data } = useMetrics();
   const { range } = useRange();
+  const { data: series } = useMetrics("host", range);
   const [band, setBand] = useState<"cpu" | "memory">("cpu");
-  if (!data) return null;
-  const series = sliceRange(data, range);
+  if (!series) return null;
 
   return (
     <Card>
