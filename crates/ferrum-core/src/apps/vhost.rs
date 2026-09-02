@@ -1,7 +1,7 @@
 use super::App;
 use super::provision::app_dir;
 use crate::deploy::maintenance;
-use crate::{ACME_ROOT, PAGES_DIR, acme};
+use crate::{ACME_ROOT, PAGES_DIR, acme, logs};
 use ferrum_platform::ubuntu::{NGINX_CONF_DIR, NGINX_CUSTOM_DIR};
 use std::fmt::Write;
 use std::path::{Path, PathBuf};
@@ -48,7 +48,8 @@ pub fn render_vhost(app: &App, domains: &[String], with_tls: &[String]) -> Strin
     let primary_tls = with_tls.contains(primary);
 
     out.push_str("server {\n    listen 80;\n    listen [::]:80;\n");
-    let _ = writeln!(out, "    server_name {primary};\n");
+    let _ = writeln!(out, "    server_name {primary};");
+    out.push_str(&logs(&app.slug));
     out.push_str(&acme());
     if primary_tls {
         out.push_str("    location / {\n        return 301 https://$host$request_uri;\n    }\n}\n");
@@ -59,7 +60,7 @@ pub fn render_vhost(app: &App, domains: &[String], with_tls: &[String]) -> Strin
     }
 
     if primary_tls {
-        out.push_str(&tls_server(primary));
+        out.push_str(&tls_server(&app.slug, primary));
         out.push_str(HEADERS);
         out.push_str(&acme());
         out.push_str(&body(app));
@@ -69,14 +70,15 @@ pub fn render_vhost(app: &App, domains: &[String], with_tls: &[String]) -> Strin
     let scheme = if primary_tls { "https" } else { "$scheme" };
     for secondary in &domains[1..] {
         out.push_str("\nserver {\n    listen 80;\n    listen [::]:80;\n");
-        let _ = writeln!(out, "    server_name {secondary};\n");
+        let _ = writeln!(out, "    server_name {secondary};");
+        out.push_str(&logs(&app.slug));
         out.push_str(&acme());
         let _ = writeln!(
             out,
             "    location / {{\n        return 301 {scheme}://{primary}$request_uri;\n    }}\n}}"
         );
         if with_tls.contains(secondary) {
-            out.push_str(&tls_server(secondary));
+            out.push_str(&tls_server(&app.slug, secondary));
             out.push_str(&acme());
             let _ = writeln!(
                 out,
@@ -87,11 +89,22 @@ pub fn render_vhost(app: &App, domains: &[String], with_tls: &[String]) -> Strin
     out
 }
 
-fn tls_server(domain: &str) -> String {
+/// Every block Ferrum owns for the app writes to the same pair of files, so the Logs tab reads one
+/// access log and one error log per site.
+fn logs(slug: &str) -> String {
+    format!(
+        "    access_log {};\n    error_log {} warn;\n\n",
+        logs::access_log_path(slug).display(),
+        logs::error_log_path(slug).display()
+    )
+}
+
+fn tls_server(slug: &str, domain: &str) -> String {
     let cert_dir = acme::cert_dir(domain);
     let mut out = String::new();
     out.push_str("\nserver {\n    listen 443 ssl;\n    listen [::]:443 ssl;\n    http2 on;\n");
-    let _ = writeln!(out, "    server_name {domain};\n");
+    let _ = writeln!(out, "    server_name {domain};");
+    out.push_str(&logs(slug));
     let _ = writeln!(
         out,
         "    ssl_certificate     {0}/fullchain.pem;\n    ssl_certificate_key {0}/key.pem;",
@@ -290,6 +303,32 @@ mod tests {
         );
         assert!(v.contains("server_name www.ledger.example.com;"));
         assert!(v.contains("return 301 $scheme://ledger.example.com$request_uri;"));
+    }
+
+    #[test]
+    fn every_server_block_logs_to_the_app_s_own_files() {
+        let v = render_vhost(
+            &app("ledger"),
+            &["ledger.example.com".into(), "www.ledger.example.com".into()],
+            &["ledger.example.com".into(), "www.ledger.example.com".into()],
+        );
+        let blocks = v.matches("server {").count();
+        assert_eq!(blocks, 4);
+        assert_eq!(
+            v.matches("access_log /var/log/nginx/ferrum-ledger.access.log;")
+                .count(),
+            blocks
+        );
+        assert_eq!(
+            v.matches("error_log /var/log/nginx/ferrum-ledger.error.log warn;")
+                .count(),
+            blocks
+        );
+        let mut s = app("docs");
+        s.runtime = RuntimeKind::Static;
+        s.output_dir = Some("dist".into());
+        let plain = render_vhost(&s, &["docs.example.com".into()], &[]);
+        assert!(plain.contains("access_log /var/log/nginx/ferrum-docs.access.log;"));
     }
 
     #[test]

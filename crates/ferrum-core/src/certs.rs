@@ -329,7 +329,7 @@ pub fn spawn_sweeper(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::apps::tests::{new_app, state};
     use ferrum_platform::FakePlatform;
@@ -426,7 +426,7 @@ mod tests {
         );
     }
 
-    fn self_signed(domain: &str, days_left: i64) -> String {
+    pub(crate) fn self_signed(domain: &str, days_left: i64) -> String {
         let key = rcgen::KeyPair::generate().unwrap();
         let mut params = rcgen::CertificateParams::new(vec![domain.to_string()]).unwrap();
         params.not_after = time::OffsetDateTime::now_utc() + time::Duration::days(days_left);

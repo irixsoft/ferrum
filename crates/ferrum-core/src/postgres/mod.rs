@@ -290,6 +290,13 @@ pub async fn names_for(state: &State, app_id: &str) -> anyhow::Result<Vec<String
     Ok(rows.into_iter().map(|r| r.name).collect())
 }
 
+pub async fn count(state: &State) -> anyhow::Result<usize> {
+    let n = sqlx::query_scalar!(r#"SELECT count(*) AS "n!: i64" FROM databases"#)
+        .fetch_one(&state.pool)
+        .await?;
+    Ok(n as usize)
+}
+
 pub async fn by_name(state: &State, name: &str) -> anyhow::Result<Option<Database>> {
     Ok(rows(state).await?.into_iter().find(|d| d.name == name))
 }
