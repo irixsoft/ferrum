@@ -55,7 +55,7 @@ impl Api {
         Ok(id)
     }
 
-    pub(super) async fn installed(&self, state: &State) -> anyhow::Result<Arc<Octocrab>> {
+    pub(crate) async fn installed(&self, state: &State) -> anyhow::Result<Arc<Octocrab>> {
         let connection = super::load(state).await?.context(NOT_CONNECTED)?;
         let installation_id = self.installation_id(state).await?;
 

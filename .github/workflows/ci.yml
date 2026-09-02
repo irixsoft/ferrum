@@ -47,6 +47,9 @@ jobs:
       - name: Host calls stay in ferrum-platform
         run: |
           ! grep -rn "process::Command" crates/ferrum/src crates/ferrum-core/src --include=*.rs
+      - name: No C library bindings enter the tree
+        run: |
+          ! cargo tree | grep -E "aws-lc-sys|openssl-sys|bzip2-sys|zstd-sys|libz-sys|lzma-sys|xz2|libz-ng-sys"
       - name: Ferrum's own tooling is Bun only
         run: |
           ! grep -rn "\bnpm \|\bnpx \|\bnode " web/package.json web/scripts .github/workflows

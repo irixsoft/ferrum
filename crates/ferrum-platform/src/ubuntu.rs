@@ -8,6 +8,13 @@ pub const KEYRING_DIR: &str = "/etc/apt/keyrings";
 pub const SOURCES_DIR: &str = "/etc/apt/sources.list.d";
 pub const SYSCTL_FILE: &str = "/etc/sysctl.d/99-ferrum.conf";
 pub const FSTAB: &str = "/etc/fstab";
+pub const SYSTEMD_UNIT_DIR: &str = "/etc/systemd/system";
+pub const NGINX_CUSTOM_DIR: &str = "/etc/nginx/ferrum-custom";
+const NOLOGIN: &str = "/usr/sbin/nologin";
+const CPUINFO: &str = "/proc/cpuinfo";
+
+const USERADD_EXISTS: i32 = 9;
+const USERDEL_MISSING: i32 = 6;
 
 const APT_ENV: [(&str, &str); 2] = [
     ("DEBIAN_FRONTEND", "noninteractive"),
@@ -36,6 +43,28 @@ pub fn upsert_conf_line(existing: &str, key: &str, value: &str) -> String {
     let mut text = out.join("\n");
     text.push('\n');
     text
+}
+
+pub fn cpu_flags_have(cpuinfo: &str, flag: &str) -> bool {
+    cpuinfo
+        .lines()
+        .filter(|l| l.starts_with("flags"))
+        .any(|l| l.split_whitespace().any(|f| f == flag))
+}
+
+fn tolerate(result: Result<String, PlatformError>, exit: i32) -> Result<(), PlatformError> {
+    match result {
+        Ok(_) => Ok(()),
+        Err(PlatformError::Command { code, .. }) if code == exit => Ok(()),
+        Err(e) => Err(e),
+    }
+}
+
+fn ignore_missing(result: std::io::Result<()>) -> Result<(), PlatformError> {
+    match result {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        other => Ok(other?),
+    }
 }
 
 fn atomic_write(path: &Path, contents: &str, mode: u32) -> Result<(), PlatformError> {
@@ -101,6 +130,82 @@ impl Platform for Ubuntu {
 
     fn write_file(&self, path: &Path, contents: &str, mode: u32) -> Result<(), PlatformError> {
         atomic_write(path, contents, mode)
+    }
+
+    fn remove_file(&self, path: &Path) -> Result<(), PlatformError> {
+        ignore_missing(std::fs::remove_file(path))
+    }
+
+    fn make_dirs(&self, path: &Path, mode: u32) -> Result<(), PlatformError> {
+        std::fs::create_dir_all(path)?;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode))?;
+        Ok(())
+    }
+
+    fn remove_tree(&self, path: &Path) -> Result<(), PlatformError> {
+        ignore_missing(std::fs::remove_dir_all(path))
+    }
+
+    fn chown_tree(&self, path: &Path, user: &str) -> Result<(), PlatformError> {
+        let owner = format!("{user}:{user}");
+        exec::run(&["chown", "-R", &owner, &path.to_string_lossy()]).map(|_| ())
+    }
+
+    fn create_system_user(&self, name: &str, home: &Path) -> Result<(), PlatformError> {
+        let home = home.to_string_lossy();
+        tolerate(
+            exec::run(&[
+                "useradd",
+                "--system",
+                "--home-dir",
+                &home,
+                "--no-create-home",
+                "--shell",
+                NOLOGIN,
+                "--user-group",
+                name,
+            ]),
+            USERADD_EXISTS,
+        )
+    }
+
+    fn remove_system_user(&self, name: &str) -> Result<(), PlatformError> {
+        tolerate(exec::run(&["userdel", name]), USERDEL_MISSING)
+    }
+
+    fn extract_tar_gz(
+        &self,
+        archive: &[u8],
+        dest: &Path,
+        strip_components: u32,
+    ) -> Result<(), PlatformError> {
+        Ok(crate::archive::extract_tar_gz(
+            archive,
+            dest,
+            strip_components,
+        )?)
+    }
+
+    fn extract_zip(&self, archive: &[u8], dest: &Path) -> Result<(), PlatformError> {
+        Ok(crate::archive::extract_zip(archive, dest)?)
+    }
+
+    fn run_installer(
+        &self,
+        script: &Path,
+        args: &[&str],
+        env: &[(&str, &str)],
+    ) -> Result<String, PlatformError> {
+        let script = script.to_string_lossy();
+        let mut argv = vec!["bash", &script];
+        argv.extend_from_slice(args);
+        exec::run_env(&argv, env)
+    }
+
+    fn cpu_has(&self, flag: &str) -> bool {
+        std::fs::read_to_string(CPUINFO)
+            .map(|text| cpu_flags_have(&text, flag))
+            .unwrap_or(false)
     }
 
     fn nginx_test(&self) -> Result<(), PlatformError> {
@@ -181,6 +286,37 @@ mod tests {
         let first = upsert_conf_line("", "vm.swappiness", "10");
         let second = upsert_conf_line(&first, "vm.swappiness", "20");
         assert_eq!(second, "vm.swappiness = 20\n");
+    }
+
+    #[test]
+    fn cpu_flags_are_matched_whole() {
+        let info = "processor\t: 0\nflags\t\t: fpu sse4_2 avx avx2 sha_ni\n";
+        assert!(cpu_flags_have(info, "avx2"));
+        assert!(!cpu_flags_have(info, "avx512f"));
+        assert!(!cpu_flags_have(info, "av"));
+    }
+
+    #[test]
+    fn an_existing_user_is_not_an_error_but_other_failures_are() {
+        let exists = Err(PlatformError::Command {
+            cmd: "useradd".into(),
+            code: USERADD_EXISTS,
+            stderr: "already exists".into(),
+        });
+        assert!(tolerate(exists, USERADD_EXISTS).is_ok());
+        let syntax = Err(PlatformError::Command {
+            cmd: "useradd".into(),
+            code: 2,
+            stderr: "invalid".into(),
+        });
+        assert!(tolerate(syntax, USERADD_EXISTS).is_err());
+    }
+
+    #[test]
+    fn removing_what_is_already_gone_succeeds() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(Ubuntu.remove_file(&dir.path().join("nope")).is_ok());
+        assert!(Ubuntu.remove_tree(&dir.path().join("nope")).is_ok());
     }
 
     #[test]

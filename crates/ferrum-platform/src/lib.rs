@@ -1,3 +1,4 @@
+pub mod archive;
 pub mod detect;
 pub mod exec;
 pub mod fake;
@@ -31,6 +32,7 @@ pub enum ServiceAction {
     Reload,
     Enable,
     EnableNow,
+    Disable,
     DaemonReload,
 }
 
@@ -43,6 +45,7 @@ impl ServiceAction {
             Self::Reload => "reload",
             Self::Enable => "enable",
             Self::EnableNow => "enable-now",
+            Self::Disable => "disable",
             Self::DaemonReload => "daemon-reload",
         }
     }
@@ -55,6 +58,26 @@ pub trait Platform: Send + Sync {
     fn service(&self, action: ServiceAction, unit: &str) -> Result<(), PlatformError>;
     fn service_is_active(&self, unit: &str) -> bool;
     fn write_file(&self, path: &Path, contents: &str, mode: u32) -> Result<(), PlatformError>;
+    fn remove_file(&self, path: &Path) -> Result<(), PlatformError>;
+    fn make_dirs(&self, path: &Path, mode: u32) -> Result<(), PlatformError>;
+    fn remove_tree(&self, path: &Path) -> Result<(), PlatformError>;
+    fn chown_tree(&self, path: &Path, user: &str) -> Result<(), PlatformError>;
+    fn create_system_user(&self, name: &str, home: &Path) -> Result<(), PlatformError>;
+    fn remove_system_user(&self, name: &str) -> Result<(), PlatformError>;
+    fn extract_tar_gz(
+        &self,
+        archive: &[u8],
+        dest: &Path,
+        strip_components: u32,
+    ) -> Result<(), PlatformError>;
+    fn extract_zip(&self, archive: &[u8], dest: &Path) -> Result<(), PlatformError>;
+    fn run_installer(
+        &self,
+        script: &Path,
+        args: &[&str],
+        env: &[(&str, &str)],
+    ) -> Result<String, PlatformError>;
+    fn cpu_has(&self, flag: &str) -> bool;
     fn nginx_test(&self) -> Result<(), PlatformError>;
     fn total_memory_kb(&self) -> Result<u64, PlatformError>;
     fn swap_total_kb(&self) -> Result<u64, PlatformError>;

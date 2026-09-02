@@ -9,6 +9,7 @@ struct Inner {
     files: HashMap<String, String>,
     fail_next: Option<String>,
     active: Vec<String>,
+    cpu_flags: Vec<String>,
     memory_kb: u64,
     swap_kb: u64,
 }
@@ -55,6 +56,26 @@ impl FakePlatform {
 
     pub fn written(&self, path: &str) -> Option<String> {
         self.inner.lock().unwrap().files.get(path).cloned()
+    }
+
+    pub fn removed(&self, path: &str) -> bool {
+        let inner = self.inner.lock().unwrap();
+        !inner.files.contains_key(path)
+            && inner
+                .calls
+                .iter()
+                .any(|c| c == &format!("remove_file {path}") || c == &format!("remove_tree {path}"))
+    }
+
+    pub fn calls_matching(&self, prefix: &str) -> Vec<String> {
+        self.calls()
+            .into_iter()
+            .filter(|c| c.starts_with(prefix))
+            .collect()
+    }
+
+    pub fn set_cpu_flag(&self, flag: &str) {
+        self.inner.lock().unwrap().cpu_flags.push(flag.to_string());
     }
 
     fn record(&self, call: String) -> Result<(), PlatformError> {
@@ -105,6 +126,88 @@ impl Platform for FakePlatform {
             .files
             .insert(p, contents.to_string());
         Ok(())
+    }
+
+    fn remove_file(&self, path: &Path) -> Result<(), PlatformError> {
+        let p = path.to_string_lossy().to_string();
+        self.record(format!("remove_file {p}"))?;
+        self.inner.lock().unwrap().files.remove(&p);
+        Ok(())
+    }
+
+    fn make_dirs(&self, path: &Path, mode: u32) -> Result<(), PlatformError> {
+        self.record(format!("make_dirs {} {mode:o}", path.to_string_lossy()))
+    }
+
+    fn remove_tree(&self, path: &Path) -> Result<(), PlatformError> {
+        let p = path.to_string_lossy().to_string();
+        self.record(format!("remove_tree {p}"))?;
+        self.inner
+            .lock()
+            .unwrap()
+            .files
+            .retain(|k, _| !k.starts_with(&format!("{p}/")));
+        Ok(())
+    }
+
+    fn chown_tree(&self, path: &Path, user: &str) -> Result<(), PlatformError> {
+        self.record(format!("chown_tree {} {user}", path.to_string_lossy()))
+    }
+
+    fn create_system_user(&self, name: &str, home: &Path) -> Result<(), PlatformError> {
+        self.record(format!(
+            "create_system_user {name} {}",
+            home.to_string_lossy()
+        ))
+    }
+
+    fn remove_system_user(&self, name: &str) -> Result<(), PlatformError> {
+        self.record(format!("remove_system_user {name}"))
+    }
+
+    fn extract_tar_gz(
+        &self,
+        archive: &[u8],
+        dest: &Path,
+        strip_components: u32,
+    ) -> Result<(), PlatformError> {
+        self.record(format!(
+            "extract_tar_gz {} {strip_components}",
+            dest.to_string_lossy()
+        ))?;
+        Ok(crate::archive::extract_tar_gz(
+            archive,
+            dest,
+            strip_components,
+        )?)
+    }
+
+    fn extract_zip(&self, archive: &[u8], dest: &Path) -> Result<(), PlatformError> {
+        self.record(format!("extract_zip {}", dest.to_string_lossy()))?;
+        Ok(crate::archive::extract_zip(archive, dest)?)
+    }
+
+    fn run_installer(
+        &self,
+        script: &Path,
+        args: &[&str],
+        _env: &[(&str, &str)],
+    ) -> Result<String, PlatformError> {
+        self.record(format!(
+            "run_installer {} {}",
+            script.to_string_lossy(),
+            args.join(" ")
+        ))?;
+        Ok(String::new())
+    }
+
+    fn cpu_has(&self, flag: &str) -> bool {
+        self.inner
+            .lock()
+            .unwrap()
+            .cpu_flags
+            .iter()
+            .any(|f| f == flag)
     }
 
     fn nginx_test(&self) -> Result<(), PlatformError> {
@@ -165,6 +268,44 @@ mod tests {
         p.write_file(Path::new("/etc/nginx/x.conf"), "server {}", 0o644)
             .unwrap();
         assert_eq!(p.written("/etc/nginx/x.conf").as_deref(), Some("server {}"));
+    }
+
+    #[test]
+    fn a_system_user_is_recorded_with_its_home_and_can_be_made_to_fail() {
+        let p = FakePlatform::new();
+        p.create_system_user("ferrum-ledger", Path::new("/var/lib/ferrum/apps/ledger"))
+            .unwrap();
+        assert_eq!(
+            p.calls(),
+            vec!["create_system_user ferrum-ledger /var/lib/ferrum/apps/ledger".to_string()]
+        );
+        p.fail_next("create_system_user");
+        assert!(matches!(
+            p.create_system_user("x", Path::new("/x")),
+            Err(PlatformError::Command { .. })
+        ));
+    }
+
+    #[test]
+    fn removing_a_written_file_counts_as_removed() {
+        let p = FakePlatform::new();
+        p.write_file(Path::new("/etc/nginx/conf.d/a.conf"), "x", 0o644)
+            .unwrap();
+        assert!(!p.removed("/etc/nginx/conf.d/a.conf"));
+        p.remove_file(Path::new("/etc/nginx/conf.d/a.conf"))
+            .unwrap();
+        assert!(p.removed("/etc/nginx/conf.d/a.conf"));
+        assert!(!p.removed("/never/written"));
+    }
+
+    #[test]
+    fn the_fake_really_extracts_so_callers_can_check_what_landed() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = FakePlatform::new();
+        let archive = crate::archive::tests::tar_gz(&[("top/bin/node", b"#!")]);
+        p.extract_tar_gz(&archive, dir.path(), 1).unwrap();
+        assert!(dir.path().join("bin/node").exists());
+        assert_eq!(p.calls_matching("extract_tar_gz").len(), 1);
     }
 
     #[test]
