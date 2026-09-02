@@ -1,7 +1,7 @@
 use crate::exec::{Exit, Spawn, Stream};
 use crate::{
-    CgroupStats, DiskUsage, JournalLine, MemInfo, Platform, PlatformError, ProcStat, RunSpec,
-    ServiceAction, exec,
+    Ban, CgroupStats, DiskUsage, FirewallRule, JournalLine, KeyFingerprint, MemInfo, Platform,
+    PlatformError, ProcStat, RunSpec, ServiceAction, Sshd, exec,
 };
 use std::io::{Read, Seek, SeekFrom};
 use std::os::unix::fs::PermissionsExt;
@@ -26,6 +26,17 @@ pub const REDIS_KEY_URL: &str = "https://packages.redis.io/gpg";
 pub const GIT: &str = "/usr/bin/git";
 pub const PG_USER: &str = "postgres";
 pub const NGINX_LOG_DIR: &str = "/var/log/nginx";
+pub const FAIL2BAN_UNIT: &str = "fail2ban";
+pub const FAIL2BAN_JAIL_LOCAL: &str = "/etc/fail2ban/jail.d/ferrum.local";
+pub const SSH_UNIT: &str = "ssh";
+/// Sorts before cloud-init's `50-cloud-init.conf`; sshd keeps the first value it reads.
+pub const SSHD_DROPIN: &str = "/etc/ssh/sshd_config.d/10-ferrum.conf";
+pub const APT_AUTO_UPGRADES: &str = "/etc/apt/apt.conf.d/20auto-upgrades";
+pub const ROOT_AUTHORIZED_KEYS: &str = "/root/.ssh/authorized_keys";
+const HOME_DIR: &str = "/home";
+const AUTHORIZED_KEYS: &str = ".ssh/authorized_keys";
+const UFW_INACTIVE: &str = "Status: inactive";
+const DEFAULT_SSH_PORT: u16 = 22;
 const GIT_ENV: [(&str, &str); 1] = [("GIT_TERMINAL_PROMPT", "0")];
 const NOLOGIN: &str = "/usr/sbin/nologin";
 const CPUINFO: &str = "/proc/cpuinfo";
@@ -285,6 +296,105 @@ pub fn tail_lines<R: Read + Seek>(mut file: R, lines: usize) -> Result<Vec<Strin
     Ok(out)
 }
 
+/// `ufw status numbered` rows: `[ 1] 22/tcp   ALLOW IN   Anywhere`; the `(v6)` twins are dropped.
+pub fn parse_ufw_status(text: &str) -> Option<Vec<FirewallRule>> {
+    if text.lines().any(|l| l.trim() == UFW_INACTIVE) {
+        return None;
+    }
+    let rules = text
+        .lines()
+        .filter_map(|line| {
+            let rest = line.trim_start().strip_prefix('[')?;
+            let (_, rest) = rest.split_once(']')?;
+            let cells: Vec<&str> = rest
+                .split("  ")
+                .map(str::trim)
+                .filter(|c| !c.is_empty())
+                .collect();
+            let [port, action, from, ..] = cells.as_slice() else {
+                return None;
+            };
+            if port.ends_with("(v6)") {
+                return None;
+            }
+            Some(FirewallRule {
+                port: port.to_string(),
+                action: action
+                    .split_whitespace()
+                    .next()
+                    .unwrap_or("")
+                    .to_ascii_lowercase(),
+                from: from.to_string(),
+            })
+        })
+        .collect();
+    Some(rules)
+}
+
+pub fn parse_fail2ban_jails(text: &str) -> Vec<String> {
+    text.lines()
+        .find_map(|l| l.split_once("Jail list:"))
+        .map(|(_, list)| {
+            list.split(',')
+                .map(str::trim)
+                .filter(|j| !j.is_empty())
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// `get <jail> banip --with-time` lines: `IP \tYYYY-MM-DD HH:MM:SS + secs = YYYY-MM-DD HH:MM:SS`.
+pub fn parse_fail2ban_banip(text: &str, jail: &str) -> Vec<Ban> {
+    text.lines()
+        .filter_map(|line| {
+            let mut fields = line.split_whitespace();
+            let ip = fields.next()?;
+            let banned_at = match (fields.next(), fields.next()) {
+                (Some(date), Some(time)) if date.len() == 10 => Some(format!("{date}T{time}Z")),
+                _ => None,
+            };
+            Some(Ban {
+                ip: ip.to_string(),
+                jail: jail.to_string(),
+                banned_at,
+            })
+        })
+        .collect()
+}
+
+/// `sshd -T` prints effective values in lowercase; the first `port` wins, as it does for sshd.
+pub fn parse_sshd_t(text: &str) -> Sshd {
+    let value = |key: &str| {
+        text.lines()
+            .find_map(|l| l.strip_prefix(key)?.strip_prefix(' '))
+            .map(str::trim)
+    };
+    Sshd {
+        port: value("port")
+            .and_then(|p| p.parse().ok())
+            .unwrap_or(DEFAULT_SSH_PORT),
+        password_auth: value("passwordauthentication") != Some("no"),
+    }
+}
+
+/// `ssh-keygen -lf` lines: `256 SHA256:… comment (ED25519)`.
+pub fn parse_key_fingerprints(text: &str) -> Vec<KeyFingerprint> {
+    text.lines()
+        .filter_map(|line| {
+            let (bits, rest) = line.trim().split_once(' ')?;
+            let (fingerprint, rest) = rest.split_once(' ')?;
+            let (comment, kind) = rest.rsplit_once(" (")?;
+            Some(KeyFingerprint {
+                bits: bits.parse().ok()?,
+                fingerprint: fingerprint.to_string(),
+                comment: comment.to_string(),
+                kind: kind.trim_end_matches(')').to_string(),
+            })
+        })
+        .collect()
+}
+
 pub fn redact_url(text: &str, url: &str) -> String {
     match url.split_once('@') {
         Some((credentials, _)) if credentials.contains("://") => {
@@ -316,6 +426,14 @@ fn tolerate(result: Result<String, PlatformError>, exit: i32) -> Result<(), Plat
     match result {
         Ok(_) => Ok(()),
         Err(PlatformError::Command { code, .. }) if code == exit => Ok(()),
+        Err(e) => Err(e),
+    }
+}
+
+fn absent_tool(result: Result<String, PlatformError>) -> Result<Option<String>, PlatformError> {
+    match result {
+        Ok(out) => Ok(Some(out)),
+        Err(PlatformError::Io(e)) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(e) => Err(e),
     }
 }
@@ -842,6 +960,60 @@ impl Platform for Ubuntu {
             0o644,
         )
     }
+
+    fn ufw_status(&self) -> Result<Option<Vec<FirewallRule>>, PlatformError> {
+        Ok(absent_tool(exec::run(&["ufw", "status", "numbered"]))?
+            .and_then(|out| parse_ufw_status(&out)))
+    }
+
+    fn ufw_apply(&self, allow: &[&str], enable: bool) -> Result<(), PlatformError> {
+        exec::run(&["ufw", "default", "deny", "incoming"])?;
+        exec::run(&["ufw", "default", "allow", "outgoing"])?;
+        for rule in allow {
+            exec::run(&["ufw", "allow", rule])?;
+        }
+        if enable {
+            exec::run(&["ufw", "--force", "enable"])?;
+        }
+        Ok(())
+    }
+
+    fn fail2ban_jails(&self) -> Result<Vec<String>, PlatformError> {
+        let out = exec::run(&["fail2ban-client", "status"])?;
+        Ok(parse_fail2ban_jails(&out))
+    }
+
+    fn fail2ban_bans(&self, jail: &str) -> Result<Vec<Ban>, PlatformError> {
+        let out = exec::run(&["fail2ban-client", "get", jail, "banip", "--with-time"])?;
+        Ok(parse_fail2ban_banip(&out, jail))
+    }
+
+    fn fail2ban_unban(&self, jail: &str, ip: &str) -> Result<(), PlatformError> {
+        exec::run(&["fail2ban-client", "set", jail, "unbanip", ip]).map(|_| ())
+    }
+
+    fn sshd_effective(&self) -> Result<Sshd, PlatformError> {
+        let out = exec::run(&["sshd", "-T"])?;
+        Ok(parse_sshd_t(&out))
+    }
+
+    fn sshd_test(&self) -> Result<(), PlatformError> {
+        exec::run(&["sshd", "-t"]).map(|_| ())
+    }
+
+    fn authorized_keys(&self) -> Result<Vec<KeyFingerprint>, PlatformError> {
+        let mut files = vec![PathBuf::from(ROOT_AUTHORIZED_KEYS)];
+        for home in self.list_dir(Path::new(HOME_DIR))? {
+            files.push(Path::new(HOME_DIR).join(home).join(AUTHORIZED_KEYS));
+        }
+        let mut keys = Vec::new();
+        for file in files.iter().filter(|f| f.is_file()) {
+            if let Ok(out) = exec::run(&["ssh-keygen", "-lf", &file.to_string_lossy()]) {
+                keys.extend(parse_key_fingerprints(&out));
+            }
+        }
+        Ok(keys)
+    }
 }
 
 #[cfg(test)]
@@ -1124,6 +1296,115 @@ mod tests {
                     .is_empty()
             );
         }
+    }
+
+    const UFW_NUMBERED: &str = "Status: active\n\n     To                         Action      From\n     --                         ------      ----\n[ 1] 2222/tcp                   ALLOW IN    Anywhere\n[ 2] 80/tcp                     ALLOW IN    Anywhere\n[ 3] 443/tcp                    ALLOW IN    Anywhere\n[ 4] 2222/tcp (v6)              ALLOW IN    Anywhere (v6)\n[ 5] 80/tcp (v6)                ALLOW IN    Anywhere (v6)\n[ 6] 443/tcp (v6)               ALLOW IN    Anywhere (v6)\n\n";
+
+    #[test]
+    fn ufw_rules_are_read_once_each_and_an_inactive_firewall_is_none() {
+        let rules = parse_ufw_status(UFW_NUMBERED).unwrap();
+        assert_eq!(rules.len(), 3);
+        assert_eq!(
+            rules[0],
+            FirewallRule {
+                port: "2222/tcp".into(),
+                action: "allow".into(),
+                from: "Anywhere".into()
+            }
+        );
+        assert_eq!(rules[2].port, "443/tcp");
+        assert_eq!(parse_ufw_status("Status: inactive\n"), None);
+        assert_eq!(parse_ufw_status("Status: active\n\n"), Some(Vec::new()));
+    }
+
+    const F2B_STATUS: &str =
+        "Status\n|- Number of jail:\t2\n`- Jail list:\tnginx-botsearch, sshd\n";
+    const F2B_BANIP: &str = "45.148.10.87 \t2026-09-02 10:12:33 + 3600 = 2026-09-02 11:12:33\n104.244.76.13 \t2026-09-02 10:40:01 + 3600 = 2026-09-02 11:40:01\n";
+
+    #[test]
+    fn fail2ban_output_yields_jails_and_timed_bans() {
+        assert_eq!(
+            parse_fail2ban_jails(F2B_STATUS),
+            vec!["nginx-botsearch", "sshd"]
+        );
+        assert!(
+            parse_fail2ban_jails("Status\n|- Number of jail:\t0\n`- Jail list:\t\n").is_empty()
+        );
+        let bans = parse_fail2ban_banip(F2B_BANIP, "sshd");
+        assert_eq!(bans.len(), 2);
+        assert_eq!(bans[0].ip, "45.148.10.87");
+        assert_eq!(bans[0].jail, "sshd");
+        assert_eq!(bans[0].banned_at.as_deref(), Some("2026-09-02T10:12:33Z"));
+        assert!(parse_fail2ban_banip("\n", "sshd").is_empty());
+        let bare = parse_fail2ban_banip("1.2.3.4\n", "sshd");
+        assert_eq!(bare[0].banned_at, None);
+    }
+
+    #[test]
+    fn sshd_t_gives_the_effective_port_and_password_setting() {
+        let text = "port 2222\naddressfamily any\nlistenaddress [::]:2222\npasswordauthentication no\nkbdinteractiveauthentication no\n";
+        assert_eq!(
+            parse_sshd_t(text),
+            Sshd {
+                port: 2222,
+                password_auth: false
+            }
+        );
+        assert_eq!(
+            parse_sshd_t("port 22\npasswordauthentication yes\n"),
+            Sshd {
+                port: 22,
+                password_auth: true
+            }
+        );
+        assert_eq!(parse_sshd_t("").port, 22);
+        assert!(parse_sshd_t("").password_auth);
+    }
+
+    #[test]
+    fn key_fingerprints_keep_a_spaced_comment_and_the_kind() {
+        let text = "256 SHA256:puaulzlf91d/plw7qIdlrGgINNs66sk8c0vTfL1DAIs saeed@laptop (ED25519)\n2048 SHA256:W/u0nQg4RAkyIUjkJK1QdDUgARlzETA3K5m1OCIWuts no comment (RSA)\n";
+        let keys = parse_key_fingerprints(text);
+        assert_eq!(keys.len(), 2);
+        assert_eq!(keys[0].bits, 256);
+        assert_eq!(keys[0].kind, "ED25519");
+        assert_eq!(keys[0].comment, "saeed@laptop");
+        assert!(keys[0].fingerprint.starts_with("SHA256:"));
+        assert_eq!(keys[1].comment, "no comment");
+        assert_eq!(keys[1].kind, "RSA");
+        assert!(parse_key_fingerprints("nope: No such file or directory\n").is_empty());
+    }
+
+    #[test]
+    fn the_key_and_sshd_tools_answer_on_this_machine() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("k");
+        let made = exec::run(&[
+            "ssh-keygen",
+            "-q",
+            "-t",
+            "ed25519",
+            "-N",
+            "",
+            "-C",
+            "ferrum test",
+            "-f",
+            &file.to_string_lossy(),
+        ]);
+        if made.is_err() {
+            return;
+        }
+        let out = exec::run(&[
+            "ssh-keygen",
+            "-lf",
+            &file.with_extension("pub").to_string_lossy(),
+        ])
+        .unwrap();
+        let keys = parse_key_fingerprints(&out);
+        assert_eq!(keys.len(), 1);
+        assert_eq!(keys[0].comment, "ferrum test");
+        assert_eq!(keys[0].kind, "ED25519");
+        assert!(matches!(Ubuntu.ufw_status(), Ok(None) | Err(_)));
     }
 
     #[test]

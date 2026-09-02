@@ -1,7 +1,7 @@
 use crate::exec::{Exit, Stream};
 use crate::{
-    CgroupStats, DiskUsage, JournalLine, MemInfo, Platform, PlatformError, ProcStat, RunSpec,
-    ServiceAction,
+    Ban, CgroupStats, DiskUsage, FirewallRule, JournalLine, KeyFingerprint, MemInfo, Platform,
+    PlatformError, ProcStat, RunSpec, ServiceAction, Sshd,
 };
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -40,6 +40,11 @@ struct Inner {
     net: (u64, u64),
     disk_usage: DiskUsage,
     follows_ended: usize,
+    ufw: Option<Vec<FirewallRule>>,
+    jails: Vec<String>,
+    bans: Vec<Ban>,
+    sshd: Sshd,
+    keys: Vec<KeyFingerprint>,
 }
 
 pub struct FakePlatform {
@@ -84,6 +89,10 @@ impl FakePlatform {
                 disk_usage: DiskUsage {
                     used_bytes: 20 * 1024 * 1024 * 1024,
                     total_bytes: 80 * 1024 * 1024 * 1024,
+                },
+                sshd: Sshd {
+                    port: 22,
+                    password_auth: true,
                 },
                 ..Inner::default()
             }),
@@ -137,6 +146,37 @@ impl FakePlatform {
 
     pub fn follows_ended(&self) -> usize {
         self.inner.lock().unwrap().follows_ended
+    }
+
+    pub fn set_ufw(&self, rules: Option<Vec<FirewallRule>>) {
+        self.inner.lock().unwrap().ufw = rules;
+    }
+
+    pub fn set_jails(&self, jails: &[&str]) {
+        self.inner.lock().unwrap().jails = jails.iter().map(|j| j.to_string()).collect();
+    }
+
+    pub fn ban(&self, jail: &str, ip: &str) {
+        self.inner.lock().unwrap().bans.push(Ban {
+            ip: ip.to_string(),
+            jail: jail.to_string(),
+            banned_at: Some("2026-09-02T10:12:33Z".into()),
+        });
+    }
+
+    pub fn set_sshd(&self, sshd: Sshd) {
+        self.inner.lock().unwrap().sshd = sshd;
+    }
+
+    pub fn add_key(&self, comment: &str) {
+        let mut inner = self.inner.lock().unwrap();
+        let n = inner.keys.len();
+        inner.keys.push(KeyFingerprint {
+            bits: 256,
+            fingerprint: format!("SHA256:fake{n}"),
+            comment: comment.to_string(),
+            kind: "ED25519".into(),
+        });
     }
 
     pub fn script_run(&self, contains: &str, lines: &[&str], exit: Exit) {
@@ -638,6 +678,72 @@ impl Platform for FakePlatform {
     fn set_sysctl(&self, key: &str, value: &str) -> Result<(), PlatformError> {
         self.record(format!("set_sysctl {key} {value}"))
     }
+
+    fn ufw_status(&self) -> Result<Option<Vec<FirewallRule>>, PlatformError> {
+        self.record("ufw_status".into())?;
+        Ok(self.inner.lock().unwrap().ufw.clone())
+    }
+
+    fn ufw_apply(&self, allow: &[&str], enable: bool) -> Result<(), PlatformError> {
+        self.record(format!(
+            "ufw_apply {}{}",
+            allow.join(" "),
+            if enable { " enable" } else { "" }
+        ))?;
+        let rules = allow
+            .iter()
+            .map(|port| FirewallRule {
+                port: port.to_string(),
+                action: "allow".into(),
+                from: "Anywhere".into(),
+            })
+            .collect();
+        let mut inner = self.inner.lock().unwrap();
+        if enable || inner.ufw.is_some() {
+            inner.ufw = Some(rules);
+        }
+        Ok(())
+    }
+
+    fn fail2ban_jails(&self) -> Result<Vec<String>, PlatformError> {
+        self.record("fail2ban_jails".into())?;
+        Ok(self.inner.lock().unwrap().jails.clone())
+    }
+
+    fn fail2ban_bans(&self, jail: &str) -> Result<Vec<Ban>, PlatformError> {
+        self.record(format!("fail2ban_bans {jail}"))?;
+        let inner = self.inner.lock().unwrap();
+        Ok(inner
+            .bans
+            .iter()
+            .filter(|b| b.jail == jail)
+            .cloned()
+            .collect())
+    }
+
+    fn fail2ban_unban(&self, jail: &str, ip: &str) -> Result<(), PlatformError> {
+        self.record(format!("fail2ban_unban {jail} {ip}"))?;
+        self.inner
+            .lock()
+            .unwrap()
+            .bans
+            .retain(|b| !(b.jail == jail && b.ip == ip));
+        Ok(())
+    }
+
+    fn sshd_effective(&self) -> Result<Sshd, PlatformError> {
+        self.record("sshd_effective".into())?;
+        Ok(self.inner.lock().unwrap().sshd)
+    }
+
+    fn sshd_test(&self) -> Result<(), PlatformError> {
+        self.record("sshd_test".into())
+    }
+
+    fn authorized_keys(&self) -> Result<Vec<KeyFingerprint>, PlatformError> {
+        self.record("authorized_keys".into())?;
+        Ok(self.inner.lock().unwrap().keys.clone())
+    }
 }
 
 #[cfg(test)]
@@ -877,6 +983,43 @@ mod tests {
         worker.join().unwrap().unwrap();
         assert_eq!(*seen.lock().unwrap(), vec!["boom", "later"]);
         assert_eq!(p.follows_ended(), 1);
+    }
+
+    #[test]
+    fn the_hardening_tools_are_scripted_and_recorded() {
+        let p = FakePlatform::new();
+        assert_eq!(p.ufw_status().unwrap(), None);
+        p.ufw_apply(&["2222/tcp", "80/tcp"], false).unwrap();
+        assert_eq!(p.ufw_status().unwrap(), None, "no enable, still inactive");
+        p.ufw_apply(&["2222/tcp", "80/tcp"], true).unwrap();
+        let rules = p.ufw_status().unwrap().unwrap();
+        assert_eq!(rules.len(), 2);
+        assert_eq!(rules[0].port, "2222/tcp");
+        assert!(
+            p.calls()
+                .contains(&"ufw_apply 2222/tcp 80/tcp enable".to_string())
+        );
+
+        assert!(p.fail2ban_jails().unwrap().is_empty());
+        p.set_jails(&["sshd", "nginx-botsearch"]);
+        p.ban("sshd", "45.148.10.87");
+        p.ban("nginx-botsearch", "185.220.101.4");
+        assert_eq!(p.fail2ban_bans("sshd").unwrap().len(), 1);
+        p.fail2ban_unban("sshd", "45.148.10.87").unwrap();
+        assert!(p.fail2ban_bans("sshd").unwrap().is_empty());
+        assert_eq!(p.fail2ban_bans("nginx-botsearch").unwrap().len(), 1);
+
+        assert_eq!(p.sshd_effective().unwrap().port, 22);
+        p.set_sshd(Sshd {
+            port: 2222,
+            password_auth: false,
+        });
+        assert!(!p.sshd_effective().unwrap().password_auth);
+        assert!(p.authorized_keys().unwrap().is_empty());
+        p.add_key("saeed@laptop");
+        assert_eq!(p.authorized_keys().unwrap()[0].comment, "saeed@laptop");
+        p.fail_next("sshd_test");
+        assert!(p.sshd_test().is_err());
     }
 
     #[test]

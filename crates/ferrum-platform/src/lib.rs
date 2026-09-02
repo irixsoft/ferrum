@@ -62,6 +62,34 @@ pub struct DiskUsage {
     pub total_bytes: u64,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct FirewallRule {
+    pub port: String,
+    pub action: String,
+    pub from: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct Ban {
+    pub ip: String,
+    pub jail: String,
+    pub banned_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize)]
+pub struct Sshd {
+    pub port: u16,
+    pub password_auth: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct KeyFingerprint {
+    pub bits: u32,
+    pub fingerprint: String,
+    pub comment: String,
+    pub kind: String,
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum PlatformError {
     #[error("{cmd} exited with {code}: {stderr}")]
@@ -80,6 +108,7 @@ pub enum ServiceAction {
     Stop,
     Restart,
     Reload,
+    ReloadOrRestart,
     Enable,
     EnableNow,
     Disable,
@@ -94,6 +123,7 @@ impl ServiceAction {
             Self::Stop => "stop",
             Self::Restart => "restart",
             Self::Reload => "reload",
+            Self::ReloadOrRestart => "reload-or-restart",
             Self::Enable => "enable",
             Self::EnableNow => "enable-now",
             Self::Disable => "disable",
@@ -182,4 +212,14 @@ pub trait Platform: Send + Sync {
     fn swap_total_kb(&self) -> Result<u64, PlatformError>;
     fn create_swapfile(&self, path: &Path, size_mb: u64) -> Result<(), PlatformError>;
     fn set_sysctl(&self, key: &str, value: &str) -> Result<(), PlatformError>;
+    /// `None` while ufw is inactive or not installed.
+    fn ufw_status(&self) -> Result<Option<Vec<FirewallRule>>, PlatformError>;
+    /// Default deny in, allow out, then one `allow` per rule in the order given, then enable.
+    fn ufw_apply(&self, allow: &[&str], enable: bool) -> Result<(), PlatformError>;
+    fn fail2ban_jails(&self) -> Result<Vec<String>, PlatformError>;
+    fn fail2ban_bans(&self, jail: &str) -> Result<Vec<Ban>, PlatformError>;
+    fn fail2ban_unban(&self, jail: &str, ip: &str) -> Result<(), PlatformError>;
+    fn sshd_effective(&self) -> Result<Sshd, PlatformError>;
+    fn sshd_test(&self) -> Result<(), PlatformError>;
+    fn authorized_keys(&self) -> Result<Vec<KeyFingerprint>, PlatformError>;
 }
