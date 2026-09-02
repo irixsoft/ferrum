@@ -12,6 +12,9 @@ struct Inner {
     cpu_flags: Vec<String>,
     memory_kb: u64,
     swap_kb: u64,
+    sql: Vec<String>,
+    answers: Vec<(String, String)>,
+    postgres_major: Option<u32>,
 }
 
 pub struct FakePlatform {
@@ -76,6 +79,22 @@ impl FakePlatform {
 
     pub fn set_cpu_flag(&self, flag: &str) {
         self.inner.lock().unwrap().cpu_flags.push(flag.to_string());
+    }
+
+    pub fn sql(&self) -> Vec<String> {
+        self.inner.lock().unwrap().sql.clone()
+    }
+
+    pub fn answer_sql(&self, contains: &str, output: &str) {
+        self.inner
+            .lock()
+            .unwrap()
+            .answers
+            .push((contains.to_string(), output.to_string()));
+    }
+
+    pub fn set_postgres_major(&self, major: u32) {
+        self.inner.lock().unwrap().postgres_major = Some(major);
     }
 
     fn record(&self, call: String) -> Result<(), PlatformError> {
@@ -230,6 +249,22 @@ impl Platform for FakePlatform {
             .any(|f| f == flag)
     }
 
+    fn postgres_sql(&self, database: &str, sql: &str) -> Result<String, PlatformError> {
+        self.record(format!("postgres_sql {database} {sql}"))?;
+        let mut inner = self.inner.lock().unwrap();
+        inner.sql.push(sql.to_string());
+        Ok(inner
+            .answers
+            .iter()
+            .find(|(needle, _)| sql.contains(needle.as_str()))
+            .map(|(_, out)| out.clone())
+            .unwrap_or_default())
+    }
+
+    fn postgres_major_installed(&self) -> Option<u32> {
+        self.inner.lock().unwrap().postgres_major
+    }
+
     fn nginx_test(&self) -> Result<(), PlatformError> {
         self.record("nginx_test".to_string())
     }
@@ -326,6 +361,24 @@ mod tests {
         p.extract_tar_gz(&archive, dir.path(), 1).unwrap();
         assert!(dir.path().join("bin/node").exists());
         assert_eq!(p.calls_matching("extract_tar_gz").len(), 1);
+    }
+
+    #[test]
+    fn sql_is_recorded_verbatim_and_can_be_answered_or_failed() {
+        let p = FakePlatform::new();
+        p.answer_sql("SELECT 1", "1\n");
+        assert_eq!(p.postgres_sql("postgres", "SELECT 1;").unwrap(), "1\n");
+        assert_eq!(p.postgres_sql("postgres", "SELECT 2;").unwrap(), "");
+        assert_eq!(p.calls_matching("postgres_sql postgres").len(), 2);
+        assert_eq!(
+            p.sql(),
+            vec!["SELECT 1;".to_string(), "SELECT 2;".to_string()]
+        );
+        assert_eq!(p.postgres_major_installed(), None);
+        p.set_postgres_major(18);
+        assert_eq!(p.postgres_major_installed(), Some(18));
+        p.fail_next("DROP DATABASE");
+        assert!(p.postgres_sql("postgres", "DROP DATABASE \"x\";").is_err());
     }
 
     #[test]

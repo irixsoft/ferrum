@@ -12,6 +12,13 @@ pub const SYSTEMD_UNIT_DIR: &str = "/etc/systemd/system";
 pub const NGINX_CUSTOM_DIR: &str = "/etc/nginx/ferrum-custom";
 pub const SYSTEM_PATH: &str = "/usr/local/bin:/usr/bin:/bin";
 pub const SH: &str = "/bin/sh";
+pub const PG_CONF_DIR: &str = "/etc/postgresql";
+pub const PG_PORT: u16 = 5432;
+pub const PGDG_KEY_URL: &str = "https://www.postgresql.org/media/keys/ACCC4CF8.asc";
+pub const REDIS_SERVER: &str = "/usr/bin/redis-server";
+pub const REDIS_DISTRO_UNIT: &str = "redis-server";
+pub const REDIS_KEY_URL: &str = "https://packages.redis.io/gpg";
+const PG_USER: &str = "postgres";
 const NOLOGIN: &str = "/usr/sbin/nologin";
 const CPUINFO: &str = "/proc/cpuinfo";
 const OS_RELEASE: &str = "/etc/os-release";
@@ -31,6 +38,34 @@ pub struct Ubuntu;
 
 pub fn keyring_path(name: &str) -> PathBuf {
     Path::new(KEYRING_DIR).join(format!("{name}.asc"))
+}
+
+pub fn pg_conf_path(major: u32) -> PathBuf {
+    Path::new(PG_CONF_DIR).join(format!("{major}/main/conf.d/ferrum.conf"))
+}
+
+/// Debian's `postgresql.service` is an umbrella that does not forward `reload`; the cluster
+/// instance does.
+pub fn pg_cluster_unit(major: u32) -> String {
+    format!("postgresql@{major}-main")
+}
+
+pub fn pgdg_repo_line(codename: &str) -> String {
+    format!("https://apt.postgresql.org/pub/repos/apt {codename}-pgdg main")
+}
+
+pub fn redis_repo_line(codename: &str) -> String {
+    format!("https://packages.redis.io/deb {codename} main")
+}
+
+pub fn installed_pg_majors(
+    entries: impl Iterator<Item = String>,
+    has_main: impl Fn(u32) -> bool,
+) -> Option<u32> {
+    entries
+        .filter_map(|name| name.parse::<u32>().ok())
+        .filter(|major| has_main(*major))
+        .max()
 }
 
 pub fn parse_meminfo_kb(text: &str, field: &str) -> Option<u64> {
@@ -252,6 +287,41 @@ impl Platform for Ubuntu {
             .unwrap_or(false)
     }
 
+    fn postgres_sql(&self, database: &str, sql: &str) -> Result<String, PlatformError> {
+        exec::run_with_stdin(
+            &[
+                "runuser",
+                "-u",
+                PG_USER,
+                "--",
+                "psql",
+                "-X",
+                "-q",
+                "-A",
+                "-t",
+                "-v",
+                "ON_ERROR_STOP=1",
+                "-d",
+                database,
+            ],
+            sql,
+        )
+    }
+
+    fn postgres_major_installed(&self) -> Option<u32> {
+        let entries = std::fs::read_dir(PG_CONF_DIR).ok()?;
+        installed_pg_majors(
+            entries
+                .flatten()
+                .filter_map(|e| e.file_name().to_str().map(str::to_string)),
+            |major| {
+                Path::new(PG_CONF_DIR)
+                    .join(format!("{major}/main"))
+                    .is_dir()
+            },
+        )
+    }
+
     fn nginx_test(&self) -> Result<(), PlatformError> {
         exec::run(&["nginx", "-t"]).map(|_| ())
     }
@@ -368,6 +438,33 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         assert!(Ubuntu.remove_file(&dir.path().join("nope")).is_ok());
         assert!(Ubuntu.remove_tree(&dir.path().join("nope")).is_ok());
+    }
+
+    #[test]
+    fn repository_lines_and_cluster_paths_follow_the_codename_and_the_major() {
+        assert_eq!(
+            pgdg_repo_line("noble"),
+            "https://apt.postgresql.org/pub/repos/apt noble-pgdg main"
+        );
+        assert_eq!(
+            redis_repo_line("jammy"),
+            "https://packages.redis.io/deb jammy main"
+        );
+        assert_eq!(
+            pg_conf_path(18),
+            Path::new("/etc/postgresql/18/main/conf.d/ferrum.conf")
+        );
+        assert_eq!(pg_cluster_unit(18), "postgresql@18-main");
+    }
+
+    #[test]
+    fn the_newest_cluster_with_a_main_instance_is_the_installed_major() {
+        let entries = ["16", "18", "lost+found", "19"].map(String::from);
+        assert_eq!(
+            installed_pg_majors(entries.clone().into_iter(), |m| m != 19),
+            Some(18)
+        );
+        assert_eq!(installed_pg_majors(entries.into_iter(), |_| false), None);
     }
 
     #[test]

@@ -33,6 +33,7 @@ pub enum ServiceAction {
     Enable,
     EnableNow,
     Disable,
+    Mask,
     DaemonReload,
 }
 
@@ -46,6 +47,7 @@ impl ServiceAction {
             Self::Enable => "enable",
             Self::EnableNow => "enable-now",
             Self::Disable => "disable",
+            Self::Mask => "mask",
             Self::DaemonReload => "daemon-reload",
         }
     }
@@ -85,6 +87,8 @@ pub trait Platform: Send + Sync {
         env: &[(&str, &str)],
     ) -> Result<String, PlatformError>;
     fn cpu_has(&self, flag: &str) -> bool;
+    fn postgres_sql(&self, database: &str, sql: &str) -> Result<String, PlatformError>;
+    fn postgres_major_installed(&self) -> Option<u32>;
     fn nginx_test(&self) -> Result<(), PlatformError>;
     fn total_memory_kb(&self) -> Result<u64, PlatformError>;
     fn swap_total_kb(&self) -> Result<u64, PlatformError>;
