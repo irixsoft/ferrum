@@ -1182,6 +1182,7 @@ dependencies = [
 name = "ferrum-core"
 version = "0.0.1"
 dependencies = [
+ "aes-gcm",
  "anyhow",
  "base64 0.22.1",
  "chrono",
@@ -1210,6 +1211,7 @@ dependencies = [
  "tracing",
  "uuid",
  "x509-parser 0.18.1",
+ "zeroize",
 ]
 
 [[package]]

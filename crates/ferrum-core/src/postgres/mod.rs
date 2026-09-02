@@ -4,9 +4,9 @@ pub mod tune;
 
 pub use install::{DEFAULT_MAJOR, ensure_installed, major};
 
-use crate::secret;
 use crate::state::State;
 use crate::time;
+use crate::{secret, secrets};
 use ferrum_platform::ubuntu::PG_PORT;
 use ferrum_platform::{Platform, PlatformError};
 use serde::{Deserialize, Serialize};
@@ -163,13 +163,14 @@ pub async fn create(
 
     let id = uuid::Uuid::new_v4().to_string();
     let limit = limit as i64;
+    let sealed = secrets::encrypt(&state.key, &password);
     let mut tx = state.pool.begin().await?;
     sqlx::query!(
         "INSERT INTO databases (id, name, role, password, connection_limit) VALUES (?, ?, ?, ?, ?)",
         id,
         name,
         role,
-        password,
+        sealed,
         limit
     )
     .execute(&mut *tx)
@@ -272,11 +273,13 @@ pub async fn urls_for(state: &State, app_id: &str) -> anyhow::Result<Vec<(String
     )
     .fetch_all(&state.pool)
     .await?;
-    Ok(rows
-        .into_iter()
+    rows.into_iter()
         .enumerate()
-        .map(|(i, r)| (env_key(i, &r.name), url(&r.name, &r.role, &r.password)))
-        .collect())
+        .map(|(i, r)| {
+            let password = secrets::decrypt(&state.key, &r.password)?;
+            Ok((env_key(i, &r.name), url(&r.name, &r.role, &password)))
+        })
+        .collect()
 }
 
 pub async fn names_for(state: &State, app_id: &str) -> anyhow::Result<Vec<String>> {
@@ -462,8 +465,10 @@ pub(crate) mod tests {
                 .fetch_one(&state.pool)
                 .await
                 .unwrap();
-        assert!(sql.contains(&sql::quote_literal(&stored)));
-        assert!(stored.len() >= 43);
+        assert!(secrets::is_encrypted(&stored));
+        let password = secrets::decrypt(&state.key, &stored).unwrap();
+        assert!(sql.contains(&sql::quote_literal(&password)));
+        assert!(password.len() >= 43);
         assert!(
             p.calls()
                 .iter()

@@ -1,4 +1,5 @@
 use super::{App, AppError, Route};
+use crate::secrets::{self, Key};
 use crate::state::State;
 use crate::{postgres, redis};
 use serde::{Deserialize, Serialize};
@@ -69,24 +70,26 @@ pub fn port_var(name: &str) -> String {
 
 pub async fn set(state: &State, app_id: &str, key: &str, value: &str) -> anyhow::Result<()> {
     let mut tx = state.pool.begin().await?;
-    set_in(&mut tx, app_id, key, value).await?;
+    set_in(&mut tx, &state.key, app_id, key, value).await?;
     tx.commit().await?;
     Ok(())
 }
 
 pub async fn set_in(
     tx: &mut Transaction<'_, Sqlite>,
+    secret: &Key,
     app_id: &str,
     key: &str,
     value: &str,
 ) -> anyhow::Result<()> {
     valid_key(key)?;
+    let sealed = secrets::encrypt(secret, value);
     sqlx::query!(
         "INSERT INTO app_env (app_id, key, value) VALUES (?, ?, ?)
          ON CONFLICT(app_id, key) DO UPDATE SET value = excluded.value",
         app_id,
         key,
-        value
+        sealed
     )
     .execute(&mut **tx)
     .await?;
@@ -131,7 +134,7 @@ pub async fn replace(state: &State, app_id: &str, vars: &[EnvChange]) -> anyhow:
     }
     for var in vars {
         match &var.value {
-            Some(value) => set_in(&mut tx, app_id, &var.key, value).await?,
+            Some(value) => set_in(&mut tx, &state.key, app_id, &var.key, value).await?,
             None if existing.iter().any(|(k, _)| k == &var.key) => {}
             None => {
                 return Err(AppError::Invalid(format!("{} has no value yet.", var.key)).into());
@@ -149,7 +152,9 @@ pub async fn all(state: &State, app_id: &str) -> anyhow::Result<Vec<(String, Str
     )
     .fetch_all(&state.pool)
     .await?;
-    Ok(rows.into_iter().map(|r| (r.key, r.value)).collect())
+    rows.into_iter()
+        .map(|r| Ok((r.key, secrets::decrypt(&state.key, &r.value)?)))
+        .collect()
 }
 
 pub async fn keys(state: &State, app_id: &str) -> anyhow::Result<Vec<String>> {

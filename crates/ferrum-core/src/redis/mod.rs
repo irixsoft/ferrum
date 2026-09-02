@@ -5,7 +5,7 @@ pub use install::{ensure_installed, installed};
 use crate::apps::provision::user_name;
 use crate::apps::{App, ports};
 use crate::state::State;
-use crate::{REDIS_DIR, secret, time};
+use crate::{REDIS_DIR, secret, secrets, time};
 use ferrum_platform::ubuntu::{REDIS_SERVER, SYSTEMD_UNIT_DIR};
 use ferrum_platform::{Platform, ServiceAction};
 use serde::Serialize;
@@ -130,7 +130,11 @@ pub async fn url_for(state: &State, app_id: &str) -> anyhow::Result<Option<Strin
     )
     .fetch_optional(&state.pool)
     .await?;
-    Ok(row.map(|r| url(r.port as u16, &r.password)))
+    row.map(|r| {
+        let password = secrets::decrypt(&state.key, &r.password)?;
+        Ok(url(r.port as u16, &password))
+    })
+    .transpose()
 }
 
 pub async fn list(state: &State) -> anyhow::Result<Vec<Listed>> {
@@ -169,13 +173,14 @@ pub async fn request(
         return Err(RedisError::Exists(app.slug.clone()).into());
     }
     let password = secret::generate();
+    let sealed = secrets::encrypt(&state.key, &password);
     let mut tx = state.pool.begin_with("BEGIN IMMEDIATE").await?;
     let port = ports::allocate(&mut tx, &app.id, PORT_NAME).await?;
     let maxmemory = maxmemory_mb as i64;
     sqlx::query!(
         "INSERT INTO redis_instances (app_id, password, maxmemory_mb) VALUES (?, ?, ?)",
         app.id,
-        password,
+        sealed,
         maxmemory
     )
     .execute(&mut *tx)

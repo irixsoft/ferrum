@@ -9,6 +9,7 @@ license = "AGPL-3.0-only"
 repository = "https://github.com/irixsoft/ferrum"
 
 [workspace.dependencies]
+aes-gcm = { version = "0.10", default-features = false, features = ["aes", "alloc"] }
 anyhow = "1"
 axum = "0.8"
 base64 = "0.22"
@@ -41,6 +42,7 @@ uuid = { version = "1", features = ["v4", "serde"] }
 webauthn-rs = { version = "0.6.1-dev", features = ["conditional-ui"] }
 webauthn-rs-proto = "=0.6.1-dev"
 x509-parser = "0.18"
+zeroize = "1"
 
 [profile.dev.package.num-bigint-dig]
 opt-level = 3

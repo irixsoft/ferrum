@@ -16,6 +16,7 @@ pub mod postgres;
 pub mod redis;
 pub mod runtime;
 mod secret;
+pub mod secrets;
 pub mod sessions;
 pub mod setup;
 pub mod state;

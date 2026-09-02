@@ -382,7 +382,7 @@ pub async fn create(state: &State, new: NewApp) -> anyhow::Result<App> {
     write_packages(&mut tx, &id, &new.packages).await?;
     write_domains(&mut tx, &id, &new.domains).await?;
     for var in &new.env {
-        env::set_in(&mut tx, &id, &var.key, &var.value).await?;
+        env::set_in(&mut tx, &state.key, &id, &var.key, &var.value).await?;
     }
     tx.commit().await?;
 

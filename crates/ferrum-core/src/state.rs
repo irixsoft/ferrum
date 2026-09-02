@@ -1,13 +1,16 @@
+use crate::secrets::{self, Key};
 use anyhow::Context;
 use sqlx::SqlitePool;
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
+use std::sync::Arc;
 
 #[derive(Clone)]
 pub struct State {
     pub pool: SqlitePool,
     pub data_dir: std::path::PathBuf,
+    pub key: Arc<Key>,
 }
 
 static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("./migrations");
@@ -35,10 +38,23 @@ impl State {
             .run(&pool)
             .await
             .context("running schema migrations")?;
-        Ok(Self {
+        let key = match Key::open(data_dir)? {
+            Some(key) => key,
+            None if secrets::any_encrypted(&pool).await? => anyhow::bail!(secrets::MISSING_KEY),
+            None => Key::create(data_dir)?,
+        };
+        let state = Self {
             pool,
             data_dir: data_dir.to_path_buf(),
-        })
+            key: Arc::new(key),
+        };
+        let sealed = secrets::migrate(&state)
+            .await
+            .context("encrypting stored secrets")?;
+        if sealed > 0 {
+            tracing::info!(rows = sealed, "encrypted stored secrets");
+        }
+        Ok(state)
     }
 
     pub async fn get_setting(&self, key: &str) -> anyhow::Result<Option<String>> {

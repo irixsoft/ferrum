@@ -6,7 +6,7 @@ pub mod token;
 pub mod webhook;
 
 use crate::state::State;
-use crate::time;
+use crate::{secrets, time};
 use serde::Serialize;
 use std::sync::{Arc, Mutex};
 
@@ -84,6 +84,9 @@ pub struct NewConnection {
 }
 
 pub async fn save(state: &State, saved: NewConnection) -> anyhow::Result<Connection> {
+    let private_key = secrets::encrypt(&state.key, &saved.private_key);
+    let webhook_secret = secrets::encrypt(&state.key, &saved.webhook_secret);
+    let client_secret = secrets::encrypt(&state.key, &saved.client_secret);
     let row = sqlx::query!(
         r#"INSERT INTO github_app
              (id, app_id, app_slug, app_name, account, private_key, webhook_secret,
@@ -106,10 +109,10 @@ pub async fn save(state: &State, saved: NewConnection) -> anyhow::Result<Connect
         saved.app_slug,
         saved.app_name,
         saved.account,
-        saved.private_key,
-        saved.webhook_secret,
+        private_key,
+        webhook_secret,
         saved.client_id,
-        saved.client_secret,
+        client_secret,
     )
     .fetch_one(&state.pool)
     .await?;
@@ -147,7 +150,8 @@ pub async fn private_key(state: &State) -> anyhow::Result<Option<String>> {
     let row = sqlx::query!(r#"SELECT private_key AS "private_key!" FROM github_app WHERE id = 1"#)
         .fetch_optional(&state.pool)
         .await?;
-    Ok(row.map(|r| r.private_key))
+    row.map(|r| secrets::decrypt(&state.key, &r.private_key))
+        .transpose()
 }
 
 pub async fn webhook_secret(state: &State) -> anyhow::Result<Option<String>> {
@@ -155,7 +159,8 @@ pub async fn webhook_secret(state: &State) -> anyhow::Result<Option<String>> {
         sqlx::query!(r#"SELECT webhook_secret AS "webhook_secret!" FROM github_app WHERE id = 1"#)
             .fetch_optional(&state.pool)
             .await?;
-    Ok(row.map(|r| r.webhook_secret))
+    row.map(|r| secrets::decrypt(&state.key, &r.webhook_secret))
+        .transpose()
 }
 
 pub async fn set_installation(state: &State, installation_id: i64) -> anyhow::Result<()> {

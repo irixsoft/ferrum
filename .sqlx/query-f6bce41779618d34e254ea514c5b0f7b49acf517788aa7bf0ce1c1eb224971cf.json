@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE redis_instances SET password = ? WHERE app_id = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": []
+  },
+  "hash": "f6bce41779618d34e254ea514c5b0f7b49acf517788aa7bf0ce1c1eb224971cf"
+}
