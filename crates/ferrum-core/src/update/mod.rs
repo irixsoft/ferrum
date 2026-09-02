@@ -1,5 +1,9 @@
+pub mod apply;
 pub mod check;
+pub mod ticker;
 pub mod verify;
+
+pub use apply::{Binary, Updater};
 
 use serde::{Deserialize, Serialize};
 

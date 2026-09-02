@@ -9,10 +9,13 @@ use ferrum_core::github::Api;
 use ferrum_core::runtime::Mirrors;
 use ferrum_core::runtime::toolchain::Store;
 use ferrum_core::state::State;
+use ferrum_core::update::{self, Updater};
 use ferrum_platform::{Platform, Ubuntu};
 use std::net::IpAddr;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
+
+pub use ed25519_dalek::VerifyingKey;
 use tower_http::trace::TraceLayer;
 
 pub use ferrum_core::LISTEN_ADDR;
@@ -33,11 +36,17 @@ pub struct Deps {
     pub public_ip: Option<IpAddr>,
     /// The panel hostname, which is the `Host` nginx forwards to `/mcp`.
     pub hostname: Option<String>,
+    /// Verifies release signatures; tests hand in the public half of a key they generated.
+    pub update_key: VerifyingKey,
+    pub binary: PathBuf,
 }
 
 impl Default for Deps {
     fn default() -> Self {
         Self {
+            update_key: update::verify::public_key(update::verify::PUBLIC_KEY_PEM)
+                .expect("the compiled-in public key parses"),
+            binary: PathBuf::from(ferrum_platform::ubuntu::FERRUM_BIN),
             github: Api::default(),
             platform: Arc::new(Ubuntu),
             toolchains: Store::default(),
@@ -75,6 +84,7 @@ pub struct AppState {
     pub deployer: Deployer,
     pub certs: Issuance,
     pub hostname: Option<String>,
+    pub updater: Updater,
 }
 
 impl AppState {
@@ -87,7 +97,21 @@ impl AppState {
             http.clone(),
             deps.toolchains.clone(),
         );
+        let updater = Updater::new(
+            db.clone(),
+            deps.platform.clone(),
+            deps.github.clone(),
+            http.clone(),
+            update::Binary {
+                path: deps.binary,
+                unit: ferrum_core::FERRUM_UNIT.into(),
+                version: crate::cli::VERSION.into(),
+                target: update::target(),
+                key: deps.update_key,
+            },
+        );
         Self {
+            updater,
             db,
             challenges: Challenges::default(),
             http,
@@ -213,6 +237,7 @@ pub async fn serve(data_dir: &Path) -> anyhow::Result<()> {
         app_state.certs.clone(),
     );
     ferrum_core::metrics::spawn_sampler(state, app_state.platform.clone());
+    update::ticker::spawn(app_state.updater.clone());
     let listener = tokio::net::TcpListener::bind(LISTEN_ADDR).await?;
     tracing::info!(addr = %LISTEN_ADDR, "listening");
     axum::serve(listener, router(app_state))

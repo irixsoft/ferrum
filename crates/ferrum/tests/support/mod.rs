@@ -21,7 +21,7 @@ use ferrum_core::state::State;
 use ferrum_core::{enrollment, setup, users};
 use ferrum_platform::FakePlatform;
 use serde_json::Value;
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 use tower::ServiceExt;
 use webauthn_authenticator_rs::AuthenticatorBackend;
 use webauthn_authenticator_rs::softpasskey::SoftPasskey;
@@ -114,6 +114,8 @@ pub async fn harness_with_deps(github_base: &str, downloads: &str) -> Harness {
         )]),
         public_ip: Some(PUBLIC_IP.parse().unwrap()),
         hostname: Some(HOSTNAME.into()),
+        update_key: RELEASE_KEY.verifying_key(),
+        binary: dir.path().join("bin").join("ferrum"),
     };
     Harness {
         app: ferrum::server::app_with(db.clone(), deps),
@@ -124,6 +126,13 @@ pub async fn harness_with_deps(github_base: &str, downloads: &str) -> Harness {
         dir,
     }
 }
+
+/// Signs the stub releases; generated once per test binary so no private key is committed.
+pub static RELEASE_KEY: LazyLock<ed25519_dalek::SigningKey> = LazyLock::new(|| {
+    let mut seed = [0u8; 32];
+    rand::fill(&mut seed);
+    ed25519_dalek::SigningKey::from_bytes(&seed)
+});
 
 pub async fn signed_in_with_downloads() -> (Harness, String, StubDownloads) {
     let downloads = StubDownloads::start().await;
