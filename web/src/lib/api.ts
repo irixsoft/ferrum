@@ -6,6 +6,7 @@ import type {
   App,
   AppChanges,
   AppDetail,
+  Database,
   Deploy,
   Detected,
   Enrolled,
@@ -18,7 +19,11 @@ import type {
   MetricSeries,
   MintedToken,
   NewApp,
+  NewDatabase,
+  PostgresStatus,
   Progress,
+  RedisInstance,
+  RedisListed,
   Runtimes,
   Session,
   Toolchain,
@@ -64,6 +69,7 @@ export const keys = {
   apps: ["apps"] as const,
   app: (slug: string) => ["apps", slug] as const,
   deploys: ["deploys"] as const,
+  postgres: ["postgres"] as const,
   databases: ["databases"] as const,
   redis: ["redis"] as const,
   metrics: ["metrics"] as const,
@@ -125,11 +131,20 @@ export function useRunningDeploy() {
   });
 }
 
-export function useDatabases() {
+export function usePostgres() {
   return useQuery({
-    queryKey: keys.databases,
-    queryFn: () => settle({ databases: mock.databases, redis: mock.redisInstances }),
+    queryKey: keys.postgres,
+    queryFn: () => request<PostgresStatus>("/postgres"),
+    refetchInterval: (query) => (query.state.data?.installing ? 1500 : false),
   });
+}
+
+export function useDatabases() {
+  return useQuery({ queryKey: keys.databases, queryFn: () => request<Database[]>("/databases") });
+}
+
+export function useRedisInstances() {
+  return useQuery({ queryKey: keys.redis, queryFn: () => request<RedisListed[]>("/redis") });
 }
 
 export function useMetrics() {
@@ -172,13 +187,15 @@ export function useRuntimes() {
 }
 
 function useInvalidating<TArgs, TResult>(
-  key: readonly unknown[],
+  key: readonly unknown[] | Array<readonly unknown[]>,
   run: (args: TArgs) => Promise<TResult>,
 ) {
   const client = useQueryClient();
+  const affected = key.length > 0 && Array.isArray(key[0]) ? (key as Array<readonly unknown[]>) : [key];
   return useMutation({
     mutationFn: run,
-    onSuccess: () => client.invalidateQueries({ queryKey: key }),
+    onSuccess: () =>
+      Promise.all(affected.map((queryKey) => client.invalidateQueries({ queryKey }))),
   });
 }
 
@@ -240,6 +257,54 @@ export function useDeleteApp(slug: string) {
 export function useSetEnv(slug: string) {
   return useInvalidating(keys.app(slug), (vars: EnvChange[]) =>
     request<void>(`/apps/${slug}/env`, body(vars, "PUT")),
+  );
+}
+
+export function useInstallPostgres() {
+  return useInvalidating(keys.postgres, () =>
+    request<PostgresStatus>("/postgres/install", { method: "POST" }),
+  );
+}
+
+export function useCreateDatabase() {
+  return useInvalidating([keys.databases, keys.apps], (database: NewDatabase) =>
+    request<Database>("/databases", body(database)),
+  );
+}
+
+export function useDeleteDatabase() {
+  return useInvalidating([keys.databases, keys.apps], (name: string) =>
+    request<void>(`/databases/${name}`, body({ name }, "DELETE")),
+  );
+}
+
+export function useEnableExtension() {
+  return useInvalidating(keys.databases, (input: { database: string; extension: string }) =>
+    request<void>(`/databases/${input.database}/extensions`, body({ name: input.extension })),
+  );
+}
+
+export function useLinkDatabase(slug: string) {
+  return useInvalidating([keys.apps, keys.databases], (name: string) =>
+    request<void>(`/apps/${slug}/databases/${name}`, { method: "POST" }),
+  );
+}
+
+export function useUnlinkDatabase(slug: string) {
+  return useInvalidating([keys.apps, keys.databases], (name: string) =>
+    request<void>(`/apps/${slug}/databases/${name}`, { method: "DELETE" }),
+  );
+}
+
+export function useRequestRedis(slug: string) {
+  return useInvalidating([keys.apps, keys.redis], (maxmemory_mb: number) =>
+    request<RedisInstance>(`/apps/${slug}/redis`, body({ maxmemory_mb })),
+  );
+}
+
+export function useReleaseRedis(slug: string) {
+  return useInvalidating([keys.apps, keys.redis], () =>
+    request<void>(`/apps/${slug}/redis`, { method: "DELETE" }),
   );
 }
 

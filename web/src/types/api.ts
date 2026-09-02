@@ -98,6 +98,9 @@ export interface App {
 export interface AppDetail extends App {
   env: Array<{ key: string }>;
   deployed: boolean;
+  databases: string[];
+  redis: RedisInstance | null;
+  managed: string[];
 }
 
 export interface EnvVar {
@@ -189,22 +192,42 @@ export type Progress =
 export interface Database {
   name: string;
   role: string;
-  size_bytes: number;
   connection_limit: number;
-  connections_active: number;
+  connections_active: number | null;
+  size_bytes: number | null;
   extensions: string[];
   linked_apps: string[];
   created_at: string;
 }
 
+export interface NewDatabase {
+  name: string;
+  connection_limit?: number;
+  extensions?: string[];
+  app_slug?: string;
+}
+
+export interface PostgresStatus {
+  installed: boolean;
+  major: number | null;
+  installing: boolean;
+  error: string | null;
+  tunnel: string;
+  extensions: string[];
+}
+
 export interface RedisInstance {
-  slug: string;
+  app_id: string;
+  port: number;
+  maxmemory_mb: number;
+  created_at: string;
+}
+
+export interface RedisListed {
   app_slug: string;
   port: number;
   maxmemory_mb: number;
-  used_memory_mb: number;
-  maxmemory_policy: string;
-  appendonly: boolean;
+  created_at: string;
 }
 
 export interface ServiceStatus {

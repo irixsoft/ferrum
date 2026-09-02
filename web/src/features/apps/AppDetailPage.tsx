@@ -16,6 +16,7 @@ import { Code } from "@/components/ui/Code";
 import { Row } from "@/components/ui/Row";
 import { Tabs } from "@/components/ui/Tabs";
 import { ConfigForm, draftFromApp, toChanges, type Draft } from "./ConfigForm";
+import { DataCard } from "./DataCard";
 import { EnvironmentPanel } from "./EnvironmentPanel";
 import { NginxPanel } from "./NginxPanel";
 import { LogPanel } from "./LogPanel";
@@ -89,7 +90,12 @@ export function AppDetailPage({ slug }: { slug: string }) {
       {tab === "overview" && <Overview app={app} />}
       {tab === "configuration" && <Configuration key={app.updated_at} app={app} />}
       {tab === "environment" && (
-        <EnvironmentPanel key={app.env.map((e) => e.key).join(",")} slug={app.slug} keys={app.env.map((e) => e.key)} />
+        <EnvironmentPanel
+          key={[...app.env.map((e) => e.key), ...app.managed].join(",")}
+          slug={app.slug}
+          keys={app.env.map((e) => e.key)}
+          managed={app.managed}
+        />
       )}
       {tab === "deploys" && <Deploys slug={app.slug} />}
       {tab === "logs" && <LogPanel slug={app.slug} />}
@@ -183,6 +189,8 @@ function Overview({ app }: { app: AppDetail }) {
             </CardFoot>
           ) : null}
         </Card>
+
+        <DataCard app={app} />
       </div>
 
       <div className="lg:col-span-5 grid gap-4 content-start">

@@ -3,6 +3,7 @@ import { Plus, X } from "lucide-react";
 import { ApiError, useSetEnv } from "@/lib/api";
 import { Card, CardBody, CardFoot, CardHeader } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
+import { Badge } from "@/components/ui/Badge";
 import { Code } from "@/components/ui/Code";
 import type { EnvChange } from "@/types/api";
 
@@ -12,7 +13,15 @@ const INPUT =
   "h-9 px-3 bg-inset border border-line-strong rounded-control text-sm text-ink placeholder:text-ink-4 font-mono text-[13px]";
 
 /** Values never come back from the server: a stored row shows dots until it is edited. */
-export function EnvironmentPanel({ slug, keys }: { slug: string; keys: string[] }) {
+export function EnvironmentPanel({
+  slug,
+  keys,
+  managed,
+}: {
+  slug: string;
+  keys: string[];
+  managed: string[];
+}) {
   const [rows, setRows] = useState<Row[]>(() =>
     keys.map((key) => ({ key, value: null, stored: true })),
   );
@@ -53,7 +62,16 @@ export function EnvironmentPanel({ slug, keys }: { slug: string; keys: string[] 
         }
       />
       <CardBody className="grid gap-2">
-        {rows.length === 0 ? (
+        {managed.map((key) => (
+          <div key={key} className="flex items-center gap-2 h-9">
+            <span className={`${INPUT} w-56 flex items-center opacity-70`}>{key}</span>
+            <span className={`${INPUT} flex-1 min-w-0 flex items-center text-ink-4`}>••••••••</span>
+            <Badge tone="accent" className="shrink-0">
+              set by Ferrum
+            </Badge>
+          </div>
+        ))}
+        {rows.length === 0 && managed.length === 0 ? (
           <p className="text-[13.5px] text-ink-3">No variables yet.</p>
         ) : null}
         {rows.map((row, i) => (

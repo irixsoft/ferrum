@@ -1,16 +1,14 @@
 /**
- * Sample data, still read by: useHost, useDeploys, useRunningDeploy, useDatabases, useMetrics,
- * useSecurity. Delete this file with the last one.
+ * Sample data, still read by: useHost, useDeploys, useRunningDeploy, useMetrics, useSecurity.
+ * Delete this file with the last one.
  */
 import type {
   BannedIp,
-  Database,
   Deploy,
   DeployStep,
   FirewallRule,
   HostStatus,
   MetricSeries,
-  RedisInstance,
 } from "@/types/api";
 
 const t = (minsAgo: number) => new Date(Date.now() - minsAgo * 60_000).toISOString();
@@ -108,60 +106,6 @@ export const deployHistory: Deploy[] = [
     duration_secs: 268,
     failure_reason: "Health check did not pass within 60s. Rolled back to 7c1b409.",
     steps: [],
-  },
-];
-
-export const databases: Database[] = [
-  {
-    name: "atlas_prod",
-    role: "atlas",
-    size_bytes: 1_842_000_000,
-    connection_limit: 40,
-    connections_active: 11,
-    extensions: ["pgvector", "pg_trgm", "uuid-ossp"],
-    linked_apps: ["atlas"],
-    created_at: t(60 * 24 * 96),
-  },
-  {
-    name: "ledger_prod",
-    role: "ledger",
-    size_bytes: 604_000_000,
-    connection_limit: 30,
-    connections_active: 6,
-    extensions: ["pgcrypto", "uuid-ossp"],
-    linked_apps: ["ledger"],
-    created_at: t(60 * 24 * 54),
-  },
-  {
-    name: "pulse_prod",
-    role: "pulse",
-    size_bytes: 92_400_000,
-    connection_limit: 20,
-    connections_active: 0,
-    extensions: ["uuid-ossp"],
-    linked_apps: ["pulse"],
-    created_at: t(60 * 24 * 12),
-  },
-];
-
-export const redisInstances: RedisInstance[] = [
-  {
-    slug: "atlas",
-    app_slug: "atlas",
-    port: 46379,
-    maxmemory_mb: 128,
-    used_memory_mb: 41,
-    maxmemory_policy: "noeviction",
-    appendonly: true,
-  },
-  {
-    slug: "hooks",
-    app_slug: "hooks",
-    port: 46380,
-    maxmemory_mb: 64,
-    used_memory_mb: 9,
-    maxmemory_policy: "noeviction",
-    appendonly: true,
   },
 ];
 
