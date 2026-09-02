@@ -6,6 +6,7 @@ import {
   useCreateToken,
   useCreateUser,
   useEnrollmentLink,
+  useHost,
   useRevokeSession,
   useRevokeToken,
   useSessions,
@@ -15,6 +16,13 @@ import {
   useVersion,
 } from "@/lib/api";
 import type { BuildLimits } from "@/types/api";
+import {
+  AGENT_CLIENTS,
+  TOKEN_PLACEHOLDER,
+  agentSnippet,
+  agentSnippetFile,
+  type AgentClient,
+} from "@/lib/agent";
 import { useShell } from "@/shells/useShell";
 import { useTheme, type Theme } from "@/lib/theme";
 import { PageTitle } from "@/components/PageTitle";
@@ -224,83 +232,123 @@ function Tokens() {
   };
 
   return (
-    <Card>
+    <>
+      <Card>
+        <CardHeader
+          title="API tokens"
+          hint="For machines. The same tokens authenticate the MCP endpoint."
+          action={
+            <Button size="sm" variant="primary" onClick={() => setCreating(true)}>
+              <Plus size={14} />
+              New token
+            </Button>
+          }
+        />
+        <CardBody className="pb-3">
+          {creating ? (
+            <div className="flex gap-2 mb-4 flex-wrap">
+              <input
+                autoFocus
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                onKeyDown={(e) => e.key === "Enter" && mint()}
+                placeholder="What is it for?"
+                className="flex-1 min-w-[160px] h-9 px-3 bg-inset border border-line-strong rounded-control text-sm text-ink placeholder:text-ink-4"
+              />
+              <Segmented
+                value={readOnly ? "read" : "write"}
+                onChange={(v) => setReadOnly(v === "read")}
+                options={[
+                  { value: "write", label: "Read and write" },
+                  { value: "read", label: "Read only" },
+                ]}
+              />
+              <Button variant="primary" onClick={mint} disabled={create.isPending}>
+                Create
+              </Button>
+              <Button variant="ghost" onClick={() => setCreating(false)}>
+                Cancel
+              </Button>
+            </div>
+          ) : null}
+
+          {secret ? (
+            <Handoff
+              label="Copy it now — this is the only time it is shown"
+              value={secret}
+              onDone={() => setSecret(null)}
+            />
+          ) : null}
+
+          <ul>
+            {tokens.map((t) => (
+              <li
+                key={t.id}
+                className="flex items-center gap-x-3 gap-y-1 flex-wrap py-3 border-b border-line last:border-0"
+              >
+                <div className="min-w-0">
+                  <span className="text-[13.5px] text-ink">{t.name}</span>
+                  <span className="block font-mono text-[12px] text-ink-4">{t.prefix}…</span>
+                </div>
+                {t.read_only ? <Badge tone="accent">Read only</Badge> : <Badge>Read and write</Badge>}
+                <span className="ml-auto text-[12.5px] text-ink-4">
+                  {t.last_used ? `used ${ago(t.last_used)}` : "never used"}
+                </span>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  disabled={revoke.isPending}
+                  onClick={() => revoke.mutate(t.id)}
+                >
+                  Revoke
+                </Button>
+              </li>
+            ))}
+          </ul>
+        </CardBody>
+        <CardFoot>
+          <span>
+            A read-only token sees only the read tools over MCP. The write tools are absent from
+            its tool list, so an agent never proposes an action it cannot take.
+          </span>
+        </CardFoot>
+      </Card>
+      <ConnectAgent token={secret} />
+    </>
+  );
+}
+
+function ConnectAgent({ token }: { token: string | null }) {
+  const { data: host } = useHost();
+  const [client, setClient] = useState<AgentClient>("claude-code");
+  const hostname = host?.hostname ?? window.location.hostname;
+  const snippet = agentSnippet(client, hostname, token ?? TOKEN_PLACEHOLDER);
+
+  return (
+    <Card className="mt-5">
       <CardHeader
-        title="API tokens"
-        hint="For machines. The same tokens authenticate the MCP endpoint."
+        title="Connect your agent"
+        hint="Paste this once; your agent then drives this server with its own permission prompts."
         action={
-          <Button size="sm" variant="primary" onClick={() => setCreating(true)}>
-            <Plus size={14} />
-            New token
-          </Button>
+          <Segmented<AgentClient> value={client} onChange={setClient} options={AGENT_CLIENTS} />
         }
       />
-      <CardBody className="pb-3">
-        {creating ? (
-          <div className="flex gap-2 mb-4 flex-wrap">
-            <input
-              autoFocus
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              onKeyDown={(e) => e.key === "Enter" && mint()}
-              placeholder="What is it for?"
-              className="flex-1 min-w-[160px] h-9 px-3 bg-inset border border-line-strong rounded-control text-sm text-ink placeholder:text-ink-4"
-            />
-            <Segmented
-              value={readOnly ? "read" : "write"}
-              onChange={(v) => setReadOnly(v === "read")}
-              options={[
-                { value: "write", label: "Read and write" },
-                { value: "read", label: "Read only" },
-              ]}
-            />
-            <Button variant="primary" onClick={mint} disabled={create.isPending}>
-              Create
-            </Button>
-            <Button variant="ghost" onClick={() => setCreating(false)}>
-              Cancel
-            </Button>
-          </div>
-        ) : null}
-
-        {secret ? (
-          <Handoff
-            label="Copy it now — this is the only time it is shown"
-            value={secret}
-            onDone={() => setSecret(null)}
-          />
-        ) : null}
-
-        <ul>
-          {tokens.map((t) => (
-            <li
-              key={t.id}
-              className="flex items-center gap-x-3 gap-y-1 flex-wrap py-3 border-b border-line last:border-0"
-            >
-              <div className="min-w-0">
-                <span className="text-[13.5px] text-ink">{t.name}</span>
-                <span className="block font-mono text-[12px] text-ink-4">{t.prefix}…</span>
-              </div>
-              {t.read_only ? <Badge tone="accent">Read only</Badge> : <Badge>Read and write</Badge>}
-              <span className="ml-auto text-[12.5px] text-ink-4">
-                {t.last_used ? `used ${ago(t.last_used)}` : "never used"}
-              </span>
-              <Button
-                size="sm"
-                variant="ghost"
-                disabled={revoke.isPending}
-                onClick={() => revoke.mutate(t.id)}
-              >
-                Revoke
-              </Button>
-            </li>
-          ))}
-        </ul>
+      <CardBody>
+        <div className="flex items-center justify-between gap-3 mb-2">
+          <span className="text-[12.5px] text-ink-3">{agentSnippetFile(client)}</span>
+          <Button size="sm" onClick={() => navigator.clipboard?.writeText(snippet)}>
+            Copy
+          </Button>
+        </div>
+        <pre className="font-mono text-[12px] leading-relaxed text-ink bg-inset border border-line rounded-inset p-3 overflow-x-auto whitespace-pre-wrap break-all">
+          {snippet}
+        </pre>
       </CardBody>
       <CardFoot>
         <span>
-          A read-only token sees only the read tools over MCP. The write tools are absent from its
-          tool list, so an agent never proposes an action it cannot take.
+          {token
+            ? "The snippet carries the token you just created. It leaves the page when you press Done."
+            : "Create a token above and put it where the snippet says <your token>. A read-only token gives the agent the twelve read tools and nothing else."}
         </span>
       </CardFoot>
     </Card>
