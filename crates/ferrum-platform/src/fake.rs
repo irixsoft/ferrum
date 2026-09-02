@@ -45,6 +45,8 @@ struct Inner {
     bans: Vec<Ban>,
     sshd: Sshd,
     keys: Vec<KeyFingerprint>,
+    self_check: String,
+    installed: Option<Vec<u8>>,
 }
 
 pub struct FakePlatform {
@@ -94,6 +96,7 @@ impl FakePlatform {
                     port: 22,
                     password_auth: true,
                 },
+                self_check: "ferrum 0.1.4 (build fake, commit fake)".into(),
                 ..Inner::default()
             }),
         }
@@ -271,6 +274,15 @@ impl FakePlatform {
 
     pub fn set_postgres_major(&self, major: u32) {
         self.inner.lock().unwrap().postgres_major = Some(major);
+    }
+
+    pub fn answer_self_check(&self, line: &str) {
+        self.inner.lock().unwrap().self_check = line.to_string();
+    }
+
+    /// The bytes the last `install_binary` read from its source.
+    pub fn installed_binary(&self) -> Option<Vec<u8>> {
+        self.inner.lock().unwrap().installed.clone()
     }
 
     fn record(&self, call: String) -> Result<(), PlatformError> {
@@ -743,6 +755,26 @@ impl Platform for FakePlatform {
     fn authorized_keys(&self) -> Result<Vec<KeyFingerprint>, PlatformError> {
         self.record("authorized_keys".into())?;
         Ok(self.inner.lock().unwrap().keys.clone())
+    }
+
+    fn self_check(&self, binary: &Path) -> Result<String, PlatformError> {
+        self.record(format!("self_check {}", binary.display()))?;
+        Ok(self.inner.lock().unwrap().self_check.clone())
+    }
+
+    fn install_binary(&self, from: &Path, to: &Path) -> Result<(), PlatformError> {
+        self.record(format!(
+            "install_binary {} {}",
+            from.display(),
+            to.display()
+        ))?;
+        let mut inner = self.inner.lock().unwrap();
+        inner.installed = Some(std::fs::read(from)?);
+        Ok(())
+    }
+
+    fn restart_later(&self, unit: &str) -> Result<(), PlatformError> {
+        self.record(format!("restart_later {unit}"))
     }
 }
 

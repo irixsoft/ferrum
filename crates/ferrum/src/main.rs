@@ -1,4 +1,4 @@
-use clap::Parser;
+use clap::{CommandFactory, Parser};
 use ferrum::cli;
 use mimalloc::MiMalloc;
 
@@ -15,7 +15,17 @@ async fn main() -> anyhow::Result<()> {
         )
         .init();
 
-    match cli::Cli::parse().command {
+    let cli = cli::Cli::parse();
+    let Some(command) = cli.command else {
+        if cli.self_check {
+            println!("{}", cli::version_line());
+            return Ok(());
+        }
+        cli::Cli::command().print_help()?;
+        std::process::exit(2);
+    };
+
+    match command {
         cli::Command::Version => {
             println!("{}", cli::version_line());
             Ok(())
@@ -117,6 +127,11 @@ async fn main() -> anyhow::Result<()> {
             let token = need_token(token);
             report(ferrum::client::restart(&slug, &token).await);
             Ok(())
+        }
+        cli::Command::Update { check, token } => {
+            let token = need_token(token);
+            let code = report(ferrum::client::update(check, &token).await);
+            std::process::exit(code);
         }
     }
 }

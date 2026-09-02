@@ -5,10 +5,18 @@ pub const BUILD_ID: &str = env!("FERRUM_BUILD_ID");
 pub const COMMIT_SHA: &str = env!("FERRUM_COMMIT_SHA");
 
 #[derive(Parser)]
-#[command(name = "ferrum", version = VERSION, disable_version_flag = true)]
+#[command(
+    name = "ferrum",
+    version = VERSION,
+    disable_version_flag = true,
+    args_conflicts_with_subcommands = true
+)]
 pub struct Cli {
+    /// Prints the version line and exits; the updater runs this on a downloaded binary first.
+    #[arg(long)]
+    pub self_check: bool,
     #[command(subcommand)]
-    pub command: Command,
+    pub command: Option<Command>,
 }
 
 #[derive(Subcommand)]
@@ -71,6 +79,14 @@ pub enum Command {
     /// Restarts an application's unit and prints its status.
     Restart {
         slug: String,
+        #[arg(long)]
+        token: Option<String>,
+    },
+    /// Checks GitHub for a newer release and installs it through the running daemon.
+    Update {
+        /// Only report whether a newer release exists.
+        #[arg(long)]
+        check: bool,
         #[arg(long)]
         token: Option<String>,
     },

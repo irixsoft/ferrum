@@ -316,6 +316,97 @@ pub async fn restart(slug: &str, token: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
+#[derive(Deserialize)]
+struct LatestRelease {
+    version: String,
+    url: String,
+    security: bool,
+}
+
+#[derive(Deserialize)]
+struct UpdateStatus {
+    current: String,
+    latest: Option<LatestRelease>,
+    available: bool,
+    running: bool,
+    step: Option<String>,
+    error: Option<String>,
+    restarting: bool,
+}
+
+const UPDATE_POLL: std::time::Duration = std::time::Duration::from_millis(500);
+
+/// Asks the daemon to check GitHub and, unless `check_only`, to install what it found; prints
+/// each step as the daemon reports it. Exit 0 when nothing is newer or the restart is scheduled.
+pub async fn update(check_only: bool, token: &str) -> anyhow::Result<i32> {
+    let base = format!("http://{LISTEN_ADDR}/api");
+    let http = ferrum_core::http::client();
+    let res = http
+        .post(format!("{base}/update/check"))
+        .bearer_auth(token)
+        .send()
+        .await
+        .context("reaching the Ferrum daemon on loopback")?;
+    if !res.status().is_success() {
+        return Err(refused(res).await);
+    }
+    let status: UpdateStatus = res.json().await?;
+    let Some(latest) = status.latest.filter(|_| status.available) else {
+        println!("\n  Ferrum {} is the latest release.\n", status.current);
+        return Ok(0);
+    };
+    let flag = if latest.security { " (security)" } else { "" };
+    println!(
+        "\n  Ferrum {} is available{flag}; this is {}.\n  {}\n",
+        latest.version, status.current, latest.url
+    );
+    if check_only {
+        return Ok(0);
+    }
+
+    let res = http
+        .post(format!("{base}/update"))
+        .bearer_auth(token)
+        .send()
+        .await?;
+    if !res.status().is_success() {
+        return Err(refused(res).await);
+    }
+    let mut shown: Option<String> = None;
+    loop {
+        tokio::time::sleep(UPDATE_POLL).await;
+        let status: UpdateStatus = http
+            .get(format!("{base}/update"))
+            .bearer_auth(token)
+            .send()
+            .await?
+            .error_for_status()?
+            .json()
+            .await?;
+        if status.step != shown
+            && let Some(step) = &status.step
+        {
+            println!("  {step}");
+        }
+        shown = status.step;
+        if status.running {
+            continue;
+        }
+        if let Some(error) = status.error {
+            println!("\n  {error}\n");
+            return Ok(1);
+        }
+        if status.restarting {
+            println!(
+                "\n  Ferrum {} is installed and restarts in a moment.\n",
+                latest.version
+            );
+            return Ok(0);
+        }
+        bail!("the update ended without a result");
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -222,4 +222,10 @@ pub trait Platform: Send + Sync {
     fn sshd_effective(&self) -> Result<Sshd, PlatformError>;
     fn sshd_test(&self) -> Result<(), PlatformError>;
     fn authorized_keys(&self) -> Result<Vec<KeyFingerprint>, PlatformError>;
+    /// Runs `<binary> --self-check` and returns what it printed.
+    fn self_check(&self, binary: &Path) -> Result<String, PlatformError>;
+    /// Copies `from` over `to` atomically, keeping the previous file at `<to>.prev`.
+    fn install_binary(&self, from: &Path, to: &Path) -> Result<(), PlatformError>;
+    /// Schedules a restart of the unit through a transient timer, so the caller can be that unit.
+    fn restart_later(&self, unit: &str) -> Result<(), PlatformError>;
 }

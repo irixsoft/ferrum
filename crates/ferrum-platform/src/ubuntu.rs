@@ -38,6 +38,8 @@ const AUTHORIZED_KEYS: &str = ".ssh/authorized_keys";
 const UFW_INACTIVE: &str = "Status: inactive";
 const DEFAULT_SSH_PORT: u16 = 22;
 const GIT_ENV: [(&str, &str); 1] = [("GIT_TERMINAL_PROMPT", "0")];
+pub const FERRUM_BIN: &str = "/usr/local/bin/ferrum";
+const SELF_CHECK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 const NOLOGIN: &str = "/usr/sbin/nologin";
 const CPUINFO: &str = "/proc/cpuinfo";
 const OS_RELEASE: &str = "/etc/os-release";
@@ -1014,11 +1016,152 @@ impl Platform for Ubuntu {
         }
         Ok(keys)
     }
+
+    fn self_check(&self, binary: &Path) -> Result<String, PlatformError> {
+        let binary = binary.to_string_lossy();
+        let argv = [binary.as_ref(), "--self-check"];
+        let mut out = String::new();
+        let mut err = String::new();
+        let exit = exec::run_streaming(
+            &Spawn {
+                argv: &argv,
+                env: &[],
+                clear_env: false,
+                cwd: None,
+                timeout: Some(SELF_CHECK_TIMEOUT),
+                on_timeout: None,
+                stop: None,
+            },
+            &mut |stream, line| {
+                let sink = match stream {
+                    Stream::Stdout => &mut out,
+                    Stream::Stderr => &mut err,
+                };
+                sink.push_str(line);
+                sink.push('\n');
+            },
+        )?;
+        match exit {
+            Exit::Code(0) => Ok(out.trim().to_string()),
+            Exit::Code(code) => Err(PlatformError::Command {
+                cmd: argv.join(" "),
+                code,
+                stderr: err.trim().to_string(),
+            }),
+            Exit::Killed { signal } => Err(PlatformError::Command {
+                cmd: argv.join(" "),
+                code: -1,
+                stderr: format!("killed by signal {signal}"),
+            }),
+            Exit::TimedOut => Err(PlatformError::Command {
+                cmd: argv.join(" "),
+                code: -1,
+                stderr: format!("no answer within {} seconds", SELF_CHECK_TIMEOUT.as_secs()),
+            }),
+        }
+    }
+
+    fn install_binary(&self, from: &Path, to: &Path) -> Result<(), PlatformError> {
+        let new = to.with_extension("new");
+        let prev = to.with_extension("prev");
+        std::fs::copy(from, &new)?;
+        std::fs::set_permissions(&new, std::fs::Permissions::from_mode(0o755))?;
+        ignore_missing(std::fs::rename(to, &prev))?;
+        if let Err(e) = std::fs::rename(&new, to) {
+            let _ = std::fs::rename(&prev, to);
+            let _ = std::fs::remove_file(&new);
+            return Err(e.into());
+        }
+        Ok(())
+    }
+
+    fn restart_later(&self, unit: &str) -> Result<(), PlatformError> {
+        exec::run(&[
+            "systemd-run",
+            "--on-active=1s",
+            &format!("--unit={unit}-restart"),
+            "--collect",
+            "systemctl",
+            "restart",
+            unit,
+        ])
+        .map(|_| ())
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn executable(dir: &Path, name: &str, script: &str) -> PathBuf {
+        let path = dir.join(name);
+        std::fs::write(&path, script).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        path
+    }
+
+    #[test]
+    fn a_self_check_returns_what_the_binary_printed_or_why_it_failed() {
+        let dir = tempfile::tempdir().unwrap();
+        let good = executable(
+            dir.path(),
+            "good",
+            "#!/bin/sh\n[ \"$1\" = --self-check ] || exit 9\necho 'ferrum 9.9.9 (build x, commit y)'\n",
+        );
+        assert_eq!(
+            Ubuntu.self_check(&good).unwrap(),
+            "ferrum 9.9.9 (build x, commit y)"
+        );
+
+        let bad = executable(
+            dir.path(),
+            "bad",
+            "#!/bin/sh\necho 'no such data dir' >&2\nexit 3\n",
+        );
+        match Ubuntu.self_check(&bad).unwrap_err() {
+            PlatformError::Command { code, stderr, .. } => {
+                assert_eq!(code, 3);
+                assert_eq!(stderr, "no such data dir");
+            }
+            other => panic!("{other}"),
+        }
+    }
+
+    #[test]
+    fn installing_a_binary_keeps_the_previous_one_and_replaces_it_next_time() {
+        let dir = tempfile::tempdir().unwrap();
+        let to = dir.path().join("ferrum");
+        std::fs::write(&to, b"first").unwrap();
+        let staged = dir.path().join("update").join("ferrum");
+        std::fs::create_dir_all(staged.parent().unwrap()).unwrap();
+        std::fs::write(&staged, b"second").unwrap();
+
+        Ubuntu.install_binary(&staged, &to).unwrap();
+        assert_eq!(std::fs::read(&to).unwrap(), b"second");
+        assert_eq!(std::fs::read(to.with_extension("prev")).unwrap(), b"first");
+        assert_eq!(
+            std::fs::metadata(&to).unwrap().permissions().mode() & 0o777,
+            0o755
+        );
+        assert!(!to.with_extension("new").exists());
+        assert!(staged.exists(), "the staged copy is the caller's to remove");
+
+        std::fs::write(&staged, b"third").unwrap();
+        Ubuntu.install_binary(&staged, &to).unwrap();
+        assert_eq!(std::fs::read(&to).unwrap(), b"third");
+        assert_eq!(std::fs::read(to.with_extension("prev")).unwrap(), b"second");
+    }
+
+    #[test]
+    fn a_first_install_has_no_previous_binary_to_keep() {
+        let dir = tempfile::tempdir().unwrap();
+        let to = dir.path().join("ferrum");
+        let staged = dir.path().join("staged");
+        std::fs::write(&staged, b"only").unwrap();
+        Ubuntu.install_binary(&staged, &to).unwrap();
+        assert_eq!(std::fs::read(&to).unwrap(), b"only");
+        assert!(!to.with_extension("prev").exists());
+    }
 
     const MEMINFO: &str = "MemTotal:        2035440 kB\nMemFree:          123456 kB\nSwapTotal:             0 kB\nSwapFree:              0 kB\n";
 
