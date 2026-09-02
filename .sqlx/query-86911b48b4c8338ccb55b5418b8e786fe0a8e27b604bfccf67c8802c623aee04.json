@@ -1,0 +1,146 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT id AS \"id!\", slug AS \"slug!\", name AS \"name!\", repository AS \"repository!\",\n                  git_ref AS \"git_ref!\", tracking AS \"tracking!: Tracking\", root AS \"root!\",\n                  runtime AS \"runtime!: RuntimeKind\", toolchain AS \"toolchain!: RuntimeKind\",\n                  runtime_version AS \"runtime_version!\", install_cmd, build_cmd, start_cmd, migrate_cmd,\n                  output_dir, health_path AS \"health_path!\", startup_budget_secs AS \"startup_budget_secs!\",\n                  memory_mb AS \"memory_mb!\", cpu_percent AS \"cpu_percent!\",\n                  pause_for_migrations AS \"pause_for_migrations!: bool\", created_at AS \"created_at!\",\n                  updated_at AS \"updated_at!\"\n           FROM apps ORDER BY name, slug",
+  "describe": {
+    "columns": [
+      {
+        "name": "id!",
+        "ordinal": 0,
+        "type_info": "Text"
+      },
+      {
+        "name": "slug!",
+        "ordinal": 1,
+        "type_info": "Text"
+      },
+      {
+        "name": "name!",
+        "ordinal": 2,
+        "type_info": "Text"
+      },
+      {
+        "name": "repository!",
+        "ordinal": 3,
+        "type_info": "Text"
+      },
+      {
+        "name": "git_ref!",
+        "ordinal": 4,
+        "type_info": "Text"
+      },
+      {
+        "name": "tracking!: Tracking",
+        "ordinal": 5,
+        "type_info": "Text"
+      },
+      {
+        "name": "root!",
+        "ordinal": 6,
+        "type_info": "Text"
+      },
+      {
+        "name": "runtime!: RuntimeKind",
+        "ordinal": 7,
+        "type_info": "Text"
+      },
+      {
+        "name": "toolchain!: RuntimeKind",
+        "ordinal": 8,
+        "type_info": "Text"
+      },
+      {
+        "name": "runtime_version!",
+        "ordinal": 9,
+        "type_info": "Text"
+      },
+      {
+        "name": "install_cmd",
+        "ordinal": 10,
+        "type_info": "Text"
+      },
+      {
+        "name": "build_cmd",
+        "ordinal": 11,
+        "type_info": "Text"
+      },
+      {
+        "name": "start_cmd",
+        "ordinal": 12,
+        "type_info": "Text"
+      },
+      {
+        "name": "migrate_cmd",
+        "ordinal": 13,
+        "type_info": "Text"
+      },
+      {
+        "name": "output_dir",
+        "ordinal": 14,
+        "type_info": "Text"
+      },
+      {
+        "name": "health_path!",
+        "ordinal": 15,
+        "type_info": "Text"
+      },
+      {
+        "name": "startup_budget_secs!",
+        "ordinal": 16,
+        "type_info": "Integer"
+      },
+      {
+        "name": "memory_mb!",
+        "ordinal": 17,
+        "type_info": "Integer"
+      },
+      {
+        "name": "cpu_percent!",
+        "ordinal": 18,
+        "type_info": "Integer"
+      },
+      {
+        "name": "pause_for_migrations!: bool",
+        "ordinal": 19,
+        "type_info": "Integer"
+      },
+      {
+        "name": "created_at!",
+        "ordinal": 20,
+        "type_info": "Text"
+      },
+      {
+        "name": "updated_at!",
+        "ordinal": 21,
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      true,
+      true,
+      true,
+      true,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "86911b48b4c8338ccb55b5418b8e786fe0a8e27b604bfccf67c8802c623aee04"
+}

@@ -128,6 +128,14 @@ impl Platform for FakePlatform {
         Ok(())
     }
 
+    fn read_file(&self, path: &Path) -> Result<Option<String>, PlatformError> {
+        Ok(self.written(&path.to_string_lossy()))
+    }
+
+    fn file_exists(&self, path: &Path) -> bool {
+        self.written(&path.to_string_lossy()).is_some()
+    }
+
     fn remove_file(&self, path: &Path) -> Result<(), PlatformError> {
         let p = path.to_string_lossy().to_string();
         self.record(format!("remove_file {p}"))?;

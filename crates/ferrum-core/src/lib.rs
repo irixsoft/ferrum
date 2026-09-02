@@ -1,4 +1,5 @@
 pub mod acme;
+pub mod apps;
 pub mod credentials;
 pub mod detect;
 pub mod dns;
@@ -26,6 +27,7 @@ pub const DATA_DIR: &str = "/var/lib/ferrum";
 pub const ACME_ROOT: &str = "/var/lib/ferrum/acme";
 pub const ACME_WEBROOT: &str = "/var/lib/ferrum/acme/.well-known/acme-challenge";
 pub const CERTS_DIR: &str = "/var/lib/ferrum/certs";
+pub const APPS_DIR: &str = "/var/lib/ferrum/apps";
 
 #[cfg(test)]
 mod tests {
@@ -33,7 +35,13 @@ mod tests {
 
     #[test]
     fn every_managed_path_lives_under_the_data_directory() {
-        for p in [ACME_ROOT, ACME_WEBROOT, CERTS_DIR] {
+        for p in [
+            ACME_ROOT,
+            ACME_WEBROOT,
+            CERTS_DIR,
+            APPS_DIR,
+            runtime::toolchain::RUNTIMES_DIR,
+        ] {
             assert!(p.starts_with(DATA_DIR), "{p}");
         }
     }

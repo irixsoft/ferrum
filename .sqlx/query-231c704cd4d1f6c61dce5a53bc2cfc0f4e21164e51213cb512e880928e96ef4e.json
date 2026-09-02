@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "DELETE FROM app_ports WHERE app_id = ? AND name = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": []
+  },
+  "hash": "231c704cd4d1f6c61dce5a53bc2cfc0f4e21164e51213cb512e880928e96ef4e"
+}

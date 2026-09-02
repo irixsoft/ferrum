@@ -155,6 +155,18 @@ impl Platform for Ubuntu {
         atomic_write(path, contents, mode)
     }
 
+    fn read_file(&self, path: &Path) -> Result<Option<String>, PlatformError> {
+        match std::fs::read_to_string(path) {
+            Ok(text) => Ok(Some(text)),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    fn file_exists(&self, path: &Path) -> bool {
+        path.exists()
+    }
+
     fn remove_file(&self, path: &Path) -> Result<(), PlatformError> {
         ignore_missing(std::fs::remove_file(path))
     }

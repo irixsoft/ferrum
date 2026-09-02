@@ -19,6 +19,43 @@ pub enum DnsLookupError {
     PublicIp(String),
 }
 
+pub fn validate_hostname(s: &str) -> Result<String, String> {
+    let raw = s.trim().to_ascii_lowercase();
+    if raw.is_empty() {
+        return Err("Enter a hostname, for example panel.example.com".into());
+    }
+    if raw.contains("://") || raw.contains('/') {
+        return Err("Enter the hostname on its own, with no scheme and no path".into());
+    }
+    if raw.parse::<IpAddr>().is_ok() {
+        return Err(
+            "Ferrum needs a domain, not an IP address — a passkey cannot be enrolled against one"
+                .into(),
+        );
+    }
+
+    let host = raw.trim_end_matches('.').to_string();
+    if !host.contains('.') {
+        return Err(format!(
+            "\"{host}\" is a single label; enter a full domain such as panel.example.com"
+        ));
+    }
+    if host.len() > 253 {
+        return Err("That hostname is longer than DNS allows".into());
+    }
+    for label in host.split('.') {
+        let valid = !label.is_empty()
+            && label.len() <= 63
+            && !label.starts_with('-')
+            && !label.ends_with('-')
+            && label.chars().all(|c| c.is_ascii_alphanumeric() || c == '-');
+        if !valid {
+            return Err(format!("\"{host}\" is not a valid hostname"));
+        }
+    }
+    Ok(host)
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Verdict {
     Match,

@@ -58,6 +58,8 @@ pub trait Platform: Send + Sync {
     fn service(&self, action: ServiceAction, unit: &str) -> Result<(), PlatformError>;
     fn service_is_active(&self, unit: &str) -> bool;
     fn write_file(&self, path: &Path, contents: &str, mode: u32) -> Result<(), PlatformError>;
+    fn read_file(&self, path: &Path) -> Result<Option<String>, PlatformError>;
+    fn file_exists(&self, path: &Path) -> bool;
     fn remove_file(&self, path: &Path) -> Result<(), PlatformError>;
     fn make_dirs(&self, path: &Path, mode: u32) -> Result<(), PlatformError>;
     fn remove_tree(&self, path: &Path) -> Result<(), PlatformError>;

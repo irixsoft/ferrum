@@ -46,6 +46,25 @@ pub fn write_and_reload(
     platform.service(ServiceAction::Reload, NGINX_UNIT)
 }
 
+/// Like `write_and_reload`, but a config that fails `nginx -t` is rolled back to whatever was
+/// there before so one bad site never takes the others down.
+pub fn replace_and_reload(
+    platform: &dyn Platform,
+    path: &Path,
+    contents: &str,
+) -> Result<(), PlatformError> {
+    let previous = platform.read_file(path)?;
+    platform.write_file(path, contents, 0o644)?;
+    if let Err(failed) = platform.nginx_test() {
+        match previous {
+            Some(old) => platform.write_file(path, &old, 0o644)?,
+            None => platform.remove_file(path)?,
+        }
+        return Err(failed);
+    }
+    platform.service(ServiceAction::Reload, NGINX_UNIT)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -141,6 +160,29 @@ mod tests {
             .position(|c| c == "service reload nginx")
             .unwrap();
         assert!(w < t && t < r, "{calls:?}");
+    }
+
+    #[test]
+    fn a_replacement_that_fails_the_test_restores_the_previous_config() {
+        let p = FakePlatform::new();
+        let path = Path::new("/etc/nginx/conf.d/x.conf");
+        replace_and_reload(&p, path, "good").unwrap();
+        p.fail_next("nginx_test");
+        assert!(replace_and_reload(&p, path, "bad").is_err());
+        assert_eq!(
+            p.written("/etc/nginx/conf.d/x.conf").as_deref(),
+            Some("good")
+        );
+        assert_eq!(p.calls_matching("service reload nginx").len(), 1);
+    }
+
+    #[test]
+    fn a_first_config_that_fails_the_test_is_removed() {
+        let p = FakePlatform::new();
+        let path = Path::new("/etc/nginx/conf.d/x.conf");
+        p.fail_next("nginx_test");
+        assert!(replace_and_reload(&p, path, "bad").is_err());
+        assert!(p.removed("/etc/nginx/conf.d/x.conf"));
     }
 
     #[test]
