@@ -171,6 +171,9 @@ fn router(state: AppState) -> Router {
         .merge(crate::routes::deploys::router())
         .merge(crate::routes::host::router())
         .merge(crate::routes::logs::router())
+        .merge(crate::routes::security::router())
+        .merge(crate::routes::settings::router())
+        .merge(crate::routes::nginx::router())
         .route_layer(axum::middleware::from_fn_with_state(
             state.clone(),
             crate::auth::require_caller,
