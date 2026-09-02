@@ -1,11 +1,20 @@
 import { useState } from "react";
 import { useNavigate } from "@tanstack/react-router";
 import { ExternalLink } from "lucide-react";
-import { ApiError, useDeleteApp, useDeploys, useUpdateApp } from "@/lib/api";
+import {
+  ApiError,
+  useCancelDeploy,
+  useDeleteApp,
+  useDeploys,
+  useReleases,
+  useRestoreSnapshot,
+  useRetryCertificate,
+  useTriggerDeploy,
+  useUpdateApp,
+} from "@/lib/api";
 import { useApp } from "@/lib/api";
 import { useShell } from "@/shells/useShell";
 import { PageTitle } from "@/components/PageTitle";
-import { SampleData } from "@/components/SampleData";
 import { RuntimeMark, runtimeLabel } from "@/components/RuntimeMark";
 import { StatusPill } from "@/components/StatusPill";
 import { DeployLadder, DeployRail } from "@/components/DeployLadder";
@@ -15,18 +24,26 @@ import { Badge } from "@/components/ui/Badge";
 import { Code } from "@/components/ui/Code";
 import { Row } from "@/components/ui/Row";
 import { Tabs } from "@/components/ui/Tabs";
+import { Sheet } from "@/components/ui/Sheet";
 import { ConfigForm, draftFromApp, toChanges, type Draft } from "./ConfigForm";
 import { DataCard } from "./DataCard";
+import { DeployLog } from "./DeployLog";
 import { EnvironmentPanel } from "./EnvironmentPanel";
 import { NginxPanel } from "./NginxPanel";
 import { LogPanel } from "./LogPanel";
-import { ago, duration } from "@/lib/utils";
-import type { AppDetail } from "@/types/api";
+import { RollbackDialog } from "./RollbackDialog";
+import { ago, daysUntil, duration } from "@/lib/utils";
+import type { AppDetail, CertStatus, Deploy, Release } from "@/types/api";
 
 type Tab = "overview" | "configuration" | "environment" | "deploys" | "logs" | "nginx";
 
+const message = (e: unknown) => (e instanceof ApiError ? e.message : e ? String(e) : null);
+const short = (sha: string | null) => (sha ? sha.slice(0, 7) : "");
+
 export function AppDetailPage({ slug }: { slug: string }) {
   const { data: app, isLoading } = useApp(slug);
+  const { data: deploys = [] } = useDeploys(slug);
+  const trigger = useTriggerDeploy(slug);
   const [tab, setTab] = useState<Tab>("overview");
 
   if (isLoading) return null;
@@ -43,21 +60,41 @@ export function AppDetailPage({ slug }: { slug: string }) {
   }
 
   const primary = app.domains[0];
+  const active = deploys.find((d) => d.state !== null);
+  const deployLabel = active
+    ? active.state === "Queued" && active.queue_position
+      ? `Queued, ${active.queue_position} ahead`
+      : "Deploying…"
+    : "Deploy";
 
   return (
     <>
       <PageTitle
         above={
           <span className="inline-flex items-center gap-2 flex-wrap">
-            <StatusPill status="new" />
+            <StatusPill status={app.status} />
             <RuntimeMark runtime={app.runtime} version={app.runtime_version} />
           </span>
         }
         title={app.name}
         action={
-          <Button size="md" variant="primary" disabled title="Deploys arrive with the pipeline">
-            Deploy
-          </Button>
+          <div className="flex items-center gap-2">
+            {trigger.error ? (
+              <span className="text-[12.5px] text-fail">{message(trigger.error)}</span>
+            ) : null}
+            <Button
+              size="md"
+              variant="primary"
+              disabled={active !== undefined || trigger.isPending}
+              title={app.tracking === "releases" ? "Deploys the latest release" : `Deploys the tip of ${app.git_ref}`}
+              onClick={() => {
+                trigger.mutate(undefined);
+                setTab("deploys");
+              }}
+            >
+              {deployLabel}
+            </Button>
+          </div>
         }
       />
 
@@ -81,7 +118,7 @@ export function AppDetailPage({ slug }: { slug: string }) {
           { value: "overview", label: "Overview" },
           { value: "configuration", label: "Configuration" },
           { value: "environment", label: "Environment", count: app.env.length },
-          { value: "deploys", label: "Deploys" },
+          { value: "deploys", label: "Deploys", count: deploys.length || undefined },
           { value: "logs", label: "Logs" },
           { value: "nginx", label: "nginx" },
         ]}
@@ -97,7 +134,7 @@ export function AppDetailPage({ slug }: { slug: string }) {
           managed={app.managed}
         />
       )}
-      {tab === "deploys" && <Deploys slug={app.slug} />}
+      {tab === "deploys" && <Deploys app={app} deploys={deploys} />}
       {tab === "logs" && <LogPanel slug={app.slug} />}
       {tab === "nginx" && <NginxPanel slug={app.slug} />}
     </>
@@ -106,6 +143,7 @@ export function AppDetailPage({ slug }: { slug: string }) {
 
 function Overview({ app }: { app: AppDetail }) {
   const isStatic = app.runtime === "static";
+  const retry = useRetryCertificate(app.slug);
   return (
     <div className="grid gap-4 lg:grid-cols-12">
       <div className="lg:col-span-7 grid gap-4">
@@ -195,9 +233,21 @@ function Overview({ app }: { app: AppDetail }) {
 
       <div className="lg:col-span-5 grid gap-4 content-start">
         <Card>
-          <CardHeader title="Host" hint="Provisioned, waiting for a first release" />
+          <CardHeader
+            title="Host"
+            hint={app.current_release ? "Serving from the current release" : "Provisioned, waiting for a first release"}
+          />
           <CardBody>
             <dl>
+              <Row label="Current release" hint={app.current_release ? `built ${ago(app.current_release.built_at)}` : undefined}>
+                {app.current_release ? (
+                  <span className="font-mono text-[13px]">
+                    {short(app.current_release.commit_sha)} <span className="text-ink-4">on {app.current_release.git_ref}</span>
+                  </span>
+                ) : (
+                  <span className="text-ink-4">None yet</span>
+                )}
+              </Row>
               <Row label="System user">
                 <Code>ferrum-{app.slug}</Code>
               </Row>
@@ -205,7 +255,7 @@ function Overview({ app }: { app: AppDetail }) {
                 <Code>/var/lib/ferrum/apps/{app.slug}</Code>
               </Row>
               {isStatic ? null : (
-                <Row label="Unit" hint="inactive until the first deploy">
+                <Row label="Unit" hint={app.current_release ? undefined : "inactive until the first deploy"}>
                   <Code>ferrum-app-{app.slug}.service</Code>
                 </Row>
               )}
@@ -236,25 +286,73 @@ function Overview({ app }: { app: AppDetail }) {
         )}
 
         <Card>
-          <CardHeader title="Domains" />
+          <CardHeader
+            title="Domains"
+            hint="Certificates are issued once DNS points here"
+            action={
+              app.certificates.some((c) => c.status.kind !== "issued") ? (
+                <Button size="sm" variant="ghost" disabled={retry.isPending} onClick={() => retry.mutate(undefined)}>
+                  Retry now
+                </Button>
+              ) : null
+            }
+          />
           <CardBody>
             {app.domains.length === 0 ? (
               <p className="text-[13.5px] text-ink-3">No domain yet. Add one under Configuration.</p>
             ) : (
               <ul className="divide-y divide-line">
-                {app.domains.map((d, i) => (
-                  <li key={d} className="py-2.5 flex items-center gap-2">
-                    <span className="text-[13.5px] text-ink truncate">{d}</span>
-                    {i === 0 ? <Badge>Primary</Badge> : <Badge>Redirects</Badge>}
+                {app.certificates.map((c, i) => (
+                  <li key={c.domain} className="py-2.5">
+                    <div className="flex items-center gap-2">
+                      <span className="text-[13.5px] text-ink truncate">{c.domain}</span>
+                      {i === 0 ? <Badge>Primary</Badge> : <Badge>Redirects</Badge>}
+                      <Certificate status={c.status} />
+                    </div>
+                    {c.status.kind === "waiting_for_dns" || c.status.kind === "failed" ? (
+                      <p className="text-[12px] text-ink-4 mt-1">{c.status.detail}</p>
+                    ) : null}
                   </li>
                 ))}
               </ul>
             )}
+            {retry.error ? <p className="text-[12.5px] text-fail mt-2">{message(retry.error)}</p> : null}
           </CardBody>
         </Card>
       </div>
     </div>
   );
+}
+
+function Certificate({ status }: { status: CertStatus }) {
+  switch (status.kind) {
+    case "issued": {
+      const days = daysUntil(status.not_after);
+      return (
+        <Badge tone={days < 30 ? "hold" : "ok"} className="ml-auto">
+          TLS · {days}d
+        </Badge>
+      );
+    }
+    case "waiting_for_dns":
+      return (
+        <Badge tone="hold" className="ml-auto">
+          Waiting for DNS
+        </Badge>
+      );
+    case "failed":
+      return (
+        <Badge tone="fail" className="ml-auto">
+          Retry {ago(status.retry_at).replace(" ago", "")}
+        </Badge>
+      );
+    default:
+      return (
+        <Badge className="ml-auto">
+          No certificate
+        </Badge>
+      );
+  }
 }
 
 function Command({ value }: { value: string | null }) {
@@ -267,7 +365,6 @@ function Configuration({ app }: { app: AppDetail }) {
   const [confirm, setConfirm] = useState("");
   const update = useUpdateApp(app.slug);
   const remove = useDeleteApp(app.slug);
-  const message = (e: unknown) => (e instanceof ApiError ? e.message : e ? String(e) : null);
 
   return (
     <div className="grid gap-4">
@@ -318,20 +415,55 @@ function Configuration({ app }: { app: AppDetail }) {
   );
 }
 
-function Deploys({ slug }: { slug: string }) {
-  const { data: all = [] } = useDeploys();
+function Deploys({ app, deploys }: { app: AppDetail; deploys: Deploy[] }) {
   const { shell } = useShell();
-  const deploys = all.filter((d) => d.app_slug === slug);
+  const { data: releases = [] } = useReleases(app.slug);
+  const cancel = useCancelDeploy();
+  const restore = useRestoreSnapshot();
+  const [logOf, setLogOf] = useState<Deploy | null>(null);
+  const [rollbackTo, setRollbackTo] = useState<Release | null>(null);
   const running = deploys.find((d) => d.state !== null);
+  const history = deploys.filter((d) => d.state === null);
+  const onDisk = (d: Deploy) => (d.release_id ? releases.find((r) => r.id === d.release_id) ?? null : null);
+  const snapshotOf = (release: Release) => {
+    const index = deploys.findIndex((d) => d.release_id === release.id);
+    const replacedBy = deploys.slice(0, index).reverse().find((d) => d.snapshots.length > 0 && d.outcome === "Live");
+    return replacedBy ?? null;
+  };
 
   return (
     <div className="grid gap-4">
       {running ? (
         <Card>
-          <CardHeader title="Running now" hint={`${running.commit_sha} — ${running.commit_message}`} action={<SampleData />} />
+          <CardHeader
+            title={running.state === "Queued" ? "Queued" : "Running now"}
+            hint={`${short(running.commit_sha) || running.git_ref}${running.commit_message ? ` — ${running.commit_message}` : ""}`}
+            action={
+              <>
+                <Button size="sm" variant="ghost" onClick={() => setLogOf(running)}>
+                  Log
+                </Button>
+                {running.state === "Queued" ? (
+                  <Button size="sm" variant="danger" disabled={cancel.isPending} onClick={() => cancel.mutate(running.id)}>
+                    Cancel
+                  </Button>
+                ) : null}
+              </>
+            }
+          />
           <CardBody>
+            {running.state === "Queued" && running.queue_position ? (
+              <p className="text-[13px] text-ink-3 mb-3">
+                {running.queue_position} deploy{running.queue_position > 1 ? "s" : ""} ahead. Builds run one at a time so live apps keep their memory.
+              </p>
+            ) : null}
             <DeployLadder deploy={running} />
           </CardBody>
+          {app.commands.migrate && app.pause_for_migrations ? (
+            <CardFoot>
+              <span>Traffic is paused while migrations run. It resumes once the health check passes.</span>
+            </CardFoot>
+          ) : null}
         </Card>
       ) : null}
 
@@ -339,28 +471,30 @@ function Deploys({ slug }: { slug: string }) {
         <CardHeader
           title="History"
           hint="The last 5 releases stay on disk, so a roll back needs no rebuild"
-          action={<SampleData />}
         />
-        {deploys.length === 0 ? (
+        {history.length === 0 ? (
           <CardBody>
-            <p className="text-[13.5px] text-ink-3">Never deployed.</p>
+            <p className="text-[13.5px] text-ink-3">
+              {running ? "The first deploy is running." : "Never deployed."}
+            </p>
           </CardBody>
         ) : shell === "mobile" ? (
           <div className="px-5 pb-4 divide-y divide-line">
-            {deploys.map((d) => (
+            {history.map((d) => (
               <div key={d.id} className="py-3">
                 <div className="flex items-center justify-between gap-3">
-                  <span className="font-mono text-[13px] text-ink">{d.commit_sha}</span>
+                  <span className="font-mono text-[13px] text-ink">{short(d.commit_sha) || d.git_ref}</span>
                   <Outcome deploy={d} />
                 </div>
-                <p className="text-[13px] text-ink-2 mt-1">{d.commit_message}</p>
+                <p className="text-[13px] text-ink-2 mt-1">{d.commit_message ?? d.git_ref}</p>
                 <p className="text-[12px] text-ink-4 mt-1">
-                  {d.author} · {ago(d.started_at)}
+                  {d.author ?? d.trigger} · {ago(d.started_at)}
                   {d.duration_secs ? ` · ${duration(d.duration_secs)}` : ""}
                 </p>
                 {d.failure_reason ? (
                   <p className="text-[12.5px] text-fail mt-1.5">{d.failure_reason}</p>
                 ) : null}
+                <Actions deploy={d} release={onDisk(d)} onLog={() => setLogOf(d)} onRollback={setRollbackTo} onRestore={(id) => restore.mutate(id)} />
               </div>
             ))}
           </div>
@@ -372,35 +506,105 @@ function Deploys({ slug }: { slug: string }) {
                 <th className="font-medium px-3 py-2">Pipeline</th>
                 <th className="font-medium px-3 py-2">Started</th>
                 <th className="font-medium px-3 py-2">Took</th>
-                <th className="font-medium px-5 py-2 text-right">Outcome</th>
+                <th className="font-medium px-3 py-2">Outcome</th>
+                <th className="font-medium px-5 py-2 text-right"></th>
               </tr>
             </thead>
             <tbody>
-              {deploys.map((d) => (
-                <tr key={d.id} className="border-b border-line last:border-0">
+              {history.map((d) => (
+                <tr key={d.id} className="border-b border-line last:border-0 align-top">
                   <td className="px-5 py-3">
-                    <span className="font-mono text-[13px] text-ink">{d.commit_sha}</span>
+                    <span className="font-mono text-[13px] text-ink">{short(d.commit_sha) || d.git_ref}</span>
                     <span className="block text-[12.5px] text-ink-3 truncate max-w-xs">
-                      {d.commit_message}
+                      {d.commit_message ?? d.git_ref}
+                      {d.author ? <span className="text-ink-4"> · {d.author}</span> : null}
                     </span>
+                    {d.failure_reason ? (
+                      <span className="block text-[12.5px] text-fail mt-1 max-w-sm">{d.failure_reason}</span>
+                    ) : null}
                   </td>
                   <td className="px-3 py-3">
-                    {d.steps.length ? <DeployRail deploy={d} /> : <span className="text-ink-4">—</span>}
+                    <DeployRail deploy={d} />
                   </td>
-                  <td className="px-3 py-3 text-[12.5px] text-ink-3">{ago(d.started_at)}</td>
+                  <td className="px-3 py-3 text-[12.5px] text-ink-3 whitespace-nowrap">{ago(d.started_at)}</td>
                   <td className="px-3 py-3 font-mono text-[12.5px] text-ink-3 tnum">
-                    {d.duration_secs ? duration(d.duration_secs) : "—"}
+                    {d.duration_secs !== null ? duration(d.duration_secs) : "—"}
                   </td>
-                  <td className="px-5 py-3 text-right">
+                  <td className="px-3 py-3">
                     <Outcome deploy={d} />
+                  </td>
+                  <td className="px-5 py-3 text-right whitespace-nowrap">
+                    <Actions deploy={d} release={onDisk(d)} onLog={() => setLogOf(d)} onRollback={setRollbackTo} onRestore={(id) => restore.mutate(id)} />
                   </td>
                 </tr>
               ))}
             </tbody>
           </table>
         )}
+        {restore.error || cancel.error ? (
+          <CardFoot>
+            <span className="text-fail">{message(restore.error ?? cancel.error)}</span>
+          </CardFoot>
+        ) : restore.isSuccess ? (
+          <CardFoot>
+            <span className="text-ok">Snapshot restored.</span>
+          </CardFoot>
+        ) : null}
       </Card>
+
+      <Sheet
+        open={logOf !== null}
+        onClose={() => setLogOf(null)}
+        title={logOf ? `Log of ${short(logOf.commit_sha) || logOf.git_ref}` : ""}
+      >
+        {logOf ? <DeployLog id={logOf.id} /> : null}
+      </Sheet>
+
+      <RollbackDialog
+        slug={app.slug}
+        release={rollbackTo}
+        snapshotOf={rollbackTo ? snapshotOf(rollbackTo) : null}
+        onClose={() => setRollbackTo(null)}
+      />
     </div>
+  );
+}
+
+function Actions({
+  deploy,
+  release,
+  onLog,
+  onRollback,
+  onRestore,
+}: {
+  deploy: Deploy;
+  release: Release | null;
+  onLog: () => void;
+  onRollback: (release: Release) => void;
+  onRestore: (snapshotId: string) => void;
+}) {
+  const failedMigration = deploy.outcome === "Failed" && deploy.snapshots.length > 0;
+  return (
+    <span className="inline-flex items-center gap-1 flex-wrap justify-end mt-1 sm:mt-0">
+      <Button size="sm" variant="ghost" onClick={onLog}>
+        Log
+      </Button>
+      {release && !release.current ? (
+        <Button size="sm" variant="ghost" onClick={() => onRollback(release)}>
+          Roll back
+        </Button>
+      ) : null}
+      {failedMigration ? (
+        <Button
+          size="sm"
+          variant="danger"
+          title={`Restores ${deploy.snapshots[0].database} to ${new Date(deploy.snapshots[0].taken_at).toLocaleString()}`}
+          onClick={() => onRestore(deploy.snapshots[0].id)}
+        >
+          Restore snapshot
+        </Button>
+      ) : null}
+    </span>
   );
 }
 

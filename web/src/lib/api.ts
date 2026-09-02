@@ -8,6 +8,7 @@ import type {
   AppDetail,
   Database,
   Deploy,
+  DeployOutcome,
   Detected,
   Enrolled,
   EnvChange,
@@ -15,6 +16,7 @@ import type {
   GithubRepo,
   GithubStatus,
   HostStatus,
+  LogLine,
   Me,
   MetricSeries,
   MintedToken,
@@ -24,6 +26,7 @@ import type {
   Progress,
   RedisInstance,
   RedisListed,
+  Release,
   Runtimes,
   Session,
   Toolchain,
@@ -69,6 +72,10 @@ export const keys = {
   apps: ["apps"] as const,
   app: (slug: string) => ["apps", slug] as const,
   deploys: ["deploys"] as const,
+  running: ["deploys", "running"] as const,
+  deploy: (id: string) => ["deploys", "one", id] as const,
+  appDeploys: (slug: string) => ["deploys", "app", slug] as const,
+  releases: (slug: string) => ["releases", slug] as const,
   postgres: ["postgres"] as const,
   databases: ["databases"] as const,
   redis: ["redis"] as const,
@@ -120,14 +127,38 @@ export function useApp(slug: string) {
   });
 }
 
-export function useDeploys() {
-  return useQuery({ queryKey: keys.deploys, queryFn: () => settle<Deploy[]>(mock.deployHistory) });
+const anyRunning = (deploys: Deploy[] | undefined) => deploys?.some((d) => d.state !== null) ?? false;
+
+export function useDeploys(slug?: string) {
+  return useQuery({
+    queryKey: slug ? keys.appDeploys(slug) : keys.deploys,
+    queryFn: () => request<Deploy[]>(slug ? `/apps/${slug}/deploys` : "/deploys"),
+    refetchInterval: (query) => (anyRunning(query.state.data) ? 2000 : false),
+  });
 }
 
+/** Polls quickly while one runs and slowly otherwise, so a push shows up without a reload. */
 export function useRunningDeploy() {
   return useQuery({
-    queryKey: [...keys.deploys, "running"],
-    queryFn: () => settle<Deploy | null>(mock.runningDeploy),
+    queryKey: keys.running,
+    queryFn: () => request<Deploy | null>("/deploys?running=1"),
+    refetchInterval: (query) => (query.state.data ? 2000 : 15_000),
+  });
+}
+
+export function useDeploy(id: string | null) {
+  return useQuery({
+    queryKey: keys.deploy(id ?? ""),
+    queryFn: () => request<Deploy>(`/deploys/${id}`),
+    enabled: id !== null,
+    refetchInterval: (query) => (query.state.data?.state !== null ? 2000 : false),
+  });
+}
+
+export function useReleases(slug: string) {
+  return useQuery({
+    queryKey: keys.releases(slug),
+    queryFn: () => request<Release[]>(`/apps/${slug}/releases`),
   });
 }
 
@@ -306,6 +337,76 @@ export function useReleaseRedis(slug: string) {
   return useInvalidating([keys.apps, keys.redis], () =>
     request<void>(`/apps/${slug}/redis`, { method: "DELETE" }),
   );
+}
+
+export function useTriggerDeploy(slug: string) {
+  return useInvalidating([keys.deploys, keys.apps], (ref?: string) =>
+    request<Deploy>(`/apps/${slug}/deploys`, body(ref ? { ref } : {})),
+  );
+}
+
+export function useRollback(slug: string) {
+  return useInvalidating([keys.deploys, keys.apps], (input: { release_id: string; restore_deploy_id?: string }) =>
+    request<Deploy>(`/apps/${slug}/rollback`, body(input)),
+  );
+}
+
+export function useRestoreSnapshot() {
+  return useInvalidating(keys.deploys, (id: string) =>
+    request<void>(`/snapshots/${id}/restore`, { method: "POST" }),
+  );
+}
+
+export function useCancelDeploy() {
+  return useInvalidating([keys.deploys, keys.apps], (id: string) =>
+    request<void>(`/deploys/${id}/cancel`, { method: "POST" }),
+  );
+}
+
+export function useRetryCertificate(slug: string) {
+  return useInvalidating(keys.apps, () =>
+    request<void>(`/apps/${slug}/certificates`, { method: "POST" }),
+  );
+}
+
+/** Stored lines first, then live ones; resolves with the outcome once the deploy ends. */
+export async function followDeployLog(
+  id: string,
+  onLine: (line: LogLine) => void,
+  signal?: AbortSignal,
+): Promise<DeployOutcome> {
+  const res = await fetch(`/api/deploys/${id}/log`, {
+    credentials: "same-origin",
+    headers: { accept: "text/event-stream" },
+    signal,
+  });
+  if (!res.ok || !res.body) {
+    const failed = await res.json().catch(() => null);
+    throw new ApiError(res.status, failed?.error ?? `${res.status} ${res.statusText}`);
+  }
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffered = "";
+  for (;;) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buffered += decoder.decode(value, { stream: true });
+    const frames = buffered.split("\n\n");
+    buffered = frames.pop() ?? "";
+    for (const frame of frames) {
+      let event = "message";
+      const data: string[] = [];
+      for (const line of frame.split("\n")) {
+        if (line.startsWith("event:")) event = line.slice(6).trim();
+        else if (line.startsWith("data:")) data.push(line.slice(5).trim());
+      }
+      if (data.length === 0) continue;
+      const parsed = JSON.parse(data.join("\n")) as LogLine | { outcome: DeployOutcome };
+      if (event === "done") return (parsed as { outcome: DeployOutcome }).outcome;
+      if (event === "line") onLine(parsed as LogLine);
+    }
+  }
+  throw new ApiError(0, "The log ended before the deploy did.");
 }
 
 export async function resolveVersion(kind: Toolchain, wanted: string | null): Promise<string> {

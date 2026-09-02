@@ -20,7 +20,7 @@ export function AppCard({ app }: { app: App }) {
           <h3 className="font-display text-[19px] text-ink leading-none">{app.name}</h3>
           <p className="mt-1.5 text-[13px] text-ink-3 truncate">{primary ?? "No domain yet"}</p>
         </div>
-        <StatusPill status="new" />
+        <StatusPill status={app.status} />
       </div>
 
       <div className="mt-4 flex items-center gap-3 flex-wrap">
@@ -39,7 +39,7 @@ export function AppCard({ app }: { app: App }) {
 
       <div className="mt-4 pt-3 border-t border-line flex items-center justify-between gap-2">
         <span className="text-[12.5px] text-ink-4 truncate">
-          Never deployed · created {ago(app.created_at)}
+          {app.current_release_id ? "Deployed" : "Never deployed"} · created {ago(app.created_at)}
         </span>
         <ArrowUpRight
           size={14}

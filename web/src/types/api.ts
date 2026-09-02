@@ -22,28 +22,73 @@ export const DEPLOY_STATES = [
 
 export type DeployState = (typeof DEPLOY_STATES)[number];
 export type DeployOutcome = "Live" | "Failed" | "RolledBack";
+export type DeployTrigger = "webhook" | "manual" | "cli" | "rollback";
 
 export interface DeployStep {
   state: DeployState;
   elapsed_secs: number | null;
   status: "done" | "active" | "pending" | "skipped" | "failed";
-  note?: string;
+  note: string | null;
+}
+
+export interface Snapshot {
+  id: string;
+  database_id: string;
+  database: string;
+  deploy_id: string | null;
+  path: string;
+  taken_at: string;
 }
 
 export interface Deploy {
   id: string;
+  app_id: string;
   app_slug: string;
+  trigger: DeployTrigger;
+  git_ref: string;
+  commit_sha: string | null;
+  commit_message: string | null;
+  author: string | null;
   state: DeployState | null;
   outcome: DeployOutcome | null;
-  commit_sha: string;
-  commit_message: string;
-  author: string;
-  ref: string;
+  failure_reason: string | null;
+  queue_position: number | null;
+  release_id: string | null;
+  restore_deploy_id: string | null;
   started_at: string;
+  finished_at: string | null;
   duration_secs: number | null;
   steps: DeployStep[];
-  failure_reason?: string;
-  queue_position?: number;
+  snapshots: Snapshot[];
+}
+
+export interface Release {
+  id: string;
+  app_id: string;
+  dir: string;
+  git_ref: string;
+  commit_sha: string;
+  commit_message: string | null;
+  built_at: string;
+  current: boolean;
+}
+
+export interface LogLine {
+  seq: number;
+  at: string;
+  stream: "system" | "stdout" | "stderr";
+  text: string;
+}
+
+export type CertStatus =
+  | { kind: "issued"; not_after: string }
+  | { kind: "waiting_for_dns"; detail: string }
+  | { kind: "failed"; detail: string; retry_at: string }
+  | { kind: "none" };
+
+export interface DomainCert {
+  domain: string;
+  status: CertStatus;
 }
 
 export interface Route {
@@ -91,6 +136,8 @@ export interface App {
   routes: Route[];
   packages: string[];
   domains: string[];
+  current_release_id: string | null;
+  status: AppStatus;
   created_at: string;
   updated_at: string;
 }
@@ -98,6 +145,8 @@ export interface App {
 export interface AppDetail extends App {
   env: Array<{ key: string }>;
   deployed: boolean;
+  current_release: Release | null;
+  certificates: DomainCert[];
   databases: string[];
   redis: RedisInstance | null;
   managed: string[];
