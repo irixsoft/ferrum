@@ -7,7 +7,7 @@ use ferrum_core::runtime::toolchain::Store;
 use ferrum_core::state::State;
 use ferrum_platform::{Platform, Ubuntu};
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use tower_http::trace::TraceLayer;
 
 pub use ferrum_core::LISTEN_ADDR;
@@ -20,6 +20,7 @@ pub struct Deps {
     pub platform: Arc<dyn Platform>,
     pub toolchains: Store,
     pub mirrors: Mirrors,
+    pub codename: String,
 }
 
 impl Default for Deps {
@@ -29,8 +30,19 @@ impl Default for Deps {
             platform: Arc::new(Ubuntu),
             toolchains: Store::default(),
             mirrors: Mirrors::default(),
+            codename: ferrum_platform::detect()
+                .map(|host| host.codename)
+                .unwrap_or_default(),
         }
     }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub enum Install {
+    #[default]
+    Idle,
+    Running,
+    Failed(String),
 }
 
 #[derive(Clone)]
@@ -42,6 +54,8 @@ pub struct AppState {
     pub platform: Arc<dyn Platform>,
     pub toolchains: Store,
     pub mirrors: Mirrors,
+    pub codename: String,
+    pub postgres_install: Arc<Mutex<Install>>,
 }
 
 impl AppState {
@@ -54,6 +68,8 @@ impl AppState {
             platform: deps.platform,
             toolchains: deps.toolchains,
             mirrors: deps.mirrors,
+            codename: deps.codename,
+            postgres_install: Arc::default(),
         }
     }
 }
@@ -92,6 +108,7 @@ fn router(state: AppState) -> Router {
         .merge(crate::routes::github::router())
         .merge(crate::routes::apps::router())
         .merge(crate::routes::runtimes::router())
+        .merge(crate::routes::databases::router())
         .route_layer(axum::middleware::from_fn_with_state(
             state.clone(),
             crate::auth::require_caller,

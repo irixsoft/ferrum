@@ -99,6 +99,7 @@ pub async fn harness_with_deps(github_base: &str, downloads: &str) -> Harness {
             bun_releases: downloads.to_string(),
             dotnet_script: format!("{downloads}/dotnet-install.sh"),
         },
+        codename: "noble".into(),
     };
     Harness {
         app: ferrum::server::app_with(db.clone(), deps),
@@ -282,6 +283,21 @@ impl Harness {
             .execute(&self.db.pool)
             .await
             .unwrap();
+    }
+
+    /// A signed-in harness with a Node toolchain and a provisioned app called `slug`.
+    pub async fn create_app(&self, slug: &str, cookie: &str) {
+        self.pretend_toolchain(RuntimeKind::Node, "22.11.0").await;
+        let res = self
+            .post_with_cookie("/api/apps", &new_app_json(slug), cookie)
+            .await;
+        assert_eq!(res.status, StatusCode::CREATED, "{}", res.json);
+    }
+
+    pub fn env_file(&self, slug: &str) -> String {
+        self.platform
+            .written(&format!("/var/lib/ferrum/apps/{slug}/shared/.env"))
+            .expect("the env file was written")
     }
 
     pub async fn machine_token(&self, read_only: bool) -> String {
