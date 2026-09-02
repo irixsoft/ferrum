@@ -88,6 +88,9 @@ pub async fn status(state: &State, platform: &dyn Platform) -> anyhow::Result<Ba
 }
 
 pub fn unban(platform: &dyn Platform, ip: &str) -> anyhow::Result<()> {
+    if !platform.service_is_active(FAIL2BAN_UNIT) {
+        return Err(SecurityError::NotBanned(ip.to_string()).into());
+    }
     let mut found = false;
     for jail in platform.fail2ban_jails()? {
         if platform.fail2ban_bans(&jail)?.iter().any(|b| b.ip == ip) {
@@ -184,6 +187,12 @@ mod tests {
     async fn bans_are_listed_across_jails_and_unbanned_wherever_they_appear() {
         let (_d, state) = state().await;
         let p = FakePlatform::new();
+        let absent = unban(&p, "45.148.10.87").unwrap_err();
+        assert!(matches!(
+            absent.downcast_ref::<SecurityError>(),
+            Some(SecurityError::NotBanned(_))
+        ));
+        assert!(p.calls_matching("fail2ban").is_empty(), "nothing to ask");
         p.set_active("fail2ban");
         p.set_jails(&["sshd", "nginx-botsearch"]);
         p.ban("sshd", "45.148.10.87");

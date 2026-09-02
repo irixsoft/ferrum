@@ -37,10 +37,10 @@ export function SystemPage() {
   const { data: host } = useHost();
   const { range } = useRange();
   const { data: metrics } = useMetrics("host", range);
-  const { data: security } = useSecurity();
+  const { data: security, error: securityError } = useSecurity();
   const [band, setBand] = useState<"cpu" | "memory">("cpu");
 
-  if (!host || !security) return null;
+  if (!host) return null;
 
   const mem = pct(host.memory_used_mb, host.memory_total_mb);
   const disk = pct(host.disk_used_gb, host.disk_total_gb);
@@ -101,21 +101,34 @@ export function SystemPage() {
           </Card>
         </div>
 
-        <div className="lg:col-span-5">
-          <Firewall firewall={security.firewall} />
-        </div>
+        {security ? (
+          <>
+            <div className="lg:col-span-5">
+              <Firewall firewall={security.firewall} />
+            </div>
 
-        <div className="lg:col-span-7">
-          <Bans bans={security.bans} />
-        </div>
+            <div className="lg:col-span-7">
+              <Bans bans={security.bans} />
+            </div>
 
-        <div className="lg:col-span-5">
-          <Updates updates={security.updates} />
-        </div>
+            <div className="lg:col-span-5">
+              <Updates updates={security.updates} />
+            </div>
 
-        <div className="lg:col-span-7">
-          <Ssh ssh={security.ssh} hostname={host.hostname} />
-        </div>
+            <div className="lg:col-span-7">
+              <Ssh ssh={security.ssh} hostname={host.hostname} />
+            </div>
+          </>
+        ) : securityError ? (
+          <div className="lg:col-span-12">
+            <Card>
+              <CardHeader title="Hardening" hint="The host did not answer" />
+              <CardBody>
+                <p className="text-[12.5px] text-fail">{message(securityError)}</p>
+              </CardBody>
+            </Card>
+          </div>
+        ) : null}
       </div>
     </>
   );
