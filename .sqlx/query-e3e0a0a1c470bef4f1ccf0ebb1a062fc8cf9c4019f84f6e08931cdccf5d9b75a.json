@@ -1,0 +1,32 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT d.name AS \"name!\", d.role AS \"role!\", d.password AS \"password!\"\n           FROM app_databases l JOIN databases d ON d.id = l.database_id\n           WHERE l.app_id = ? ORDER BY l.position, d.name",
+  "describe": {
+    "columns": [
+      {
+        "name": "name!",
+        "ordinal": 0,
+        "type_info": "Text"
+      },
+      {
+        "name": "role!",
+        "ordinal": 1,
+        "type_info": "Text"
+      },
+      {
+        "name": "password!",
+        "ordinal": 2,
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "e3e0a0a1c470bef4f1ccf0ebb1a062fc8cf9c4019f84f6e08931cdccf5d9b75a"
+}

@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT OR IGNORE INTO app_databases (app_id, database_id, position)\n         VALUES (?, ?, (SELECT coalesce(max(position) + 1, 0) FROM app_databases WHERE app_id = ?))",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": []
+  },
+  "hash": "9b62b9f891d0918df5e31753d9f5fc626333809735bc56434f27a51528271e8c"
+}

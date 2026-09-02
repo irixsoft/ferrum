@@ -7,6 +7,7 @@ pub mod enrollment;
 pub mod github;
 pub mod http;
 pub mod nginx;
+pub mod postgres;
 pub mod runtime;
 mod secret;
 pub mod sessions;
