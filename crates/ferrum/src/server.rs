@@ -31,6 +31,8 @@ pub struct Deps {
     pub directory: Directory,
     pub lookup: Lookup,
     pub public_ip: Option<IpAddr>,
+    /// The panel hostname, which is the `Host` nginx forwards to `/mcp`.
+    pub hostname: Option<String>,
 }
 
 impl Default for Deps {
@@ -46,6 +48,7 @@ impl Default for Deps {
             directory: Directory::LetsEncrypt,
             lookup: Lookup::Public,
             public_ip: None,
+            hostname: None,
         }
     }
 }
@@ -71,6 +74,7 @@ pub struct AppState {
     pub postgres_install: Arc<Mutex<Install>>,
     pub deployer: Deployer,
     pub certs: Issuance,
+    pub hostname: Option<String>,
 }
 
 impl AppState {
@@ -95,6 +99,7 @@ impl AppState {
             postgres_install: Arc::default(),
             deployer: Deployer::start(ctx),
             certs: Issuance::new(deps.directory, deps.lookup, deps.public_ip),
+            hostname: deps.hostname,
         }
     }
 
@@ -179,8 +184,16 @@ fn router(state: AppState) -> Router {
             crate::auth::require_caller,
         ));
 
+    let mcp = Router::new()
+        .fallback_service(crate::mcp::service(state.clone()))
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            crate::mcp::require_token,
+        ));
+
     public
         .merge(protected)
+        .nest_service("/mcp", mcp)
         .merge(crate::panel::router())
         .layer(TraceLayer::new_for_http())
         .with_state(state)
@@ -190,6 +203,7 @@ pub async fn serve(data_dir: &Path) -> anyhow::Result<()> {
     let state = State::open(data_dir).await?;
     let deps = Deps {
         directory: acme_directory(&state).await?,
+        hostname: ferrum_core::setup::hostname(&state).await?,
         ..Deps::default()
     };
     let app_state = AppState::new(state.clone(), deps);

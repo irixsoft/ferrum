@@ -23,6 +23,7 @@ ferrum-platform = { path = "../ferrum-platform" }
 mimalloc.workspace = true
 mime_guess.workspace = true
 reqwest.workspace = true
+rmcp = { version = "2.2", default-features = false, features = ["server", "macros", "transport-streamable-http-server"] }
 rust-embed.workspace = true
 serde.workspace = true
 serde_json.workspace = true

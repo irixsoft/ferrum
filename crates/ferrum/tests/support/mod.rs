@@ -113,6 +113,7 @@ pub async fn harness_with_deps(github_base: &str, downloads: &str) -> Harness {
             vec![PUBLIC_IP.parse().unwrap()],
         )]),
         public_ip: Some(PUBLIC_IP.parse().unwrap()),
+        hostname: Some(HOSTNAME.into()),
     };
     Harness {
         app: ferrum::server::app_with(db.clone(), deps),

@@ -25,9 +25,13 @@ async fn a_client_route_falls_back_to_the_index() {
 #[tokio::test]
 async fn an_unknown_api_path_is_json_404_not_the_index() {
     let h = harness().await;
-    for route in ["/api/nope", "/api/users/1/nope", "/mcp"] {
+    for (route, status) in [
+        ("/api/nope", StatusCode::NOT_FOUND),
+        ("/api/users/1/nope", StatusCode::NOT_FOUND),
+        ("/mcp", StatusCode::UNAUTHORIZED),
+    ] {
         let res = h.get(route).await;
-        assert_eq!(res.status, StatusCode::NOT_FOUND, "{route}");
+        assert_eq!(res.status, status, "{route}");
         assert!(
             !res.text.contains("<div id=\"root\">"),
             "the panel must never answer for {route}: {}",

@@ -61,7 +61,7 @@ pub async fn require_caller(
     Ok(next.run(request).await)
 }
 
-async fn resolve(app: &AppState, headers: &HeaderMap) -> Result<Caller, ApiError> {
+pub async fn resolve(app: &AppState, headers: &HeaderMap) -> Result<Caller, ApiError> {
     if let Some(presented) = bearer(headers) {
         return tokens::verify(&app.db, &presented)
             .await?
