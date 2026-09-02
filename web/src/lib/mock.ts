@@ -1,6 +1,6 @@
 /**
  * Sample data, still read by: useHost, useApps, useApp, useDeploys, useRunningDeploy,
- * useDatabases, useMetrics, useSecurity, useGithub. Delete this file with the last one.
+ * useDatabases, useMetrics, useSecurity. Delete this file with the last one.
  */
 import type {
   App,
@@ -9,7 +9,6 @@ import type {
   Deploy,
   DeployStep,
   FirewallRule,
-  GithubConnection,
   HostStatus,
   MetricSeries,
   RedisInstance,
@@ -358,14 +357,6 @@ export const bans: BannedIp[] = [
   { ip: "104.244.76.13", jail: "sshd", banned_at: t(310), failures: 51 },
   { ip: "91.240.118.222", jail: "nginx-limit-req", banned_at: t(640), failures: 8 },
 ];
-
-export const github: GithubConnection = {
-  connected: true,
-  app_name: "ferrum-panel-example",
-  account: "irixsoft",
-  repos_accessible: 9,
-  installed_at: t(60 * 24 * 96),
-};
 
 export function hostMetrics(points = 2016): MetricSeries {
   const now = Math.floor(Date.now() / 1000);

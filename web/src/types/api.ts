@@ -208,10 +208,27 @@ export interface Session {
   current: boolean;
 }
 
-export interface GithubConnection {
-  connected: boolean;
-  app_name: string;
-  account: string;
-  repos_accessible: number;
-  installed_at: string;
+export type GithubStatus =
+  | { connected: false }
+  | {
+      connected: true;
+      app_id: number;
+      app_slug: string;
+      app_name: string;
+      account: string;
+      installation_id: number | null;
+      connected_at: string;
+    };
+
+export interface GithubHandoff {
+  manifest: Record<string, unknown>;
+  state: string;
+  action: string;
+}
+
+export interface GithubRepo {
+  full_name: string;
+  private: boolean;
+  default_branch: string;
+  pushed_at: string | null;
 }

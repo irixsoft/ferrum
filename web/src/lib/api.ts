@@ -6,6 +6,9 @@ import type {
   App,
   Deploy,
   Enrolled,
+  GithubHandoff,
+  GithubRepo,
+  GithubStatus,
   HostStatus,
   Me,
   MetricSeries,
@@ -61,6 +64,7 @@ export const keys = {
   sessions: ["sessions"] as const,
   tokens: ["tokens"] as const,
   github: ["github"] as const,
+  githubRepos: ["github", "repos"] as const,
 };
 
 export function useMe(enabled = true) {
@@ -138,7 +142,15 @@ export function useTokens() {
 }
 
 export function useGithub() {
-  return useQuery({ queryKey: keys.github, queryFn: () => settle(mock.github) });
+  return useQuery({ queryKey: keys.github, queryFn: () => request<GithubStatus>("/github/status") });
+}
+
+export function useGithubRepos() {
+  return useQuery({
+    queryKey: keys.githubRepos,
+    queryFn: () => request<GithubRepo[]>("/github/repos"),
+    retry: false,
+  });
 }
 
 function useInvalidating<TArgs, TResult>(
@@ -182,6 +194,29 @@ export function useRevokeSession() {
   return useInvalidating(keys.sessions, (id: string) =>
     request<void>(`/sessions/${id}`, { method: "DELETE" }),
   );
+}
+
+/** GitHub renders a confirmation page, which only a form the browser submits can reach. */
+export function useConnectGithub() {
+  return useMutation({
+    mutationFn: async () => {
+      const { manifest, action } = await request<GithubHandoff>("/github/connect", { method: "POST" });
+      const form = document.createElement("form");
+      form.method = "POST";
+      form.action = action;
+      const field = document.createElement("input");
+      field.type = "hidden";
+      field.name = "manifest";
+      field.value = JSON.stringify(manifest);
+      form.appendChild(field);
+      document.body.appendChild(form);
+      form.submit();
+    },
+  });
+}
+
+export function useDisconnectGithub() {
+  return useInvalidating(keys.github, () => request<void>("/github", { method: "DELETE" }));
 }
 
 export function useSignOut() {

@@ -1,10 +1,9 @@
 import { useState } from "react";
-import { Github, KeyRound, Plus } from "lucide-react";
+import { KeyRound, Plus } from "lucide-react";
 import {
   useCreateToken,
   useCreateUser,
   useEnrollmentLink,
-  useGithub,
   useRevokeSession,
   useRevokeToken,
   useSessions,
@@ -22,13 +21,17 @@ import { Code } from "@/components/ui/Code";
 import { Row } from "@/components/ui/Row";
 import { Segmented } from "@/components/ui/Segmented";
 import { Tabs } from "@/components/ui/Tabs";
-import { SampleData } from "@/components/SampleData";
+import { GithubCard } from "@/features/settings/GithubCard";
 import { ago } from "@/lib/utils";
 
 type Tab = "people" | "tokens" | "connections" | "appearance" | "about";
 
+/** GitHub sends the browser back to `/settings?github=…`, and that belongs on the Connections tab. */
+const initialTab = (): Tab =>
+  new URLSearchParams(window.location.search).has("github") ? "connections" : "people";
+
 export function SettingsPage() {
-  const [tab, setTab] = useState<Tab>("people");
+  const [tab, setTab] = useState<Tab>(initialTab);
 
   return (
     <>
@@ -322,38 +325,9 @@ function Handoff({
 }
 
 function Connections() {
-  const { data: github } = useGithub();
-
   return (
     <div className="grid gap-4 lg:grid-cols-2">
-      <Card>
-        <CardHeader
-          title="GitHub"
-          hint="A private GitHub App that exists only in your account"
-          action={
-            <span className="flex items-center gap-2">
-              <SampleData />
-              <Github size={16} className="text-ink-3" />
-            </span>
-          }
-        />
-        <CardBody>
-          {github ? (
-            <dl>
-              <Row label="App">{github.app_name}</Row>
-              <Row label="Account">{github.account}</Row>
-              <Row label="Repositories">{github.repos_accessible} accessible</Row>
-              <Row label="Installed">{ago(github.installed_at)}</Row>
-            </dl>
-          ) : null}
-        </CardBody>
-        <CardFoot>
-          <span>
-            Installation tokens expire hourly and refresh themselves. No long-lived personal access
-            token is stored.
-          </span>
-        </CardFoot>
-      </Card>
+      <GithubCard />
 
       <Card>
         <CardHeader title="MCP" hint="Point your own agent at this server" />

@@ -9,8 +9,7 @@ use std::sync::Arc;
 pub const REFRESH_MARGIN_MINUTES: i64 = 5;
 
 pub const NOT_CONNECTED: &str = "GitHub is not connected. Connect it from Settings.";
-pub const NOT_INSTALLED: &str =
-    "The GitHub App is not installed on any repository yet. Install it from Settings.";
+pub const NOT_INSTALLED: &str = "The GitHub App is not installed on any repository yet.";
 
 pub(super) struct Installed {
     pub app_id: i64,
