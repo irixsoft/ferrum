@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO metrics (at, scope, cpu_pct, memory_bytes, memory_peak_bytes, disk_used_bytes, net_rx_bytes, net_tx_bytes)\n         VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 8
+    },
+    "nullable": []
+  },
+  "hash": "013f02bd359c0779a749f8e4c70b66b4df3236a12ce8ca6ee5df2bb06b4d8c51"
+}

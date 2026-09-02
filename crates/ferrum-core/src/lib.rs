@@ -8,6 +8,7 @@ pub mod dns;
 pub mod enrollment;
 pub mod github;
 pub mod http;
+pub mod metrics;
 pub mod nginx;
 pub mod postgres;
 pub mod redis;
