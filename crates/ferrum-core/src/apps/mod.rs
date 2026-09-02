@@ -184,7 +184,8 @@ pub fn valid_slug(slug: &str) -> bool {
 
 fn valid_port_name(name: &str) -> bool {
     let bytes = name.as_bytes();
-    (1..=PORT_NAME_MAX).contains(&bytes.len())
+    name != crate::redis::PORT_NAME
+        && (1..=PORT_NAME_MAX).contains(&bytes.len())
         && bytes[0].is_ascii_lowercase()
         && bytes
             .iter()
@@ -291,7 +292,7 @@ pub fn validate(new: &NewApp) -> Result<(), AppError> {
         }
         if !valid_port_name(&route.port_name) {
             return Err(invalid(format!(
-                "{} is not a valid port name; use lowercase letters, digits and underscores.",
+                "{} is not a valid port name; use lowercase letters, digits and underscores, and not redis.",
                 route.port_name
             )));
         }
@@ -469,7 +470,8 @@ pub async fn update(state: &State, slug: &str, changes: AppChanges) -> anyhow::R
         .execute(&mut *tx)
         .await?;
     write_routes(&mut tx, &current.id, &merged.routes).await?;
-    let kept: Vec<&str> = merged.routes.iter().map(|r| r.port_name.as_str()).collect();
+    let mut kept: Vec<&str> = merged.routes.iter().map(|r| r.port_name.as_str()).collect();
+    kept.push(crate::redis::PORT_NAME);
     ports::release_unused(&mut tx, &current.id, &kept).await?;
 
     sqlx::query!("DELETE FROM app_packages WHERE app_id = ?", current.id)

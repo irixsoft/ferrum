@@ -8,6 +8,7 @@ pub mod github;
 pub mod http;
 pub mod nginx;
 pub mod postgres;
+pub mod redis;
 pub mod runtime;
 mod secret;
 pub mod sessions;
@@ -29,6 +30,7 @@ pub const ACME_ROOT: &str = "/var/lib/ferrum/acme";
 pub const ACME_WEBROOT: &str = "/var/lib/ferrum/acme/.well-known/acme-challenge";
 pub const CERTS_DIR: &str = "/var/lib/ferrum/certs";
 pub const APPS_DIR: &str = "/var/lib/ferrum/apps";
+pub const REDIS_DIR: &str = "/var/lib/ferrum/redis";
 
 #[cfg(test)]
 mod tests {
@@ -41,6 +43,7 @@ mod tests {
             ACME_WEBROOT,
             CERTS_DIR,
             APPS_DIR,
+            REDIS_DIR,
             runtime::toolchain::RUNTIMES_DIR,
         ] {
             assert!(p.starts_with(DATA_DIR), "{p}");

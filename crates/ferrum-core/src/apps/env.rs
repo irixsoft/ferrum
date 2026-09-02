@@ -1,9 +1,44 @@
-use super::{AppError, Route};
+use super::{App, AppError, Route};
 use crate::state::State;
+use crate::{postgres, redis};
 use serde::{Deserialize, Serialize};
 use sqlx::{Sqlite, Transaction};
 
 pub const HOST: &str = "127.0.0.1";
+pub const REDIS_URL_KEY: &str = "REDIS_URL";
+
+/// Variables Ferrum owns: rendered from links at write time, never stored, so a relink cannot
+/// leave a stale copy behind.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Managed {
+    pub database_urls: Vec<(String, String)>,
+    pub redis_url: Option<String>,
+}
+
+impl Managed {
+    pub fn keys(&self) -> Vec<String> {
+        let mut keys: Vec<String> = self.database_urls.iter().map(|(k, _)| k.clone()).collect();
+        if self.redis_url.is_some() {
+            keys.push(REDIS_URL_KEY.to_string());
+        }
+        keys
+    }
+
+    fn pairs(&self) -> Vec<(String, String)> {
+        let mut pairs = self.database_urls.clone();
+        if let Some(url) = &self.redis_url {
+            pairs.push((REDIS_URL_KEY.to_string(), url.clone()));
+        }
+        pairs
+    }
+}
+
+pub async fn managed_for(state: &State, app: &App) -> anyhow::Result<Managed> {
+    Ok(Managed {
+        database_urls: postgres::urls_for(state, &app.id).await?,
+        redis_url: redis::url_for(state, &app.id).await?,
+    })
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EnvVar {
@@ -126,9 +161,15 @@ pub async fn keys(state: &State, app_id: &str) -> anyhow::Result<Vec<String>> {
 }
 
 /// systemd's `EnvironmentFile=` dialect: no expansion, but an unquoted backslash is an escape.
-pub fn render(vars: &[(String, String)], routes: &[Route]) -> String {
+/// A managed key wins over a user variable of the same name.
+pub fn render(vars: &[(String, String)], managed: &Managed, routes: &[Route]) -> String {
+    let managed = managed.pairs();
     let mut out = String::new();
-    for (key, value) in vars {
+    for (key, value) in vars
+        .iter()
+        .filter(|(key, _)| !managed.iter().any(|(m, _)| m == key))
+        .chain(managed.iter())
+    {
         out.push_str(key);
         out.push('=');
         out.push_str(&quote(value));
@@ -182,6 +223,7 @@ mod tests {
                 ("DATABASE_URL".into(), "postgres://x".into()),
                 ("GREETING".into(), "hello world".into()),
             ],
+            &Managed::default(),
             &routes,
         );
         assert_eq!(
@@ -196,7 +238,78 @@ mod tests {
             route("/", "main", 20000, false),
             route("/api", "main", 20000, false),
         ];
-        assert_eq!(render(&[], &routes), "PORT=20000\nHOST=127.0.0.1\n");
+        assert_eq!(
+            render(&[], &Managed::default(), &routes),
+            "PORT=20000\nHOST=127.0.0.1\n"
+        );
+    }
+
+    #[test]
+    fn managed_variables_come_after_the_users_and_before_the_ports() {
+        let managed = Managed {
+            database_urls: vec![(
+                "DATABASE_URL".into(),
+                "postgres://a:b@127.0.0.1:5432/ledger_prod".into(),
+            )],
+            redis_url: Some("redis://:pw@127.0.0.1:20001/0".into()),
+        };
+        let out = render(
+            &[("APP_KEY".into(), "x".into())],
+            &managed,
+            &[route("/", "main", 20000, false)],
+        );
+        assert_eq!(
+            out,
+            "APP_KEY=x\nDATABASE_URL=postgres://a:b@127.0.0.1:5432/ledger_prod\nREDIS_URL=redis://:pw@127.0.0.1:20001/0\nPORT=20000\nHOST=127.0.0.1\n"
+        );
+        assert_eq!(managed.keys(), vec!["DATABASE_URL", "REDIS_URL"]);
+    }
+
+    #[test]
+    fn a_user_variable_named_database_url_is_overridden_by_the_link_not_duplicated() {
+        let managed = Managed {
+            database_urls: vec![("DATABASE_URL".into(), "postgres://real".into())],
+            redis_url: None,
+        };
+        let out = render(
+            &[("DATABASE_URL".into(), "postgres://stale".into())],
+            &managed,
+            &[],
+        );
+        assert_eq!(out.matches("DATABASE_URL=").count(), 1);
+        assert!(out.contains("DATABASE_URL=postgres://real\n"));
+    }
+
+    #[tokio::test]
+    async fn managed_variables_follow_the_links_and_the_redis_instance() {
+        let (_d, state) = state().await;
+        let p = ferrum_platform::FakePlatform::new();
+        let app = crate::apps::create(&state, new_app("ledger", &[("/", "main", false)]))
+            .await
+            .unwrap();
+        assert_eq!(managed_for(&state, &app).await.unwrap(), Managed::default());
+        postgres::create(&state, &p, postgres::tests::new("ledger_prod"))
+            .await
+            .unwrap();
+        postgres::create(&state, &p, postgres::tests::new("analytics"))
+            .await
+            .unwrap();
+        postgres::link(&state, &app.id, "ledger_prod")
+            .await
+            .unwrap();
+        postgres::link(&state, &app.id, "analytics").await.unwrap();
+        let instance = redis::request(&state, &p, &app, 64).await.unwrap();
+        let managed = managed_for(&state, &app).await.unwrap();
+        assert_eq!(
+            managed.keys(),
+            vec!["DATABASE_URL", "ANALYTICS_DATABASE_URL", "REDIS_URL"]
+        );
+        assert!(
+            managed
+                .redis_url
+                .unwrap()
+                .ends_with(&format!("@127.0.0.1:{}/0", instance.port))
+        );
     }
 
     #[test]

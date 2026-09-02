@@ -3,7 +3,7 @@ use super::vhost::{custom_path, render_vhost, vhost_path};
 use super::{App, env};
 use crate::runtime::toolchain::Store;
 use crate::state::State;
-use crate::{APPS_DIR, acme, nginx};
+use crate::{APPS_DIR, acme, nginx, redis};
 use anyhow::Context;
 use ferrum_platform::ubuntu::NGINX_UNIT;
 use ferrum_platform::{Platform, ServiceAction};
@@ -61,8 +61,9 @@ pub async fn provision(state: &State, platform: &dyn Platform, app: &App) -> any
 
 pub async fn write_env(state: &State, platform: &dyn Platform, app: &App) -> anyhow::Result<()> {
     let vars = env::all(state, &app.id).await?;
+    let managed = env::managed_for(state, app).await?;
     let env_path = app_dir(&app.slug).join("shared/.env");
-    platform.write_file(&env_path, &env::render(&vars, &app.routes), 0o600)?;
+    platform.write_file(&env_path, &env::render(&vars, &managed, &app.routes), 0o600)?;
     platform.chown_tree(&env_path, &user_name(&app.slug))?;
     Ok(())
 }
@@ -71,7 +72,8 @@ pub async fn reprovision(state: &State, platform: &dyn Platform, app: &App) -> a
     provision(state, platform, app).await
 }
 
-pub async fn deprovision(_state: &State, platform: &dyn Platform, app: &App) -> anyhow::Result<()> {
+pub async fn deprovision(state: &State, platform: &dyn Platform, app: &App) -> anyhow::Result<()> {
+    redis::release(state, platform, app).await?;
     let unit = unit_name(&app.slug);
     let _ = platform.service(ServiceAction::Stop, &unit);
     let _ = platform.service(ServiceAction::Disable, &unit);
@@ -189,6 +191,34 @@ mod tests {
         assert!(contents.contains(&format!("WS_PORT={}\n", app.routes[1].port)));
         assert!(contents.contains("HOST=127.0.0.1\n"));
         assert!(contents.starts_with("SECRET=hunter2\n"));
+    }
+
+    #[tokio::test]
+    async fn a_linked_database_reaches_the_env_file_on_the_next_write() {
+        let (_d, state) = state().await;
+        let platform = FakePlatform::new();
+        let app = create(&state, new_app("ledger", &[("/", "main", false)]))
+            .await
+            .unwrap();
+        crate::postgres::create(
+            &state,
+            &platform,
+            crate::postgres::tests::new("ledger_prod"),
+        )
+        .await
+        .unwrap();
+        crate::postgres::link(&state, &app.id, "ledger_prod")
+            .await
+            .unwrap();
+        write_env(&state, &platform, &app).await.unwrap();
+        let contents = platform
+            .written("/var/lib/ferrum/apps/ledger/shared/.env")
+            .unwrap();
+        assert!(
+            contents.starts_with("DATABASE_URL=postgres://ledger_prod:"),
+            "{contents}"
+        );
+        assert!(contents.contains("@127.0.0.1:5432/ledger_prod\nPORT="));
     }
 
     #[tokio::test]
