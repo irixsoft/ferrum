@@ -1,16 +1,20 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { KeyRound, Plus } from "lucide-react";
 import {
+  ApiError,
+  useBuildLimits,
   useCreateToken,
   useCreateUser,
   useEnrollmentLink,
   useRevokeSession,
   useRevokeToken,
   useSessions,
+  useSetBuildLimits,
   useTokens,
   useUsers,
   useVersion,
 } from "@/lib/api";
+import type { BuildLimits } from "@/types/api";
 import { useShell } from "@/shells/useShell";
 import { useTheme, type Theme } from "@/lib/theme";
 import { PageTitle } from "@/components/PageTitle";
@@ -24,7 +28,9 @@ import { Tabs } from "@/components/ui/Tabs";
 import { GithubCard } from "@/features/settings/GithubCard";
 import { ago } from "@/lib/utils";
 
-type Tab = "people" | "tokens" | "connections" | "appearance" | "about";
+type Tab = "people" | "tokens" | "connections" | "builds" | "appearance" | "about";
+
+const message = (e: unknown) => (e instanceof ApiError ? e.message : e ? String(e) : null);
 
 /** GitHub sends the browser back to `/settings?github=…`, and that belongs on the Connections tab. */
 const initialTab = (): Tab =>
@@ -45,6 +51,7 @@ export function SettingsPage() {
           { value: "people", label: "People" },
           { value: "tokens", label: "API tokens" },
           { value: "connections", label: "Connections" },
+          { value: "builds", label: "Builds" },
           { value: "appearance", label: "Appearance" },
           { value: "about", label: "About" },
         ]}
@@ -53,6 +60,7 @@ export function SettingsPage() {
       {tab === "people" && <People />}
       {tab === "tokens" && <Tokens />}
       {tab === "connections" && <Connections />}
+      {tab === "builds" && <Builds />}
       {tab === "appearance" && <Appearance />}
       {tab === "about" && <About />}
     </>
@@ -352,6 +360,90 @@ function Connections() {
         </CardFoot>
       </Card>
     </div>
+  );
+}
+
+function Builds() {
+  const { data: current } = useBuildLimits();
+  const save = useSetBuildLimits();
+  const [draft, setDraft] = useState<BuildLimits | null>(null);
+  useEffect(() => {
+    if (current && !draft) setDraft(current);
+  }, [current, draft]);
+
+  if (!current || !draft) return null;
+  const dirty =
+    draft.memory_mb !== current.memory_mb ||
+    draft.build_secs !== current.build_secs ||
+    draft.migrate_secs !== current.migrate_secs;
+  const field = (key: keyof BuildLimits) => (e: React.ChangeEvent<HTMLInputElement>) =>
+    setDraft({ ...draft, [key]: Number(e.target.value) });
+
+  return (
+    <Card>
+      <CardHeader title="Builds" hint="Applied to the next deploy; a running build keeps its limits" />
+      <CardBody>
+        <dl>
+          <Row
+            label="Memory limit"
+            hint={`A build over this is stopped as itself. This host has ${current.memory_total_mb} MB; the default leaves 512 MB for what is running.`}
+          >
+            <Limit value={draft.memory_mb} onChange={field("memory_mb")} min={512} max={current.memory_total_mb} unit="MB" />
+          </Row>
+          <Row label="Build timeout" hint="Install and build commands, each">
+            <Limit value={draft.build_secs} onChange={field("build_secs")} min={60} max={7200} unit="s" />
+          </Row>
+          <Row label="Migration timeout" hint="The migrate command, while the app is paused">
+            <Limit value={draft.migrate_secs} onChange={field("migrate_secs")} min={60} max={7200} unit="s" />
+          </Row>
+        </dl>
+        <div className="mt-4 flex items-center gap-3 flex-wrap">
+          <Button
+            variant="primary"
+            disabled={!dirty || save.isPending}
+            onClick={async () => setDraft(await save.mutateAsync(draft))}
+          >
+            Save
+          </Button>
+          {save.error ? <span className="text-[12.5px] text-fail">{message(save.error)}</span> : null}
+          {save.isSuccess && !dirty ? <span className="text-[12.5px] text-ok">Saved.</span> : null}
+        </div>
+      </CardBody>
+      <CardFoot>
+        <span>
+          A Next.js build peaks around 1.5 to 2.5 GB. If a build is stopped for memory, raise the
+          limit here rather than fighting the kernel.
+        </span>
+      </CardFoot>
+    </Card>
+  );
+}
+
+function Limit({
+  value,
+  onChange,
+  min,
+  max,
+  unit,
+}: {
+  value: number;
+  onChange: (e: React.ChangeEvent<HTMLInputElement>) => void;
+  min: number;
+  max: number;
+  unit: string;
+}) {
+  return (
+    <span className="inline-flex items-center gap-2">
+      <input
+        type="number"
+        value={value}
+        min={min}
+        max={max}
+        onChange={onChange}
+        className="w-28 h-9 px-3 bg-inset border border-line-strong rounded-control font-mono text-sm text-ink text-right tnum"
+      />
+      <span className="text-[12.5px] text-ink-4 w-6">{unit}</span>
+    </span>
   );
 }
 

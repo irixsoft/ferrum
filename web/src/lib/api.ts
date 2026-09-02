@@ -1,12 +1,13 @@
 /** The one seam between the panel and the server. Nothing else may fetch. */
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import * as mock from "./mock";
 import type {
   ApiToken,
   App,
   AppChanges,
   AppDetail,
   AppLogLine,
+  BuildLimits,
+  BuildSettings,
   Database,
   Deploy,
   DeployOutcome,
@@ -25,12 +26,14 @@ import type {
   MintedToken,
   NewApp,
   NewDatabase,
+  NginxFiles,
   PostgresStatus,
   Progress,
   RedisInstance,
   RedisListed,
   Release,
   Runtimes,
+  Security,
   Session,
   Toolchain,
   User,
@@ -65,9 +68,6 @@ export async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return res.json() as Promise<T>;
 }
 
-const settle = <T>(value: T, ms = 120) =>
-  new Promise<T>((resolve) => setTimeout(() => resolve(value), ms));
-
 export const keys = {
   me: ["me"] as const,
   version: ["version"] as const,
@@ -85,6 +85,8 @@ export const keys = {
   metrics: (scope: string, range: MetricRange) => ["metrics", scope, range] as const,
   logs: (slug: string, source: LogSource) => ["logs", slug, source] as const,
   security: ["security"] as const,
+  builds: ["settings", "builds"] as const,
+  nginx: (slug: string) => ["nginx", slug] as const,
   users: ["users"] as const,
   sessions: ["sessions"] as const,
   tokens: ["tokens"] as const,
@@ -207,7 +209,22 @@ export function useAppLogs(slug: string, source: LogSource, lines = 200, enabled
 export function useSecurity() {
   return useQuery({
     queryKey: keys.security,
-    queryFn: () => settle({ firewall: mock.firewall, bans: mock.bans }),
+    queryFn: () => request<Security>("/security"),
+    refetchInterval: 15_000,
+  });
+}
+
+export function useBuildLimits() {
+  return useQuery({
+    queryKey: keys.builds,
+    queryFn: () => request<BuildSettings>("/settings/builds"),
+  });
+}
+
+export function useNginx(slug: string) {
+  return useQuery({
+    queryKey: keys.nginx(slug),
+    queryFn: () => request<NginxFiles>(`/apps/${slug}/nginx`),
   });
 }
 
@@ -394,6 +411,41 @@ export function useRetryCertificate(slug: string) {
 export function useRestartApp(slug: string) {
   return useInvalidating([keys.apps, keys.app(slug)], () =>
     request<void>(`/apps/${slug}/restart`, { method: "POST" }),
+  );
+}
+
+const hardening = (path: string) =>
+  useInvalidating([keys.security, keys.host], () => request<void>(`/security/${path}`, { method: "POST" }));
+
+export const useEnableFirewall = () => hardening("firewall");
+export const useEnableFail2ban = () => hardening("fail2ban");
+export const useEnableUpdates = () => hardening("updates");
+
+export function useUnban() {
+  return useInvalidating([keys.security, keys.host], (ip: string) =>
+    request<void>(`/security/bans/${encodeURIComponent(ip)}/unban`, { method: "POST" }),
+  );
+}
+
+export function useAllowlist() {
+  return useInvalidating(keys.security, (ip: string) => request<void>("/security/allowlist", body({ ip })));
+}
+
+export function useDisablePasswords() {
+  return useInvalidating(keys.security, (name: string) =>
+    request<void>("/security/ssh/disable-passwords", body({ name })),
+  );
+}
+
+export function useSetBuildLimits() {
+  return useInvalidating(keys.builds, (limits: BuildLimits) =>
+    request<BuildSettings>("/settings/builds", body(limits, "PUT")),
+  );
+}
+
+export function useSetCustomNginx(slug: string) {
+  return useInvalidating(keys.nginx(slug), (custom: string) =>
+    request<void>(`/apps/${slug}/nginx`, body({ custom }, "PUT")),
   );
 }
 

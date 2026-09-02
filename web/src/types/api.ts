@@ -324,18 +324,46 @@ export interface MetricSeries {
   values: Record<string, number[]>;
 }
 
+export interface FirewallRule {
+  port: string;
+  action: string;
+  from: string;
+}
+
 export interface BannedIp {
   ip: string;
   jail: string;
-  banned_at: string;
-  failures: number;
+  /** fail2ban's local time read as UTC; null when the client printed no time. */
+  banned_at: string | null;
 }
 
-export interface FirewallRule {
-  port: string;
-  action: "allow" | "deny";
-  from: string;
-  note: string;
+export interface KeyFingerprint {
+  bits: number;
+  fingerprint: string;
+  comment: string;
+  kind: string;
+}
+
+export interface Security {
+  firewall: { enabled: boolean; ssh_port: number; rules: FirewallRule[] };
+  bans: { installed: boolean; jails: string[]; banned: BannedIp[]; allowlist: string[] };
+  updates: { enabled: boolean };
+  ssh: { port: number; password_auth: boolean; keys: KeyFingerprint[] };
+}
+
+export interface BuildLimits {
+  memory_mb: number;
+  build_secs: number;
+  migrate_secs: number;
+}
+
+export interface BuildSettings extends BuildLimits {
+  memory_total_mb: number;
+}
+
+export interface NginxFiles {
+  managed: string;
+  custom: string;
 }
 
 export interface Me {
