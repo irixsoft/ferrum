@@ -28,8 +28,9 @@ pub fn current_link(app: &App) -> PathBuf {
     app_dir(&app.slug).join("current")
 }
 
+/// Milliseconds, because the same commit deployed twice in one second must not share a directory.
 pub fn release_dir(app: &App, commit_sha: &str) -> PathBuf {
-    let stamp = chrono::Utc::now().format("%Y%m%dT%H%M%SZ");
+    let stamp = chrono::Utc::now().format("%Y%m%dT%H%M%S%.3fZ");
     releases_dir(app).join(format!("{stamp}_{}", super::short(commit_sha)))
 }
 
