@@ -3,6 +3,7 @@ import { KeyRound, Plus } from "lucide-react";
 import {
   ApiError,
   useBuildLimits,
+  useCheckForUpdate,
   useCreateToken,
   useCreateUser,
   useEnrollmentLink,
@@ -10,8 +11,10 @@ import {
   useRevokeSession,
   useRevokeToken,
   useSessions,
+  useSetAutoUpdate,
   useSetBuildLimits,
   useTokens,
+  useUpdate,
   useUsers,
   useVersion,
 } from "@/lib/api";
@@ -70,7 +73,12 @@ export function SettingsPage() {
       {tab === "connections" && <Connections />}
       {tab === "builds" && <Builds />}
       {tab === "appearance" && <Appearance />}
-      {tab === "about" && <About />}
+      {tab === "about" && (
+        <div className="grid gap-4">
+          <Updates />
+          <About />
+        </div>
+      )}
     </>
   );
 }
@@ -534,6 +542,71 @@ function Appearance() {
           </Row>
         </dl>
       </CardBody>
+    </Card>
+  );
+}
+
+function Updates() {
+  const { data: update } = useUpdate();
+  const check = useCheckForUpdate();
+  const setAuto = useSetAutoUpdate();
+  if (!update) return null;
+
+  const latest = update.latest;
+  const state = update.restarting
+    ? `${latest?.tag} is installed and restarts in a moment`
+    : update.running
+      ? `Updating to ${latest?.tag}…`
+      : update.available && latest
+        ? `${latest.tag} is available${latest.security ? " (security)" : ""}`
+        : update.checked_at
+          ? `Up to date at ${update.current}`
+          : "Not checked yet";
+
+  return (
+    <Card>
+      <CardHeader
+        title="Updates"
+        hint="Checked daily against the latest release on GitHub"
+        action={
+          <Button size="sm" disabled={check.isPending || update.running} onClick={() => check.mutate()}>
+            {check.isPending ? "Checking…" : "Check now"}
+          </Button>
+        }
+      />
+      <CardBody>
+        <dl>
+          <Row label="Latest release">
+            {latest ? (
+              <a href={latest.url} target="_blank" rel="noreferrer" className="text-accent hover:underline">
+                {state}
+              </a>
+            ) : (
+              state
+            )}
+          </Row>
+          <Row label="Last checked">{update.checked_at ? ago(update.checked_at) : "Never"}</Row>
+          <Row label="Automatic updates" hint="Install updates automatically, within a day of release">
+            <Segmented
+              value={update.auto ? "on" : "off"}
+              onChange={(v) => setAuto.mutate(v === "on")}
+              options={[
+                { value: "off", label: "Ask first" },
+                { value: "on", label: "Automatic" },
+              ]}
+            />
+          </Row>
+        </dl>
+        {check.error || update.error ? (
+          <p className="text-[12.5px] text-fail mt-3">{message(check.error) ?? update.error}</p>
+        ) : null}
+      </CardBody>
+      <CardFoot>
+        <span>
+          Every release is verified against the signing key built into this binary before it is
+          installed. The previous binary is kept at <Code>/usr/local/bin/ferrum.prev</Code>.
+        </span>
+      </CardFoot>
     </Card>
   );
 }

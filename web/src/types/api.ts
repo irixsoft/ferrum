@@ -380,6 +380,29 @@ export interface VersionInfo {
   arch: string;
 }
 
+export interface LatestRelease {
+  tag: string;
+  version: string;
+  name: string;
+  notes: string;
+  security: boolean;
+  published_at: string | null;
+  url: string;
+  size_bytes: number;
+}
+
+export interface UpdateStatus {
+  current: string;
+  latest: LatestRelease | null;
+  available: boolean;
+  checked_at: string | null;
+  auto: boolean;
+  running: boolean;
+  step: string | null;
+  error: string | null;
+  restarting: boolean;
+}
+
 export interface Passkey {
   id: string;
   label: string | null;

@@ -14,6 +14,7 @@ pub mod security;
 pub mod sessions;
 pub mod settings;
 pub mod tokens;
+pub mod update;
 pub mod users;
 pub mod version;
 pub mod webhook;

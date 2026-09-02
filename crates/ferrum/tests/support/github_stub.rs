@@ -32,6 +32,7 @@ struct Repos {
     files: HashMap<String, Vec<(String, String)>>,
     truncated: Vec<String>,
     fetched: Vec<String>,
+    release: Option<Value>,
 }
 
 #[derive(Clone)]
@@ -119,6 +120,37 @@ impl StubGithub {
     pub fn contents_fetched(&self) -> Vec<String> {
         self.counters.repos.lock().unwrap().fetched.clone()
     }
+
+    /// What `releases/latest` answers from now on, for every repository.
+    pub fn set_release(&self, release: Value) {
+        self.counters.repos.lock().unwrap().release = Some(release);
+    }
+}
+
+/// A release shaped like GitHub's, with its assets served from `downloads`.
+pub fn release_json(downloads: &str, tag: &str, name: &str, body: &str, size: u64) -> Value {
+    let asset = |file: &str, size: u64| {
+        json!({
+            "name": file,
+            "browser_download_url": format!("{downloads}/{tag}/{file}"),
+            "size": size,
+            "content_type": "application/octet-stream",
+        })
+    };
+    json!({
+        "tag_name": tag,
+        "name": name,
+        "body": body,
+        "html_url": format!("https://github.com/irixsoft/ferrum/releases/tag/{tag}"),
+        "published_at": "2026-09-03T10:00:00Z",
+        "prerelease": false,
+        "assets": [
+            asset("ferrum-x86_64-unknown-linux-musl", size),
+            asset("ferrum-aarch64-unknown-linux-musl", size),
+            asset("SHA256SUMS", 250),
+            asset("SHA256SUMS.sig", 64),
+        ],
+    })
 }
 
 async fn installations(State(c): State<Counters>) -> Json<Value> {
@@ -273,6 +305,7 @@ async fn commit(
     })))
 }
 
-async fn latest_release() -> Json<Value> {
-    Json(json!({ "tag_name": LATEST_TAG, "name": LATEST_TAG }))
+async fn latest_release(State(c): State<Counters>) -> Json<Value> {
+    let set = c.repos.lock().unwrap().release.clone();
+    Json(set.unwrap_or_else(|| json!({ "tag_name": LATEST_TAG, "name": LATEST_TAG })))
 }

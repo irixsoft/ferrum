@@ -36,6 +36,7 @@ import type {
   Security,
   Session,
   Toolchain,
+  UpdateStatus,
   User,
   VersionInfo,
 } from "@/types/api";
@@ -86,6 +87,7 @@ export const keys = {
   logs: (slug: string, source: LogSource) => ["logs", slug, source] as const,
   security: ["security"] as const,
   builds: ["settings", "builds"] as const,
+  update: ["update"] as const,
   nginx: (slug: string) => ["nginx", slug] as const,
   users: ["users"] as const,
   sessions: ["sessions"] as const,
@@ -118,6 +120,14 @@ export function useHost() {
     queryKey: keys.host,
     queryFn: () => request<HostStatus>("/host"),
     refetchInterval: 10_000,
+  });
+}
+
+export function useUpdate() {
+  return useQuery({
+    queryKey: keys.update,
+    queryFn: () => request<UpdateStatus>("/update"),
+    refetchInterval: (query) => (query.state.data?.running ? 2_000 : 60_000),
   });
 }
 
@@ -440,6 +450,20 @@ export function useDisablePasswords() {
 export function useSetBuildLimits() {
   return useInvalidating(keys.builds, (limits: BuildLimits) =>
     request<BuildSettings>("/settings/builds", body(limits, "PUT")),
+  );
+}
+
+export function useCheckForUpdate() {
+  return useInvalidating(keys.update, () => request<UpdateStatus>("/update/check", { method: "POST" }));
+}
+
+export function useApplyUpdate() {
+  return useInvalidating(keys.update, () => request<UpdateStatus>("/update", { method: "POST" }));
+}
+
+export function useSetAutoUpdate() {
+  return useInvalidating(keys.update, (auto: boolean) =>
+    request<UpdateStatus>("/settings/updates", body({ auto }, "PUT")),
   );
 }
 
