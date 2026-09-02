@@ -15,7 +15,7 @@ pub fn router() -> Router<AppState> {
 }
 
 #[derive(Serialize)]
-struct Files {
+pub(crate) struct Files {
     managed: String,
     custom: String,
 }
@@ -37,19 +37,22 @@ async fn show(
     Path(slug): Path<String>,
 ) -> ApiResult<Json<Files>> {
     let found = find(&app, &slug).await?;
+    Ok(Json(files(&app, &found)?))
+}
+
+pub(crate) fn files(app: &AppState, found: &apps::App) -> anyhow::Result<Files> {
     let read = |path: std::path::PathBuf| {
         app.platform
             .read_file(&path)
             .map(Option::unwrap_or_default)
             .map_err(anyhow::Error::from)
     };
-    Ok(Json(Files {
+    Ok(Files {
         managed: read(vhost_path(&found.slug))?,
         custom: read(custom_path(&found.slug))?,
-    }))
+    })
 }
 
-/// `nginx -t` decides; a rejected file is put back as it was and nginx is never reloaded.
 async fn set_custom(
     Extract(app): Extract<AppState>,
     _: Caller,
@@ -57,16 +60,18 @@ async fn set_custom(
     Json(body): Json<Custom>,
 ) -> ApiResult<StatusCode> {
     let found = find(&app, &slug).await?;
-    nginx::replace_and_reload(
-        app.platform.as_ref(),
-        &custom_path(&found.slug),
-        &body.custom,
-    )
-    .map_err(|e| match e {
-        PlatformError::Command { stderr, .. } => {
-            ApiError::bad_request(format!("nginx rejected the file: {}", stderr.trim()))
-        }
-        other => ApiError::bad_request(format!("The host refused: {other}")),
-    })?;
+    set_custom_file(&app, &found, &body.custom)?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// `nginx -t` decides; a rejected file is put back as it was and nginx is never reloaded.
+pub(crate) fn set_custom_file(app: &AppState, found: &apps::App, custom: &str) -> ApiResult<()> {
+    nginx::replace_and_reload(app.platform.as_ref(), &custom_path(&found.slug), custom).map_err(
+        |e| match e {
+            PlatformError::Command { stderr, .. } => {
+                ApiError::bad_request(format!("nginx rejected the file: {}", stderr.trim()))
+            }
+            other => ApiError::bad_request(format!("The host refused: {other}")),
+        },
+    )
 }

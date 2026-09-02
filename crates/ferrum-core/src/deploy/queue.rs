@@ -54,6 +54,23 @@ impl Deployer {
         &self.ctx.log
     }
 
+    /// The head is resolved here so the caller sees the commit at once; the worker checks it out.
+    pub async fn queue_ref(
+        &self,
+        app: &App,
+        git_ref: Option<&str>,
+        trigger: Trigger,
+    ) -> anyhow::Result<Deploy> {
+        let wanted = git_ref.map(str::trim).filter(|r| !r.is_empty());
+        let head = head_of(&self.ctx.github, &self.ctx.state, app, wanted).await?;
+        let commit = Commit {
+            sha: Some(head.sha),
+            message: Some(head.message),
+            author: Some(head.author),
+        };
+        self.enqueue(app, trigger, &head.git_ref, &commit).await
+    }
+
     /// A deploy already waiting for the app is retargeted rather than queued twice.
     pub async fn enqueue(
         &self,

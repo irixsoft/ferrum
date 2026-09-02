@@ -106,10 +106,19 @@ async fn create(
     _: Caller,
     Json(body): Json<Create>,
 ) -> ApiResult<(StatusCode, Json<Database>)> {
+    let created = create_database(&app, body.database, body.app_slug.as_deref()).await?;
+    Ok((StatusCode::CREATED, Json(created)))
+}
+
+pub(crate) async fn create_database(
+    app: &AppState,
+    new: NewDatabase,
+    app_slug: Option<&str>,
+) -> ApiResult<Database> {
     if app.platform.postgres_major_installed().is_none() {
         return Err(ApiError::conflict(NOT_INSTALLED));
     }
-    let linked_app = match &body.app_slug {
+    let linked_app = match app_slug {
         Some(slug) => Some(
             apps::by_slug(&app.db, slug)
                 .await?
@@ -117,22 +126,17 @@ async fn create(
         ),
         None => None,
     };
-    let created = postgres::create(&app.db, app.platform.as_ref(), body.database)
+    let created = postgres::create(&app.db, app.platform.as_ref(), new)
         .await
         .map_err(db_error)?;
     if let Some(target) = linked_app {
         postgres::link(&app.db, &target.id, &created.name).await?;
         provision::write_env(&app.db, app.platform.as_ref(), &target).await?;
-        return Ok((
-            StatusCode::CREATED,
-            Json(
-                postgres::by_name(&app.db, &created.name)
-                    .await?
-                    .unwrap_or(created),
-            ),
-        ));
+        return Ok(postgres::by_name(&app.db, &created.name)
+            .await?
+            .unwrap_or(created));
     }
-    Ok((StatusCode::CREATED, Json(created)))
+    Ok(created)
 }
 
 async fn show(
@@ -140,6 +144,11 @@ async fn show(
     _: Caller,
     Path(name): Path<String>,
 ) -> ApiResult<Json<serde_json::Value>> {
+    Ok(Json(detail(&app, &name).await?))
+}
+
+/// The URL carries `<password>` where the secret goes; the real one is only ever in `.env`.
+pub(crate) async fn detail(app: &AppState, name: &str) -> ApiResult<serde_json::Value> {
     let found = postgres::list(&app.db, app.platform.as_ref())
         .await?
         .into_iter()
@@ -148,7 +157,7 @@ async fn show(
     let mut value = serde_json::to_value(&found).map_err(anyhow::Error::from)?;
     value["url_hint"] =
         serde_json::Value::String(postgres::url(&found.name, &found.role, "<password>"));
-    Ok(Json(value))
+    Ok(value)
 }
 
 async fn remove(

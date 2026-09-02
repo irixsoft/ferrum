@@ -39,7 +39,7 @@ const RESTART_WHILE_DEPLOYING: &str =
     "A deploy is running for this application; it restarts by itself when the deploy ends.";
 
 #[derive(Serialize)]
-struct Listed {
+pub(crate) struct Listed {
     #[serde(flatten)]
     app: App,
     status: &'static str,
@@ -87,13 +87,17 @@ struct Removal {
     name: String,
 }
 
-async fn list(Extract(app): Extract<AppState>, _: Caller) -> ApiResult<Json<Vec<Listed>>> {
+pub(crate) async fn listed(app: &AppState) -> anyhow::Result<Vec<Listed>> {
     let mut listed = Vec::new();
     for found in apps::list(&app.db).await? {
-        let status = status_of(&app, &found).await?;
+        let status = status_of(app, &found).await?;
         listed.push(Listed { app: found, status });
     }
-    Ok(Json(listed))
+    Ok(listed)
+}
+
+async fn list(Extract(app): Extract<AppState>, _: Caller) -> ApiResult<Json<Vec<Listed>>> {
+    Ok(Json(listed(&app).await?))
 }
 
 async fn inspect(
@@ -170,9 +174,12 @@ async fn show(
     _: Caller,
     Path(slug): Path<String>,
 ) -> ApiResult<Json<serde_json::Value>> {
-    let found = apps::by_slug(&app.db, &slug)
-        .await?
-        .ok_or_else(|| ApiError::not_found(AppError::NotFound.to_string()))?;
+    let found = find(&app, &slug).await?;
+    Ok(Json(detail(&app, &found).await?))
+}
+
+/// Everything the panel's app page reads: env *keys*, never values.
+pub(crate) async fn detail(app: &AppState, found: &App) -> anyhow::Result<serde_json::Value> {
     let keys: Vec<serde_json::Value> = env::keys(&app.db, &found.id)
         .await?
         .into_iter()
@@ -180,17 +187,15 @@ async fn show(
         .collect();
     let databases = postgres::names_for(&app.db, &found.id).await?;
     let instance = redis::for_app(&app.db, &found.id).await?;
-    let managed = env::managed_for(&app.db, &found).await?.keys();
+    let managed = env::managed_for(&app.db, found).await?.keys();
     let current = match &found.current_release_id {
         Some(id) => releases::by_id(&app.db, id).await?,
         None => None,
     };
-    let status = status_of(&app, &found).await?;
-    let certificates = certs::statuses(&app.db, app.platform.as_ref(), &found).await?;
+    let status = status_of(app, found).await?;
+    let certificates = certs::statuses(&app.db, app.platform.as_ref(), found).await?;
     let resources = if found.runtime.has_process() {
-        app.platform
-            .cgroup_stats(&unit_name(&found.slug))
-            .map_err(anyhow::Error::from)?
+        app.platform.cgroup_stats(&unit_name(&found.slug))?
     } else {
         None
     };
@@ -203,19 +208,19 @@ async fn show(
         ),
         None => None,
     };
-    let mut value = serde_json::to_value(&found).map_err(anyhow::Error::from)?;
+    let mut value = serde_json::to_value(found)?;
     value["memory_bytes"] = resources.map(|s| s.memory_current).into();
     value["memory_peak_bytes"] = resources.map(|s| s.memory_peak).into();
     value["cpu_pct"] = cpu_pct.into();
     value["env"] = serde_json::Value::Array(keys);
     value["deployed"] = serde_json::Value::Bool(current.is_some());
-    value["current_release"] = serde_json::to_value(current).map_err(anyhow::Error::from)?;
+    value["current_release"] = serde_json::to_value(current)?;
     value["status"] = serde_json::Value::String(status.into());
-    value["certificates"] = serde_json::to_value(certificates).map_err(anyhow::Error::from)?;
-    value["databases"] = serde_json::to_value(databases).map_err(anyhow::Error::from)?;
-    value["redis"] = serde_json::to_value(instance).map_err(anyhow::Error::from)?;
-    value["managed"] = serde_json::to_value(managed).map_err(anyhow::Error::from)?;
-    Ok(Json(value))
+    value["certificates"] = serde_json::to_value(certificates)?;
+    value["databases"] = serde_json::to_value(databases)?;
+    value["redis"] = serde_json::to_value(instance)?;
+    value["managed"] = serde_json::to_value(managed)?;
+    Ok(value)
 }
 
 async fn retry_certificates(
@@ -240,6 +245,11 @@ async fn restart(
     Path(slug): Path<String>,
 ) -> ApiResult<StatusCode> {
     let found = find(&app, &slug).await?;
+    restart_unit(&app, &found).await?;
+    Ok(StatusCode::ACCEPTED)
+}
+
+pub(crate) async fn restart_unit(app: &AppState, found: &App) -> ApiResult<()> {
     if !found.runtime.has_process() {
         return Err(ApiError::bad_request(
             "A static site has no process to restart.",
@@ -250,16 +260,17 @@ async fn restart(
     }
     if found.current_release_id.is_none() {
         return Err(ApiError::conflict(format!(
-            "{slug} has not been deployed yet; there is nothing to restart."
+            "{} has not been deployed yet; there is nothing to restart.",
+            found.slug
         )));
     }
     app.platform
         .service(ServiceAction::Restart, &unit_name(&found.slug))
         .map_err(|e| ApiError::bad_request(format!("The host refused the restart: {e}")))?;
-    Ok(StatusCode::ACCEPTED)
+    Ok(())
 }
 
-async fn find(app: &AppState, slug: &str) -> ApiResult<apps::App> {
+pub(crate) async fn find(app: &AppState, slug: &str) -> ApiResult<apps::App> {
     apps::by_slug(&app.db, slug)
         .await?
         .ok_or_else(|| ApiError::not_found(AppError::NotFound.to_string()))
@@ -343,6 +354,11 @@ async fn update(
     Path(slug): Path<String>,
     Json(changes): Json<AppChanges>,
 ) -> ApiResult<Json<apps::App>> {
+    Ok(Json(apply(&app, &slug, changes).await?))
+}
+
+/// Packages first, then the row, then the host; certificates follow in the background.
+pub(crate) async fn apply(app: &AppState, slug: &str, changes: AppChanges) -> ApiResult<App> {
     if let Some(packages) = &changes.packages {
         let resolved: Vec<String> = packages
             .iter()
@@ -356,14 +372,14 @@ async fn update(
                 .map_err(|e| ApiError::bad_request(format!("Installing packages failed: {e}")))?;
         }
     }
-    let updated = apps::update(&app.db, &slug, changes)
+    let updated = apps::update(&app.db, slug, changes)
         .await
         .map_err(app_error)?;
     provision::reprovision(&app.db, app.platform.as_ref(), &updated)
         .await
         .map_err(|e| ApiError::bad_request(format!("The host refused the change: {e:#}")))?;
     app.issue_certificates_later(updated.clone());
-    Ok(Json(updated))
+    Ok(updated)
 }
 
 async fn remove(
@@ -391,14 +407,21 @@ async fn set_env(
     Path(slug): Path<String>,
     Json(vars): Json<Vec<env::EnvChange>>,
 ) -> ApiResult<StatusCode> {
-    let found = apps::by_slug(&app.db, &slug)
-        .await?
-        .ok_or_else(|| ApiError::not_found(AppError::NotFound.to_string()))?;
-    env::replace(&app.db, &found.id, &vars)
+    let found = find(&app, &slug).await?;
+    replace_env(&app, &found, &vars).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+pub(crate) async fn replace_env(
+    app: &AppState,
+    found: &App,
+    vars: &[env::EnvChange],
+) -> ApiResult<()> {
+    env::replace(&app.db, &found.id, vars)
         .await
         .map_err(app_error)?;
-    provision::write_env(&app.db, app.platform.as_ref(), &found).await?;
-    Ok(StatusCode::NO_CONTENT)
+    provision::write_env(&app.db, app.platform.as_ref(), found).await?;
+    Ok(())
 }
 
 fn app_error(e: anyhow::Error) -> ApiError {

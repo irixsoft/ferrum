@@ -8,7 +8,7 @@ use axum::{Json, Router, routing::get};
 use ferrum_core::apps::{self, AppError};
 use ferrum_core::deploy::log::{self, Event as LogEvent};
 use ferrum_core::deploy::releases::Release;
-use ferrum_core::deploy::{self, Commit, Deploy, Trigger, head_of, releases, snapshots};
+use ferrum_core::deploy::{self, Deploy, Trigger, releases, snapshots};
 use ferrum_core::github;
 use serde::Deserialize;
 use tokio_stream::wrappers::UnboundedReceiverStream;
@@ -55,7 +55,7 @@ async fn find_app(app: &AppState, slug: &str) -> ApiResult<apps::App> {
         .ok_or_else(|| ApiError::not_found(AppError::NotFound.to_string()))
 }
 
-async fn find_deploy(app: &AppState, id: &str) -> ApiResult<Deploy> {
+pub(crate) async fn find_deploy(app: &AppState, id: &str) -> ApiResult<Deploy> {
     deploy::by_id(&app.db, id)
         .await?
         .ok_or_else(|| ApiError::not_found("No such deploy."))
@@ -95,7 +95,6 @@ async fn show(
     Ok(Json(find_deploy(&app, &id).await?))
 }
 
-/// The head is resolved here so the panel shows the commit at once; the worker checks it out.
 async fn create(
     Extract(app): Extract<AppState>,
     _: Caller,
@@ -108,29 +107,50 @@ async fn create(
     } else {
         serde_json::from_str(&body).map_err(|e| ApiError::bad_request(e.to_string()))?
     };
-    let wanted = manual
-        .git_ref
-        .as_deref()
-        .map(str::trim)
-        .filter(|r| !r.is_empty());
-    let head = head_of(&app.github, &app.db, &found, wanted)
-        .await
-        .map_err(github_error)?;
-    let commit = Commit {
-        sha: Some(head.sha),
-        message: Some(head.message),
-        author: Some(head.author),
-    };
     let trigger = if manual.cli {
         Trigger::Cli
     } else {
         Trigger::Manual
     };
-    let queued = app
-        .deployer
-        .enqueue(&found, trigger, &head.git_ref, &commit)
-        .await?;
+    let queued = queue(&app, &found, manual.git_ref.as_deref(), trigger).await?;
     Ok((StatusCode::ACCEPTED, Json(queued)))
+}
+
+pub(crate) async fn queue(
+    app: &AppState,
+    found: &apps::App,
+    git_ref: Option<&str>,
+    trigger: Trigger,
+) -> ApiResult<Deploy> {
+    app.deployer
+        .queue_ref(found, git_ref, trigger)
+        .await
+        .map_err(github_error)
+}
+
+pub(crate) async fn queue_rollback(
+    app: &AppState,
+    found: &apps::App,
+    release_id: &str,
+    restore_deploy_id: Option<&str>,
+) -> ApiResult<Deploy> {
+    let release = releases::by_id(&app.db, release_id)
+        .await?
+        .filter(|r| r.app_id == found.id)
+        .ok_or_else(|| ApiError::not_found("No such release for this application."))?;
+    if let Some(deploy_id) = restore_deploy_id {
+        let snapshot_owner = find_deploy(app, deploy_id).await?;
+        if snapshot_owner.app_id != found.id {
+            return Err(ApiError::not_found("No such deploy for this application."));
+        }
+        if snapshots::for_deploy(&app.db, deploy_id).await?.is_empty() {
+            return Err(ApiError::bad_request("That deploy took no snapshot."));
+        }
+    }
+    Ok(app
+        .deployer
+        .enqueue_rollback(found, &release, restore_deploy_id)
+        .await?)
 }
 
 fn github_error(e: anyhow::Error) -> ApiError {
@@ -176,23 +196,13 @@ async fn rollback(
     Json(body): Json<Rollback>,
 ) -> ApiResult<(StatusCode, Json<Deploy>)> {
     let found = find_app(&app, &slug).await?;
-    let release = releases::by_id(&app.db, &body.release_id)
-        .await?
-        .filter(|r| r.app_id == found.id)
-        .ok_or_else(|| ApiError::not_found("No such release for this application."))?;
-    if let Some(deploy_id) = &body.restore_deploy_id {
-        let snapshot_owner = find_deploy(&app, deploy_id).await?;
-        if snapshot_owner.app_id != found.id {
-            return Err(ApiError::not_found("No such deploy for this application."));
-        }
-        if snapshots::for_deploy(&app.db, deploy_id).await?.is_empty() {
-            return Err(ApiError::bad_request("That deploy took no snapshot."));
-        }
-    }
-    let queued = app
-        .deployer
-        .enqueue_rollback(&found, &release, body.restore_deploy_id.as_deref())
-        .await?;
+    let queued = queue_rollback(
+        &app,
+        &found,
+        &body.release_id,
+        body.restore_deploy_id.as_deref(),
+    )
+    .await?;
     Ok((StatusCode::ACCEPTED, Json(queued)))
 }
 

@@ -24,22 +24,20 @@ struct Window {
     range: Option<String>,
 }
 
-impl Window {
-    fn secs(&self) -> ApiResult<u64> {
-        match self.range.as_deref().unwrap_or("24h") {
-            "1h" => Ok(3600),
-            "24h" => Ok(86_400),
-            "7d" => Ok(7 * 86_400),
-            other => Err(ApiError::bad_request(format!(
-                "range must be 1h, 24h or 7d, not {other}."
-            ))),
-        }
+pub(crate) fn window_secs(range: Option<&str>) -> ApiResult<u64> {
+    match range.unwrap_or("24h") {
+        "1h" => Ok(3600),
+        "24h" => Ok(86_400),
+        "7d" => Ok(7 * 86_400),
+        other => Err(ApiError::bad_request(format!(
+            "range must be 1h, 24h or 7d, not {other}."
+        ))),
     }
 }
 
 /// The panel's chart shape: `cpu` in percent, `memory` in percent of the host or MB of the app.
 #[derive(Serialize)]
-struct Series {
+pub(crate) struct Series {
     t: Vec<i64>,
     values: BTreeMap<&'static str, Vec<f64>>,
 }
@@ -73,21 +71,20 @@ async fn host_metrics(
     _: Caller,
     Query(window): Query<Window>,
 ) -> ApiResult<Json<Series>> {
-    let since = window.secs()?;
-    let total = app
-        .platform
-        .proc_meminfo()
-        .map_err(anyhow::Error::from)?
-        .total_kb as f64
-        * 1024.0;
+    let since = window_secs(window.range.as_deref())?;
+    Ok(Json(host_series(&app, since).await?))
+}
+
+pub(crate) async fn host_series(app: &AppState, since: u64) -> anyhow::Result<Series> {
+    let total = app.platform.proc_meminfo()?.total_kb as f64 * 1024.0;
     let series = metrics::series(&app.db, HOST, since, POINTS).await?;
-    Ok(Json(shaped(series, |bytes| {
+    Ok(shaped(series, |bytes| {
         if total > 0.0 {
             (bytes / total * 1000.0).round() / 10.0
         } else {
             0.0
         }
-    })))
+    }))
 }
 
 async fn app_metrics(
@@ -99,9 +96,15 @@ async fn app_metrics(
     let found = apps::by_slug(&app.db, &slug)
         .await?
         .ok_or_else(|| ApiError::not_found(AppError::NotFound.to_string()))?;
-    let since = window.secs()?;
+    let since = window_secs(window.range.as_deref())?;
+    Ok(Json(app_series(&app, &found, since).await?))
+}
+
+pub(crate) async fn app_series(
+    app: &AppState,
+    found: &apps::App,
+    since: u64,
+) -> anyhow::Result<Series> {
     let series = metrics::series(&app.db, &found.id, since, POINTS).await?;
-    Ok(Json(shaped(series, |bytes| {
-        (bytes / MB * 10.0).round() / 10.0
-    })))
+    Ok(shaped(series, |bytes| (bytes / MB * 10.0).round() / 10.0))
 }

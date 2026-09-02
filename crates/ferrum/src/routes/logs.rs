@@ -34,12 +34,7 @@ async fn read(
     let found = apps::by_slug(&app.db, &slug)
         .await?
         .ok_or_else(|| ApiError::not_found(AppError::NotFound.to_string()))?;
-    let source = match request.source.as_deref() {
-        None => Source::App,
-        Some(name) => Source::parse(name).ok_or_else(|| {
-            ApiError::bad_request(format!("source must be app, access or error, not {name}."))
-        })?,
-    };
+    let source = source(request.source.as_deref())?;
     let lines = request.lines.unwrap_or(DEFAULT_LINES);
     let follow = request
         .follow
@@ -64,6 +59,15 @@ async fn read(
     Ok(Sse::new(stream)
         .keep_alive(KeepAlive::default())
         .into_response())
+}
+
+pub(crate) fn source(name: Option<&str>) -> ApiResult<Source> {
+    match name {
+        None => Ok(Source::App),
+        Some(name) => Source::parse(name).ok_or_else(|| {
+            ApiError::bad_request(format!("source must be app, access or error, not {name}."))
+        }),
+    }
 }
 
 fn line_event(line: &Line) -> Result<Event, std::convert::Infallible> {
