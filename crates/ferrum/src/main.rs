@@ -92,17 +92,42 @@ async fn main() -> anyhow::Result<()> {
             git_ref,
             token,
         } => {
-            let token = token
-                .or_else(|| std::env::var("FERRUM_TOKEN").ok())
-                .filter(|t| !t.trim().is_empty());
-            let Some(token) = token else {
-                eprintln!(
-                    "\n  Set FERRUM_TOKEN or pass --token; mint one with `ferrum token create`.\n"
-                );
-                std::process::exit(2);
-            };
+            let token = need_token(token);
             let code = report(ferrum::client::deploy(&slug, git_ref.as_deref(), &token).await);
             std::process::exit(code);
+        }
+        cli::Command::Status { token } => {
+            let token = need_token(token);
+            report(ferrum::client::status(&token).await);
+            Ok(())
+        }
+        cli::Command::Logs {
+            slug,
+            source,
+            follow,
+            lines,
+            token,
+        } => {
+            let token = need_token(token);
+            report(ferrum::client::logs(&slug, &source, follow, lines, &token).await);
+            Ok(())
+        }
+        cli::Command::Restart { slug, token } => {
+            let token = need_token(token);
+            report(ferrum::client::restart(&slug, &token).await);
+            Ok(())
+        }
+    }
+}
+
+fn need_token(flag: Option<String>) -> String {
+    match cli::token_from(flag) {
+        Some(token) => token,
+        None => {
+            eprintln!(
+                "\n  Set FERRUM_TOKEN or pass --token; mint one with `ferrum token create`.\n"
+            );
+            std::process::exit(2);
         }
     }
 }

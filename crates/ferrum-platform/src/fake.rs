@@ -554,16 +554,14 @@ impl Platform for FakePlatform {
         stopped: &dyn Fn() -> bool,
     ) -> Result<(), PlatformError> {
         self.record(format!("journal_follow {unit} {lines}"))?;
-        let mut seen = 0;
+        let mut seen: Option<usize> = None;
         loop {
             let pending: Vec<JournalLine> = {
                 let inner = self.inner.lock().unwrap();
                 let all = inner.journal.get(unit).cloned().unwrap_or_default();
-                if seen == 0 {
-                    seen = all.len().saturating_sub(lines as usize);
-                }
-                let fresh = all.into_iter().skip(seen).collect::<Vec<_>>();
-                seen += fresh.len();
+                let from = seen.unwrap_or_else(|| all.len().saturating_sub(lines as usize));
+                let fresh = all.into_iter().skip(from).collect::<Vec<_>>();
+                seen = Some(from + fresh.len());
                 fresh
             };
             for line in pending {

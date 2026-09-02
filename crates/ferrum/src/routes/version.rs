@@ -1,4 +1,5 @@
 use axum::Json;
+use ferrum_core::host::Build;
 use serde::Serialize;
 
 #[derive(Serialize)]
@@ -10,9 +11,9 @@ pub struct VersionInfo {
     pub arch: String,
 }
 
-pub async fn get() -> Json<VersionInfo> {
+pub fn build() -> Build {
     let host = ferrum_platform::detect().ok();
-    Json(VersionInfo {
+    Build {
         version: crate::cli::VERSION.to_string(),
         build_id: crate::cli::BUILD_ID.to_string(),
         commit_sha: crate::cli::COMMIT_SHA.to_string(),
@@ -21,5 +22,16 @@ pub async fn get() -> Json<VersionInfo> {
             .map(|h| h.pretty_name.clone())
             .unwrap_or_else(|| "unknown".into()),
         arch: std::env::consts::ARCH.to_string(),
+    }
+}
+
+pub async fn get() -> Json<VersionInfo> {
+    let build = build();
+    Json(VersionInfo {
+        version: build.version,
+        build_id: build.build_id,
+        commit_sha: build.commit_sha,
+        os: build.os,
+        arch: build.arch,
     })
 }

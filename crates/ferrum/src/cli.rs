@@ -50,6 +50,36 @@ pub enum Command {
         #[arg(long)]
         token: Option<String>,
     },
+    /// Prints the host card the Dashboard shows.
+    Status {
+        #[arg(long)]
+        token: Option<String>,
+    },
+    /// Prints an application's log; `--follow` streams it until Ctrl-C.
+    Logs {
+        slug: String,
+        /// app, access or error
+        #[arg(long, default_value = "app")]
+        source: String,
+        #[arg(long, short = 'f')]
+        follow: bool,
+        #[arg(long, short = 'n', default_value_t = ferrum_core::logs::DEFAULT_LINES)]
+        lines: u32,
+        #[arg(long)]
+        token: Option<String>,
+    },
+    /// Restarts an application's unit and prints its status.
+    Restart {
+        slug: String,
+        #[arg(long)]
+        token: Option<String>,
+    },
+}
+
+/// `--token` first, then `FERRUM_TOKEN`; the daemon mints nothing for the CLI.
+pub fn token_from(flag: Option<String>) -> Option<String> {
+    flag.or_else(|| std::env::var("FERRUM_TOKEN").ok())
+        .filter(|t| !t.trim().is_empty())
 }
 
 #[derive(Subcommand)]

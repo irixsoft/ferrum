@@ -10,7 +10,8 @@ use ferrum_core::deploy::{self, Outcome, maintenance, releases};
 use ferrum_core::detect::{self, DetectError, Detected};
 use ferrum_core::redis::{self, RedisError};
 use ferrum_core::runtime::toolchain;
-use ferrum_core::{certs, github, postgres};
+use ferrum_core::{certs, github, metrics, postgres};
+use ferrum_platform::ServiceAction;
 use serde::{Deserialize, Serialize};
 
 pub fn router() -> Router<AppState> {
@@ -31,7 +32,11 @@ pub fn router() -> Router<AppState> {
             "/api/apps/{slug}/certificates",
             axum::routing::post(retry_certificates),
         )
+        .route("/api/apps/{slug}/restart", axum::routing::post(restart))
 }
+
+const RESTART_WHILE_DEPLOYING: &str =
+    "A deploy is running for this application; it restarts by itself when the deploy ends.";
 
 #[derive(Serialize)]
 struct Listed {
@@ -182,7 +187,26 @@ async fn show(
     };
     let status = status_of(&app, &found).await?;
     let certificates = certs::statuses(&app.db, app.platform.as_ref(), &found).await?;
+    let resources = if found.runtime.has_process() {
+        app.platform
+            .cgroup_stats(&unit_name(&found.slug))
+            .map_err(anyhow::Error::from)?
+    } else {
+        None
+    };
+    let cpu_pct = match resources {
+        Some(_) => Some(
+            metrics::latest(&app.db, &found.id)
+                .await?
+                .map(|s| s.cpu_pct)
+                .unwrap_or(0.0),
+        ),
+        None => None,
+    };
     let mut value = serde_json::to_value(&found).map_err(anyhow::Error::from)?;
+    value["memory_bytes"] = resources.map(|s| s.memory_current).into();
+    value["memory_peak_bytes"] = resources.map(|s| s.memory_peak).into();
+    value["cpu_pct"] = cpu_pct.into();
     value["env"] = serde_json::Value::Array(keys);
     value["deployed"] = serde_json::Value::Bool(current.is_some());
     value["current_release"] = serde_json::to_value(current).map_err(anyhow::Error::from)?;
@@ -207,6 +231,31 @@ async fn retry_certificates(
     }
     certs::retry_now(&app.db, &found).await?;
     app.issue_certificates_later(found);
+    Ok(StatusCode::ACCEPTED)
+}
+
+async fn restart(
+    Extract(app): Extract<AppState>,
+    _: Caller,
+    Path(slug): Path<String>,
+) -> ApiResult<StatusCode> {
+    let found = find(&app, &slug).await?;
+    if !found.runtime.has_process() {
+        return Err(ApiError::bad_request(
+            "A static site has no process to restart.",
+        ));
+    }
+    if deploy::running_for(&app.db, &found.id).await?.is_some() {
+        return Err(ApiError::conflict(RESTART_WHILE_DEPLOYING));
+    }
+    if found.current_release_id.is_none() {
+        return Err(ApiError::conflict(format!(
+            "{slug} has not been deployed yet; there is nothing to restart."
+        )));
+    }
+    app.platform
+        .service(ServiceAction::Restart, &unit_name(&found.slug))
+        .map_err(|e| ApiError::bad_request(format!("The host refused the restart: {e}")))?;
     Ok(StatusCode::ACCEPTED)
 }
 

@@ -89,7 +89,10 @@ pub async fn status(
     build: &Build,
 ) -> anyhow::Result<HostStatus> {
     let mem = platform.proc_meminfo()?;
-    let disk = platform.disk_usage(std::path::Path::new(crate::DATA_DIR))?;
+    let disk = platform.disk_usage(&state.data_dir).unwrap_or_else(|e| {
+        tracing::warn!(error = %e, "reading disk usage");
+        Default::default()
+    });
     let cpu_pct = metrics::latest(state, HOST)
         .await?
         .map(|s| s.cpu_pct)

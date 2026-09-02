@@ -169,6 +169,8 @@ fn router(state: AppState) -> Router {
         .merge(crate::routes::runtimes::router())
         .merge(crate::routes::databases::router())
         .merge(crate::routes::deploys::router())
+        .merge(crate::routes::host::router())
+        .merge(crate::routes::logs::router())
         .route_layer(axum::middleware::from_fn_with_state(
             state.clone(),
             crate::auth::require_caller,
@@ -188,7 +190,12 @@ pub async fn serve(data_dir: &Path) -> anyhow::Result<()> {
         ..Deps::default()
     };
     let app_state = AppState::new(state.clone(), deps);
-    ferrum_core::certs::spawn_sweeper(state, app_state.platform.clone(), app_state.certs.clone());
+    ferrum_core::certs::spawn_sweeper(
+        state.clone(),
+        app_state.platform.clone(),
+        app_state.certs.clone(),
+    );
+    ferrum_core::metrics::spawn_sampler(state, app_state.platform.clone());
     let listener = tokio::net::TcpListener::bind(LISTEN_ADDR).await?;
     tracing::info!(addr = %LISTEN_ADDR, "listening");
     axum::serve(listener, router(app_state))

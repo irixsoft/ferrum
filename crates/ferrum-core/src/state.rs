@@ -7,6 +7,7 @@ use std::path::Path;
 #[derive(Clone)]
 pub struct State {
     pub pool: SqlitePool,
+    pub data_dir: std::path::PathBuf,
 }
 
 static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("./migrations");
@@ -34,7 +35,10 @@ impl State {
             .run(&pool)
             .await
             .context("running schema migrations")?;
-        Ok(Self { pool })
+        Ok(Self {
+            pool,
+            data_dir: data_dir.to_path_buf(),
+        })
     }
 
     pub async fn get_setting(&self, key: &str) -> anyhow::Result<Option<String>> {

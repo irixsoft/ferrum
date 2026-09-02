@@ -5,6 +5,8 @@ pub mod deploys;
 pub mod error;
 pub mod github;
 pub mod health;
+pub mod host;
+pub mod logs;
 pub mod me;
 pub mod runtimes;
 pub mod sessions;

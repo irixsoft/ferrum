@@ -3,7 +3,6 @@ use crate::apps::{self, unit::unit_name};
 use crate::state::State;
 use ferrum_platform::{Platform, ProcStat};
 use std::collections::HashMap;
-use std::path::Path;
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::task::JoinHandle;
@@ -54,15 +53,17 @@ impl Sampler {
         };
         let mem = self.platform.proc_meminfo()?;
         let platform = self.platform.clone();
-        let disk =
-            tokio::task::spawn_blocking(move || platform.disk_usage(Path::new(crate::DATA_DIR)))
-                .await??;
+        let data_dir = self.state.data_dir.clone();
+        let disk = tokio::task::spawn_blocking(move || platform.disk_usage(&data_dir))
+            .await?
+            .map_err(|e| tracing::warn!(error = %e, "reading disk usage"))
+            .ok();
         let sample = Sample {
             at: now(),
             cpu_pct: cpu::percent(&prev.stat, &stat),
             memory_bytes: mem.total_kb.saturating_sub(mem.available_kb) * 1024,
             memory_peak_bytes: None,
-            disk_used_bytes: Some(disk.used_bytes),
+            disk_used_bytes: disk.map(|d| d.used_bytes),
             net_rx_bytes: Some(net.0.saturating_sub(prev.net.0)),
             net_tx_bytes: Some(net.1.saturating_sub(prev.net.1)),
         };
@@ -171,11 +172,14 @@ mod tests {
         assert_eq!(ledger.memory_bytes, 95_000_000);
         assert_eq!(ledger.memory_peak_bytes, Some(125_000_000));
         assert!(ledger.cpu_pct > 0.0);
-        assert!(
-            platform
-                .calls()
-                .iter()
-                .any(|c| c == "disk_usage /var/lib/ferrum")
+        let expected = format!("disk_usage {}", state.data_dir.display());
+        assert!(platform.calls().iter().any(|c| c == &expected));
+        platform.fail_next("disk_usage");
+        sampler.tick().await.unwrap();
+        assert_eq!(
+            latest(&state, HOST).await.unwrap().unwrap().disk_used_bytes,
+            None,
+            "a failed df loses the disk column, not the sample"
         );
         assert!(series(&state, HOST, 3600, 60).await.unwrap().t.len() == 1);
 

@@ -157,7 +157,7 @@ mod tests {
         assert_eq!(s.values["memory_bytes"][0], 1000.0);
         assert!(s.values["cpu"][0] >= 20.0 && s.values["cpu"][0] < 26.0);
         assert!(s.values["cpu"].iter().all(|c| *c != 99.0));
-        let fine = series(&state, HOST, 600, 360).await.unwrap();
+        let fine = series(&state, HOST, 660, 360).await.unwrap();
         assert_eq!(fine.t.len(), 60);
         assert_eq!(fine.values["cpu"][59], 79.0);
         assert!(series(&state, "nope", 3600, 60).await.unwrap().t.is_empty());
