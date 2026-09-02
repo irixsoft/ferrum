@@ -82,10 +82,7 @@ pub async fn resolve_a(host: &str) -> Result<Vec<IpAddr>, DnsLookupError> {
 }
 
 pub async fn public_ip() -> Result<IpAddr, DnsLookupError> {
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(5))
-        .build()
-        .map_err(|e| DnsLookupError::PublicIp(e.to_string()))?;
+    let client = crate::http::client_with_timeout(Duration::from_secs(5));
 
     let mut last = String::from("no lookup service answered");
     for url in IP_LOOKUP_URLS {

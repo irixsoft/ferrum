@@ -3,6 +3,7 @@ pub mod credentials;
 pub mod dns;
 pub mod enrollment;
 pub mod github;
+pub mod http;
 pub mod nginx;
 mod secret;
 pub mod sessions;
