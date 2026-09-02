@@ -142,6 +142,30 @@ pub struct Detection {
     pub package_manager: Option<PackageManager>,
 }
 
+/// Where toolchains come from. Tests point every one at a local server.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Mirrors {
+    pub node_dist: String,
+    pub bun_releases: String,
+    pub dotnet_script: String,
+}
+
+impl Default for Mirrors {
+    fn default() -> Self {
+        Self {
+            node_dist: node::DIST.into(),
+            bun_releases: bun::RELEASES.into(),
+            dotnet_script: dotnet::INSTALL_SCRIPT.into(),
+        }
+    }
+}
+
+impl Mirrors {
+    pub fn node_index_url(&self) -> String {
+        format!("{}/index.json", self.node_dist)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Source {
     Archive {
@@ -165,7 +189,13 @@ pub enum ArchiveFormat {
 pub trait Runtime: Send + Sync {
     fn kind(&self) -> RuntimeKind;
     fn detect(&self, tree: &RepoTree) -> Option<Detection>;
-    fn source(&self, version: &str, target: Target, install_dir: &Path) -> Option<Source>;
+    fn source(
+        &self,
+        version: &str,
+        target: Target,
+        install_dir: &Path,
+        mirrors: &Mirrors,
+    ) -> Option<Source>;
     fn binary(&self) -> &'static str;
     fn valid_version(&self, version: &str) -> bool;
     fn env_for(&self, phase: Phase, toolchain: &Path, port: Option<u16>) -> Vec<(String, String)>;

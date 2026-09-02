@@ -1,6 +1,6 @@
 use super::{
-    Commands, Detection, Health, PackageManager, Phase, Runtime, RuntimeKind, Source, Target,
-    dotnet, node,
+    Commands, Detection, Health, Mirrors, PackageManager, Phase, Runtime, RuntimeKind, Source,
+    Target, dotnet, node,
 };
 use crate::detect::RepoTree;
 use std::path::Path;
@@ -138,7 +138,7 @@ impl Runtime for Static {
         })
     }
 
-    fn source(&self, _version: &str, _target: Target, _install_dir: &Path) -> Option<Source> {
+    fn source(&self, _: &str, _: Target, _: &Path, _: &Mirrors) -> Option<Source> {
         None
     }
 

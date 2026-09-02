@@ -1,12 +1,15 @@
 #![allow(dead_code)]
 
 use axum::extract::{Path, Query, State};
+use axum::http::StatusCode;
 use axum::routing::{get, post};
 use axum::{Json, Router};
+use base64::Engine;
 use serde::Deserialize;
 use serde_json::{Value, json};
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicI64, AtomicUsize, Ordering};
-use std::sync::{Arc, LazyLock};
+use std::sync::{Arc, LazyLock, Mutex};
 
 /// A 2048-bit key generated once per test binary. Committing a PEM would put a private key in
 /// the repository, and `EncodingKey::from_rsa_pem` rejects anything that is not a real one.
@@ -21,7 +24,15 @@ pub static TEST_KEY: LazyLock<String> = LazyLock::new(|| {
 });
 
 pub const INSTALLATION_ID: i64 = 4242;
+pub const BUN_LATEST: &str = "1.2.3";
 const PER_PAGE: usize = 2;
+
+#[derive(Default)]
+struct Repos {
+    files: HashMap<String, Vec<(String, String)>>,
+    truncated: Vec<String>,
+    fetched: Vec<String>,
+}
 
 #[derive(Clone)]
 struct Counters {
@@ -29,6 +40,7 @@ struct Counters {
     expires_in: Arc<AtomicI64>,
     repo_pages: Arc<AtomicUsize>,
     installed: Arc<AtomicUsize>,
+    repos: Arc<Mutex<Repos>>,
 }
 
 pub struct StubGithub {
@@ -43,12 +55,16 @@ impl StubGithub {
             expires_in: Arc::new(AtomicI64::new(3600)),
             repo_pages: Arc::new(AtomicUsize::new(0)),
             installed: Arc::new(AtomicUsize::new(1)),
+            repos: Arc::new(Mutex::new(Repos::default())),
         };
 
         let app = Router::new()
             .route("/app/installations", get(installations))
             .route("/app/installations/{id}/access_tokens", post(access_tokens))
             .route("/installation/repositories", get(repositories))
+            .route("/repos/{owner}/{repo}/git/trees/{git_ref}", get(tree))
+            .route("/repos/{owner}/{repo}/contents/{*path}", get(contents))
+            .route("/repos/oven-sh/bun/releases/latest", get(bun_latest))
             .with_state(counters.clone());
 
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -77,6 +93,29 @@ impl StubGithub {
 
     pub fn uninstall(&self) {
         self.counters.installed.store(0, Ordering::SeqCst);
+    }
+
+    pub fn serve_repo(&self, full_name: &str, files: &[(&str, &str)]) {
+        self.counters.repos.lock().unwrap().files.insert(
+            full_name.to_string(),
+            files
+                .iter()
+                .map(|(p, c)| (p.to_string(), c.to_string()))
+                .collect(),
+        );
+    }
+
+    pub fn serve_truncated_tree(&self, full_name: &str) {
+        self.counters
+            .repos
+            .lock()
+            .unwrap()
+            .truncated
+            .push(full_name.to_string());
+    }
+
+    pub fn contents_fetched(&self) -> Vec<String> {
+        self.counters.repos.lock().unwrap().fetched.clone()
     }
 }
 
@@ -130,4 +169,70 @@ async fn repositories(State(c): State<Counters>, Query(paging): Query<Paging>) -
         .collect();
 
     Json(json!({ "total_count": all.len(), "repositories": repositories }))
+}
+
+/// GitHub answers errors with a JSON body, and octocrab refuses to classify one without it.
+fn not_found() -> (StatusCode, Json<Value>) {
+    (
+        StatusCode::NOT_FOUND,
+        Json(
+            json!({ "message": "Not Found", "documentation_url": "https://docs.github.com/rest" }),
+        ),
+    )
+}
+
+async fn tree(
+    State(c): State<Counters>,
+    Path((owner, repo, git_ref)): Path<(String, String, String)>,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    let full_name = format!("{owner}/{repo}");
+    let repos = c.repos.lock().unwrap();
+    if repos.truncated.contains(&full_name) {
+        return Ok(Json(json!({ "sha": "t", "tree": [], "truncated": true })));
+    }
+    if git_ref == "missing" {
+        return Err(not_found());
+    }
+    let files = repos.files.get(&full_name).ok_or_else(not_found)?;
+    let entries: Vec<Value> = files
+        .iter()
+        .map(|(path, contents)| {
+            json!({ "path": path, "mode": "100644", "type": "blob", "sha": "x", "size": contents.len() })
+        })
+        .collect();
+    Ok(Json(
+        json!({ "sha": "t", "tree": entries, "truncated": false }),
+    ))
+}
+
+async fn contents(
+    State(c): State<Counters>,
+    Path((owner, repo, path)): Path<(String, String, String)>,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    let full_name = format!("{owner}/{repo}");
+    let mut repos = c.repos.lock().unwrap();
+    repos.fetched.push(path.clone());
+    let files = repos.files.get(&full_name).ok_or_else(not_found)?;
+    let (_, body) = files
+        .iter()
+        .find(|(p, _)| *p == path)
+        .ok_or_else(not_found)?;
+    let encoded = base64::engine::general_purpose::STANDARD.encode(body.as_bytes());
+    let wrapped: String = encoded
+        .as_bytes()
+        .chunks(60)
+        .map(|c| format!("{}\n", String::from_utf8_lossy(c)))
+        .collect();
+    Ok(Json(json!({
+        "type": "file",
+        "encoding": "base64",
+        "size": body.len(),
+        "name": path.rsplit('/').next().unwrap_or(&path),
+        "path": path,
+        "content": wrapped,
+    })))
+}
+
+async fn bun_latest() -> Json<Value> {
+    Json(json!({ "tag_name": format!("bun-v{BUN_LATEST}"), "name": format!("Bun v{BUN_LATEST}") }))
 }

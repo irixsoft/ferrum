@@ -1,7 +1,9 @@
 #![allow(dead_code)]
 
+pub mod downloads;
 pub mod github_stub;
 
+pub use downloads::StubDownloads;
 pub use github_stub::StubGithub;
 
 use axum::Router;
@@ -9,10 +11,15 @@ use axum::body::Body;
 use axum::http::{Request, StatusCode, header};
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use ferrum::server::Deps;
 use ferrum_core::github::Api;
+use ferrum_core::runtime::toolchain::Store;
+use ferrum_core::runtime::{Mirrors, RuntimeKind};
 use ferrum_core::state::State;
 use ferrum_core::{enrollment, setup, users};
+use ferrum_platform::FakePlatform;
 use serde_json::Value;
+use std::sync::Arc;
 use tower::ServiceExt;
 use webauthn_authenticator_rs::AuthenticatorBackend;
 use webauthn_authenticator_rs::softpasskey::SoftPasskey;
@@ -31,7 +38,9 @@ pub struct Harness {
     pub db: State,
     /// The very instance the routes use, so a test sees the same token cache they do.
     pub github_api: Api,
-    _dir: tempfile::TempDir,
+    pub platform: Arc<FakePlatform>,
+    pub toolchains: Store,
+    dir: tempfile::TempDir,
 }
 
 pub struct Res {
@@ -71,15 +80,61 @@ pub async fn harness_with_github(base: &str) -> Harness {
 }
 
 pub async fn harness_without_hostname(base: &str) -> Harness {
+    harness_with_deps(base, NO_GITHUB).await
+}
+
+/// `downloads` stands in for nodejs.org: the release index and the tarballs both come from it.
+pub async fn harness_with_deps(github_base: &str, downloads: &str) -> Harness {
     let dir = tempfile::tempdir().unwrap();
     let db = State::open(dir.path()).await.unwrap();
-    let github_api = Api::at(base);
+    let github_api = Api::at(github_base);
+    let platform = Arc::new(FakePlatform::new());
+    let toolchains = Store::at(dir.path().join("runtimes"));
+    let deps = Deps {
+        github: github_api.clone(),
+        platform: platform.clone(),
+        toolchains: toolchains.clone(),
+        mirrors: Mirrors {
+            node_dist: downloads.to_string(),
+            bun_releases: downloads.to_string(),
+            dotnet_script: format!("{downloads}/dotnet-install.sh"),
+        },
+    };
     Harness {
-        app: ferrum::server::app_with_github(db.clone(), github_api.clone()),
+        app: ferrum::server::app_with(db.clone(), deps),
         db,
         github_api,
-        _dir: dir,
+        platform,
+        toolchains,
+        dir,
     }
+}
+
+pub async fn signed_in_with_downloads() -> (Harness, String, StubDownloads) {
+    let downloads = StubDownloads::start().await;
+    let h = harness_with_deps(NO_GITHUB, &downloads.base).await;
+    setup::set_hostname(&h.db, HOSTNAME).await.unwrap();
+    let link = h.enrollment("Saeed").await;
+    let mut key = soft_passkey();
+    let cookie = h.register(&mut key, &link).await.session_cookie().unwrap();
+    (h, cookie, downloads)
+}
+
+pub fn new_app_json(slug: &str) -> String {
+    serde_json::json!({
+        "slug": slug,
+        "name": slug,
+        "repository": "irixsoft/ledger",
+        "git_ref": "main",
+        "tracking": "branch",
+        "runtime": "node",
+        "toolchain": "node",
+        "runtime_version": "22.11.0",
+        "commands": { "install": "bun install --frozen-lockfile", "build": "bun run build", "start": "bun run start" },
+        "routes": [{ "path": "/", "port_name": "main" }],
+        "domains": [format!("{slug}.example.com")],
+    })
+    .to_string()
 }
 
 pub fn soft_passkey() -> SoftPasskey {
@@ -208,6 +263,27 @@ impl Harness {
         .await
     }
 
+    /// Records a toolchain as installed and puts its binary where `ensure` looks, so app
+    /// creation can proceed without a download.
+    pub async fn pretend_toolchain(&self, kind: RuntimeKind, version: &str) {
+        let dir = self.toolchains.dir(kind, version);
+        let binary = match kind {
+            RuntimeKind::Node => "bin/node",
+            RuntimeKind::Bun => "bun",
+            RuntimeKind::Dotnet => "dotnet",
+            RuntimeKind::Static => unreachable!(),
+        };
+        std::fs::create_dir_all(dir.join(binary).parent().unwrap()).unwrap();
+        std::fs::write(dir.join(binary), "#!").unwrap();
+        sqlx::query("INSERT INTO toolchains (kind, version, path, size_bytes) VALUES (?, ?, ?, 2)")
+            .bind(kind.as_str())
+            .bind(version)
+            .bind(dir.to_string_lossy().to_string())
+            .execute(&self.db.pool)
+            .await
+            .unwrap();
+    }
+
     pub async fn machine_token(&self, read_only: bool) -> String {
         ferrum_core::tokens::mint(&self.db, "agent", read_only)
             .await
@@ -318,6 +394,31 @@ impl Harness {
         self.send(
             Request::builder()
                 .method("POST")
+                .uri(uri)
+                .header(header::CONTENT_TYPE, "application/json")
+                .header(header::COOKIE, format!("ferrum_session={cookie}"))
+                .body(Body::from(body.to_string()))
+                .unwrap(),
+        )
+        .await
+    }
+
+    pub async fn put_with_cookie(&self, uri: &str, body: &str, cookie: &str) -> Res {
+        self.json_with_cookie("PUT", uri, body, cookie).await
+    }
+
+    pub async fn patch_with_cookie(&self, uri: &str, body: &str, cookie: &str) -> Res {
+        self.json_with_cookie("PATCH", uri, body, cookie).await
+    }
+
+    pub async fn delete_json_with_cookie(&self, uri: &str, body: &str, cookie: &str) -> Res {
+        self.json_with_cookie("DELETE", uri, body, cookie).await
+    }
+
+    async fn json_with_cookie(&self, method: &str, uri: &str, body: &str, cookie: &str) -> Res {
+        self.send(
+            Request::builder()
+                .method(method)
                 .uri(uri)
                 .header(header::CONTENT_TYPE, "application/json")
                 .header(header::COOKIE, format!("ferrum_session={cookie}"))

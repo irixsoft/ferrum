@@ -2,39 +2,78 @@ use crate::auth::webauthn::Challenges;
 use axum::Router;
 use axum::routing::get;
 use ferrum_core::github::Api;
+use ferrum_core::runtime::Mirrors;
+use ferrum_core::runtime::toolchain::Store;
 use ferrum_core::state::State;
+use ferrum_platform::{Platform, Ubuntu};
 use std::path::Path;
+use std::sync::Arc;
 use tower_http::trace::TraceLayer;
 
 pub use ferrum_core::LISTEN_ADDR;
+
+/// Everything a test may want to stand a stub in for, exactly as `Directory::Custom` does for
+/// Let's Encrypt.
+#[derive(Clone)]
+pub struct Deps {
+    pub github: Api,
+    pub platform: Arc<dyn Platform>,
+    pub toolchains: Store,
+    pub mirrors: Mirrors,
+}
+
+impl Default for Deps {
+    fn default() -> Self {
+        Self {
+            github: Api::default(),
+            platform: Arc::new(Ubuntu),
+            toolchains: Store::default(),
+            mirrors: Mirrors::default(),
+        }
+    }
+}
 
 #[derive(Clone)]
 pub struct AppState {
     pub db: State,
     pub challenges: Challenges,
+    pub http: reqwest::Client,
     pub github: Api,
+    pub platform: Arc<dyn Platform>,
+    pub toolchains: Store,
+    pub mirrors: Mirrors,
 }
 
 impl AppState {
-    pub fn new(db: State) -> Self {
+    pub fn new(db: State, deps: Deps) -> Self {
         Self {
             db,
             challenges: Challenges::default(),
-            github: Api::default(),
+            http: ferrum_core::http::client(),
+            github: deps.github,
+            platform: deps.platform,
+            toolchains: deps.toolchains,
+            mirrors: deps.mirrors,
         }
     }
 }
 
 pub fn app(db: State) -> Router {
-    router(AppState::new(db))
+    router(AppState::new(db, Deps::default()))
 }
 
-/// Lets a test stand a stub in for api.github.com, as `Directory::Custom` does for Let's Encrypt.
 pub fn app_with_github(db: State, github: Api) -> Router {
-    router(AppState {
-        github,
-        ..AppState::new(db)
-    })
+    app_with(
+        db,
+        Deps {
+            github,
+            ..Deps::default()
+        },
+    )
+}
+
+pub fn app_with(db: State, deps: Deps) -> Router {
+    router(AppState::new(db, deps))
 }
 
 fn router(state: AppState) -> Router {
@@ -51,6 +90,8 @@ fn router(state: AppState) -> Router {
         .merge(crate::routes::sessions::router())
         .merge(crate::routes::tokens::router())
         .merge(crate::routes::github::router())
+        .merge(crate::routes::apps::router())
+        .merge(crate::routes::runtimes::router())
         .route_layer(axum::middleware::from_fn_with_state(
             state.clone(),
             crate::auth::require_caller,

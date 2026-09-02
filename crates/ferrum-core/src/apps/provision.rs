@@ -34,11 +34,7 @@ pub async fn provision(state: &State, platform: &dyn Platform, app: &App) -> any
         platform.make_dirs(&dir.join(sub), mode)?;
     }
     platform.chown_tree(&dir, &user)?;
-
-    let vars = env::all(state, &app.id).await?;
-    let env_path = dir.join("shared/.env");
-    platform.write_file(&env_path, &env::render(&vars, &app.routes), 0o600)?;
-    platform.chown_tree(&env_path, &user)?;
+    write_env(state, platform, app).await?;
 
     if app.runtime.has_process() {
         let toolchain = Store::default().dir(app.toolchain, &app.runtime_version);
@@ -60,6 +56,14 @@ pub async fn provision(state: &State, platform: &dyn Platform, app: &App) -> any
     let vhost = render_vhost(app, &app.domains, cert_dir.as_deref());
     nginx::replace_and_reload(platform, &vhost_path(&app.slug), &vhost)
         .context("nginx refused the generated site configuration")?;
+    Ok(())
+}
+
+pub async fn write_env(state: &State, platform: &dyn Platform, app: &App) -> anyhow::Result<()> {
+    let vars = env::all(state, &app.id).await?;
+    let env_path = app_dir(&app.slug).join("shared/.env");
+    platform.write_file(&env_path, &env::render(&vars, &app.routes), 0o600)?;
+    platform.chown_tree(&env_path, &user_name(&app.slug))?;
     Ok(())
 }
 

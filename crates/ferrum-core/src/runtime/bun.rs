@@ -1,6 +1,6 @@
 use super::{
-    ArchiveFormat, Commands, Detection, Health, PackageManager, Phase, Runtime, RuntimeKind,
-    Source, Target, node, path_with, semver_like, version_prefix,
+    ArchiveFormat, Commands, Detection, Health, Mirrors, PackageManager, Phase, Runtime,
+    RuntimeKind, Source, Target, node, path_with, semver_like, version_prefix,
 };
 use crate::detect::RepoTree;
 use crate::github::Api;
@@ -9,7 +9,7 @@ use ferrum_platform::Arch;
 use serde::Deserialize;
 use std::path::Path;
 
-const RELEASES: &str = "https://github.com/oven-sh/bun/releases/download";
+pub const RELEASES: &str = "https://github.com/oven-sh/bun/releases/download";
 pub const LATEST_ROUTE: &str = "/repos/oven-sh/bun/releases/latest";
 const TAG_PREFIX: &str = "bun-v";
 
@@ -22,10 +22,10 @@ pub fn arch_name(arch: Arch) -> &'static str {
     }
 }
 
-pub fn download_url(version: &str, target: Target) -> String {
+pub fn download_url(releases: &str, version: &str, target: Target) -> String {
     let arch = arch_name(target.arch);
     let flavour = if target.baseline { "-baseline" } else { "" };
-    format!("{RELEASES}/bun-v{version}/bun-linux-{arch}{flavour}.zip")
+    format!("{releases}/bun-v{version}/bun-linux-{arch}{flavour}.zip")
 }
 
 #[derive(Deserialize)]
@@ -138,9 +138,15 @@ impl Runtime for Bun {
         })
     }
 
-    fn source(&self, version: &str, target: Target, _install_dir: &Path) -> Option<Source> {
+    fn source(
+        &self,
+        version: &str,
+        target: Target,
+        _install_dir: &Path,
+        mirrors: &Mirrors,
+    ) -> Option<Source> {
         Some(Source::Archive {
-            url: download_url(version, target),
+            url: download_url(&mirrors.bun_releases, version, target),
             format: ArchiveFormat::Zip,
             strip_components: 1,
         })
@@ -174,7 +180,7 @@ mod tests {
             baseline: false,
         };
         assert_eq!(
-            download_url("1.2.3", arm),
+            download_url(RELEASES, "1.2.3", arm),
             "https://github.com/oven-sh/bun/releases/download/bun-v1.2.3/bun-linux-aarch64.zip"
         );
         let old_x64 = Target {
@@ -182,7 +188,7 @@ mod tests {
             baseline: true,
         };
         assert_eq!(
-            download_url("1.2.3", old_x64),
+            download_url(RELEASES, "1.2.3", old_x64),
             "https://github.com/oven-sh/bun/releases/download/bun-v1.2.3/bun-linux-x64-baseline.zip"
         );
     }

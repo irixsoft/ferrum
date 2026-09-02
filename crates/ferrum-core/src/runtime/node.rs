@@ -1,6 +1,6 @@
 use super::{
-    ArchiveFormat, Commands, Detection, Health, PackageManager, Phase, Runtime, RuntimeKind,
-    Source, Target, path_with, semver_like, version_prefix,
+    ArchiveFormat, Commands, Detection, Health, Mirrors, PackageManager, Phase, Runtime,
+    RuntimeKind, Source, Target, path_with, semver_like, version_prefix,
 };
 use crate::detect::RepoTree;
 use anyhow::Context;
@@ -8,8 +8,7 @@ use ferrum_platform::Arch;
 use serde::Deserialize;
 use std::path::Path;
 
-pub const INDEX_URL: &str = "https://nodejs.org/dist/index.json";
-const DIST: &str = "https://nodejs.org/dist";
+pub const DIST: &str = "https://nodejs.org/dist";
 
 const FRAMEWORK_CONFIGS: [&str; 7] = [
     "next.config.*",
@@ -30,9 +29,9 @@ pub fn arch_name(arch: Arch) -> &'static str {
     }
 }
 
-pub fn download_url(version: &str, arch: Arch) -> String {
+pub fn download_url(dist: &str, version: &str, arch: Arch) -> String {
     let arch = arch_name(arch);
-    format!("{DIST}/v{version}/node-v{version}-linux-{arch}.tar.gz")
+    format!("{dist}/v{version}/node-v{version}-linux-{arch}.tar.gz")
 }
 
 #[derive(Deserialize)]
@@ -64,14 +63,18 @@ pub fn pick(index: &str, wanted: Option<&str>) -> anyhow::Result<String> {
     Ok(chosen.version.trim_start_matches('v').to_string())
 }
 
-pub async fn resolve(http: &reqwest::Client, wanted: Option<&str>) -> anyhow::Result<String> {
+pub async fn resolve(
+    http: &reqwest::Client,
+    index_url: &str,
+    wanted: Option<&str>,
+) -> anyhow::Result<String> {
     if let Some(w) = wanted
         && semver_like(w, 3)
     {
         return Ok(w.to_string());
     }
     let index = http
-        .get(INDEX_URL)
+        .get(index_url)
         .send()
         .await
         .and_then(|r| r.error_for_status())
@@ -184,9 +187,15 @@ impl Runtime for Node {
         })
     }
 
-    fn source(&self, version: &str, target: Target, _install_dir: &Path) -> Option<Source> {
+    fn source(
+        &self,
+        version: &str,
+        target: Target,
+        _install_dir: &Path,
+        mirrors: &Mirrors,
+    ) -> Option<Source> {
         Some(Source::Archive {
-            url: download_url(version, target.arch),
+            url: download_url(&mirrors.node_dist, version, target.arch),
             format: ArchiveFormat::TarGz,
             strip_components: 1,
         })
@@ -224,11 +233,11 @@ mod tests {
     #[test]
     fn download_urls_name_the_right_architecture() {
         assert_eq!(
-            download_url("22.11.0", Arch::Aarch64),
+            download_url(DIST, "22.11.0", Arch::Aarch64),
             "https://nodejs.org/dist/v22.11.0/node-v22.11.0-linux-arm64.tar.gz"
         );
         assert_eq!(
-            download_url("22.11.0", Arch::X86_64),
+            download_url(DIST, "22.11.0", Arch::X86_64),
             "https://nodejs.org/dist/v22.11.0/node-v22.11.0-linux-x64.tar.gz"
         );
     }

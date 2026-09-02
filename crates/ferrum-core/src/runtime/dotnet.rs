@@ -1,5 +1,5 @@
 use super::{
-    Commands, Detection, Health, Phase, Runtime, RuntimeKind, Source, Target, path_with,
+    Commands, Detection, Health, Mirrors, Phase, Runtime, RuntimeKind, Source, Target, path_with,
     semver_like,
 };
 use crate::detect::RepoTree;
@@ -15,6 +15,15 @@ const BLAZOR_WASM_SDK: &str = "Microsoft.NET.Sdk.BlazorWebAssembly";
 const EF_MARKER: &str = "Microsoft.EntityFrameworkCore";
 
 pub struct Dotnet;
+
+/// A .NET version is a channel; the install script picks the patch itself.
+pub fn channel(wanted: Option<&str>) -> String {
+    wanted
+        .map(str::trim)
+        .filter(|w| semver_like(w, 2))
+        .unwrap_or(CHANNELS[0])
+        .to_string()
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Project {
@@ -129,9 +138,15 @@ impl Runtime for Dotnet {
         })
     }
 
-    fn source(&self, version: &str, _target: Target, install_dir: &Path) -> Option<Source> {
+    fn source(
+        &self,
+        version: &str,
+        _target: Target,
+        install_dir: &Path,
+        mirrors: &Mirrors,
+    ) -> Option<Source> {
         Some(Source::Script {
-            url: INSTALL_SCRIPT.into(),
+            url: mirrors.dotnet_script.clone(),
             args: vec![
                 "--channel".into(),
                 version.into(),
@@ -224,6 +239,13 @@ mod tests {
     }
 
     #[test]
+    fn a_channel_is_kept_and_anything_else_becomes_the_current_lts() {
+        assert_eq!(channel(Some("8.0")), "8.0");
+        assert_eq!(channel(Some("9")), "10.0");
+        assert_eq!(channel(None), "10.0");
+    }
+
+    #[test]
     fn the_installer_is_driven_by_channel_and_directory() {
         let source = Dotnet
             .source(
@@ -233,6 +255,7 @@ mod tests {
                     baseline: false,
                 },
                 Path::new("/var/lib/ferrum/runtimes/dotnet/9.0.partial"),
+                &Mirrors::default(),
             )
             .unwrap();
         match source {

@@ -1,4 +1,4 @@
-use super::{ArchiveFormat, Runtime, RuntimeKind, Source, Target};
+use super::{ArchiveFormat, Mirrors, Runtime, RuntimeKind, Source, Target};
 use crate::state::State;
 use crate::time;
 use anyhow::{Context, bail};
@@ -118,6 +118,7 @@ pub async fn ensure(
     runtime: &dyn Runtime,
     version: &str,
     target: Target,
+    mirrors: &Mirrors,
     mut progress: impl FnMut(Progress),
 ) -> anyhow::Result<PathBuf> {
     let kind = runtime.kind();
@@ -132,7 +133,7 @@ pub async fn ensure(
 
     let partial = store.partial(kind, version);
     let source = runtime
-        .source(version, target, &partial)
+        .source(version, target, &partial, mirrors)
         .with_context(|| format!("{kind} has no toolchain of its own"))?;
 
     remove_if_present(&partial)?;
@@ -263,7 +264,7 @@ mod tests {
     use super::*;
     use crate::detect::RepoTree;
     use crate::github::tests::state;
-    use crate::runtime::{Detection, Phase};
+    use crate::runtime::{Detection, Phase, node};
     use ferrum_platform::{Arch, FakePlatform};
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -277,6 +278,14 @@ mod tests {
     impl Downloads {
         pub fn hits(&self) -> usize {
             self.hits.load(Ordering::SeqCst)
+        }
+
+        pub fn mirrors(&self) -> Mirrors {
+            Mirrors {
+                node_dist: self.base.clone(),
+                bun_releases: self.base.clone(),
+                dotnet_script: format!("{}/dotnet-install.sh", self.base),
+            }
         }
     }
 
@@ -317,35 +326,6 @@ mod tests {
         Downloads { base, hits }
     }
 
-    struct StubRuntime {
-        base: String,
-    }
-
-    impl Runtime for StubRuntime {
-        fn kind(&self) -> RuntimeKind {
-            RuntimeKind::Node
-        }
-        fn detect(&self, _tree: &RepoTree) -> Option<Detection> {
-            None
-        }
-        fn source(&self, version: &str, _target: Target, _dir: &Path) -> Option<Source> {
-            Some(Source::Archive {
-                url: format!("{}/node-v{version}.tar.gz", self.base),
-                format: ArchiveFormat::TarGz,
-                strip_components: 1,
-            })
-        }
-        fn binary(&self) -> &'static str {
-            "bin/node"
-        }
-        fn valid_version(&self, v: &str) -> bool {
-            crate::runtime::semver_like(v, 3)
-        }
-        fn env_for(&self, _: Phase, _: &Path, _: Option<u16>) -> Vec<(String, String)> {
-            Vec::new()
-        }
-    }
-
     fn target() -> Target {
         Target {
             arch: Arch::X86_64,
@@ -367,18 +347,17 @@ mod tests {
         let store = Store::at(dir.path().join("runtimes"));
         let platform = FakePlatform::new();
         let http = crate::http::client();
-        let runtime = StubRuntime {
-            base: downloads.base.clone(),
-        };
+        let mirrors = downloads.mirrors();
 
         let first = ensure(
             &state,
             &platform,
             &http,
             &store,
-            &runtime,
+            &node::Node,
             "22.11.0",
             target(),
+            &mirrors,
             |_| {},
         )
         .await
@@ -388,9 +367,10 @@ mod tests {
             &platform,
             &http,
             &store,
-            &runtime,
+            &node::Node,
             "22.11.0",
             target(),
+            &mirrors,
             |_| {},
         )
         .await
@@ -420,18 +400,16 @@ mod tests {
         let store = Store::at(dir.path().join("runtimes"));
         let platform = FakePlatform::new();
         platform.fail_next("extract_tar_gz");
-        let runtime = StubRuntime {
-            base: downloads.base.clone(),
-        };
 
         let result = ensure(
             &state,
             &platform,
             &crate::http::client(),
             &store,
-            &runtime,
+            &node::Node,
             "22.11.0",
             target(),
+            &downloads.mirrors(),
             |_| {},
         )
         .await;
@@ -449,18 +427,16 @@ mod tests {
         let downloads = stub_downloads().await;
         let (dir, state) = state().await;
         let store = Store::at(dir.path().join("runtimes"));
-        let runtime = StubRuntime {
-            base: downloads.base.clone(),
-        };
         let mut seen = Vec::new();
         ensure(
             &state,
             &FakePlatform::new(),
             &crate::http::client(),
             &store,
-            &runtime,
+            &node::Node,
             "22.11.0",
             target(),
+            &downloads.mirrors(),
             |p| seen.push(p),
         )
         .await
@@ -487,17 +463,15 @@ mod tests {
         let downloads = stub_downloads().await;
         let (dir, state) = state().await;
         let store = Store::at(dir.path().join("runtimes"));
-        let runtime = StubRuntime {
-            base: downloads.base.clone(),
-        };
         let result = ensure(
             &state,
             &FakePlatform::new(),
             &crate::http::client(),
             &store,
-            &runtime,
+            &node::Node,
             "22",
             target(),
+            &downloads.mirrors(),
             |_| {},
         )
         .await;
@@ -510,7 +484,7 @@ mod tests {
         let downloads = stub_downloads().await;
         let (dir, state) = state().await;
         let store = Store::at(dir.path().join("runtimes"));
-        struct WrongBinary(String);
+        struct WrongBinary;
         impl Runtime for WrongBinary {
             fn kind(&self) -> RuntimeKind {
                 RuntimeKind::Bun
@@ -518,9 +492,9 @@ mod tests {
             fn detect(&self, _: &RepoTree) -> Option<Detection> {
                 None
             }
-            fn source(&self, _: &str, _: Target, _: &Path) -> Option<Source> {
+            fn source(&self, _: &str, _: Target, _: &Path, mirrors: &Mirrors) -> Option<Source> {
                 Some(Source::Archive {
-                    url: format!("{}/x.tar.gz", self.0),
+                    url: format!("{}/x.tar.gz", mirrors.bun_releases),
                     format: ArchiveFormat::TarGz,
                     strip_components: 1,
                 })
@@ -540,14 +514,53 @@ mod tests {
             &FakePlatform::new(),
             &crate::http::client(),
             &store,
-            &WrongBinary(downloads.base.clone()),
+            &WrongBinary,
             "1.0.0",
             target(),
+            &downloads.mirrors(),
             |_| {},
         )
         .await
         .unwrap_err();
         assert!(e.to_string().contains("did not produce bun"), "{e}");
         assert!(installed(&state).await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_script_install_writes_the_installer_installs_packages_and_runs_it() {
+        let downloads = stub_downloads().await;
+        let (dir, state) = state().await;
+        let store = Store::at(dir.path().join("runtimes"));
+        let platform = FakePlatform::new();
+        let partial = store.partial(RuntimeKind::Dotnet, "9.0");
+        let e = ensure(
+            &state,
+            &platform,
+            &crate::http::client(),
+            &store,
+            &crate::runtime::dotnet::Dotnet,
+            "9.0",
+            target(),
+            &downloads.mirrors(),
+            |_| {},
+        )
+        .await
+        .unwrap_err();
+        assert!(e.to_string().contains("did not produce dotnet"), "{e}");
+
+        let calls = platform.calls();
+        let script = format!("write_file {}/install.sh 755", partial.display());
+        let run = format!(
+            "run_installer {}/install.sh --channel 9.0 --install-dir {} --no-path",
+            partial.display(),
+            partial.display()
+        );
+        let written = calls.iter().position(|c| c == &script).unwrap();
+        let packages = calls
+            .iter()
+            .position(|c| c == "install_packages libicu")
+            .unwrap();
+        let ran = calls.iter().position(|c| c == &run).unwrap();
+        assert!(written < packages && packages < ran, "{calls:#?}");
     }
 }
