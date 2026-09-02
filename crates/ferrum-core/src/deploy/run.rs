@@ -4,17 +4,14 @@ use super::{Outcome, by_id};
 use crate::apps;
 use crate::github::Api;
 use crate::runtime::toolchain::Store;
+use crate::settings;
 use crate::state::State;
 use anyhow::Context;
 use ferrum_platform::Platform;
 use std::sync::Arc;
 use std::time::Duration;
 
-pub const BUILD_TIMEOUT: Duration = Duration::from_secs(20 * 60);
-pub const MIGRATE_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 pub const DISK_MIN_BYTES: u64 = 1024 * 1024 * 1024;
-pub const BUILD_MEMORY_RESERVE_MB: u64 = 512;
-pub const BUILD_MEMORY_FLOOR_MB: u64 = 512;
 pub const CPU_WEIGHT: u32 = 50;
 pub const IO_WEIGHT: u32 = 50;
 
@@ -48,19 +45,23 @@ impl Ctx {
             http,
             log: Log::default(),
             toolchains,
-            build_memory_mb: build_memory_mb(total_kb),
-            build_timeout: BUILD_TIMEOUT,
-            migrate_timeout: MIGRATE_TIMEOUT,
+            build_memory_mb: settings::default_memory_mb(total_kb),
+            build_timeout: Duration::from_secs(settings::DEFAULT_BUILD_SECS),
+            migrate_timeout: Duration::from_secs(settings::DEFAULT_MIGRATE_SECS),
             health_interval: Duration::from_secs(1),
         }
     }
-}
 
-/// Everything but half a gigabyte, so the running apps and PostgreSQL keep theirs.
-pub fn build_memory_mb(total_kb: u64) -> u64 {
-    (total_kb / 1024)
-        .saturating_sub(BUILD_MEMORY_RESERVE_MB)
-        .max(BUILD_MEMORY_FLOOR_MB)
+    /// The limits are settings, read at the start of every run so a change applies next time.
+    async fn with_current_limits(&self) -> anyhow::Result<Self> {
+        let limits = settings::build_limits(&self.state, self.platform.as_ref()).await?;
+        Ok(Self {
+            build_memory_mb: limits.memory_mb,
+            build_timeout: Duration::from_secs(limits.build_secs),
+            migrate_timeout: Duration::from_secs(limits.migrate_secs),
+            ..self.clone()
+        })
+    }
 }
 
 pub async fn run(ctx: &Ctx, deploy_id: &str) -> anyhow::Result<Outcome> {
@@ -70,7 +71,7 @@ pub async fn run(ctx: &Ctx, deploy_id: &str) -> anyhow::Result<Outcome> {
     let app = apps::by_id(&ctx.state, &deploy.app_id)
         .await?
         .context("the application was deleted")?;
-    let mut job = Job::new(ctx.clone(), app, deploy);
+    let mut job = Job::new(ctx.with_current_limits().await?, app, deploy);
     let outcome = match job.pipeline().await {
         Ok(outcome) => outcome,
         Err(e) => job.abort(e).await?,
@@ -92,13 +93,6 @@ mod tests {
     use std::path::Path;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
-
-    #[test]
-    fn the_build_limit_leaves_half_a_gigabyte_and_never_drops_below_it() {
-        assert_eq!(build_memory_mb(2 * 1024 * 1024), 1536);
-        assert_eq!(build_memory_mb(512 * 1024), 512);
-        assert_eq!(build_memory_mb(0), 512);
-    }
 
     /// A real listener inside the allocator's range, answering one status on every path.
     struct Health {
@@ -148,7 +142,6 @@ mod tests {
             Store::at("/var/lib/ferrum/runtimes"),
         );
         ctx.health_interval = Duration::from_millis(20);
-        ctx.build_memory_mb = 1200;
         ctx
     }
 
@@ -323,7 +316,11 @@ mod tests {
                 .cwd
                 .starts_with("/var/lib/ferrum/apps/ledger/releases/")
         );
-        assert_eq!(build.memory_max_mb, 1200);
+        assert_eq!(
+            build.memory_max_mb, 1536,
+            "the fake's 2 GiB less the reserve"
+        );
+        assert_eq!(build.timeout, Duration::from_secs(1200));
         assert_eq!(build.cpu_weight, 50);
         assert_eq!(build.unit.len(), "ferrum-build-ledger-".len() + 7);
         let get = |k: &str| {
@@ -565,6 +562,17 @@ mod tests {
         let app = provisioned(&state, &p, "ledger", 20999, |_| {}).await;
         let before = p.calls().len();
         let ctx = ctx(&state, &p);
+        settings::set_build_limits(
+            &state,
+            p.as_ref(),
+            settings::BuildLimits {
+                memory_mb: 1200,
+                build_secs: 300,
+                migrate_secs: 120,
+            },
+        )
+        .await
+        .unwrap();
         let (outcome, d) = deploy(&ctx, &app, "abc1234").await;
         assert_eq!(outcome, Outcome::Failed);
         assert_eq!(
@@ -573,6 +581,9 @@ mod tests {
                 "The build exceeded 1200 MB and was stopped. Raise the build limit or reduce peak memory."
             )
         );
+        let build = p.runs().last().unwrap().clone();
+        assert_eq!(build.memory_max_mb, 1200, "the setting reaches the scope");
+        assert_eq!(build.timeout, Duration::from_secs(300));
         assert!(releases::for_app(&state, &app.id).await.unwrap().is_empty());
         assert!(
             p.calls()
@@ -590,7 +601,7 @@ mod tests {
         let (_, d) = deploy(&ctx, &app, "abc1235").await;
         assert_eq!(
             d.failure_reason.as_deref(),
-            Some("The build did not finish within 20 minutes.")
+            Some("The build did not finish within 5 minutes.")
         );
         p.script_run("bun run build", &[], Exit::Code(137));
         let (_, d) = deploy(&ctx, &app, "abc1236").await;

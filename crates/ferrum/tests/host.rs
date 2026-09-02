@@ -22,7 +22,6 @@ async fn the_host_card_reads_the_box_and_says_what_is_not_there_yet() {
     assert_eq!(res.json["disk_total_gb"], 80.0);
     let services = res.json["services"].as_array().unwrap();
     assert_eq!(services.len(), 7);
-    assert!(services.iter().all(|s| s["ok"] == true), "{services:?}");
     let named = |name: &str| {
         services
             .iter()
@@ -33,7 +32,16 @@ async fn the_host_card_reads_the_box_and_says_what_is_not_there_yet() {
     assert_eq!(named("PostgreSQL")["detail"], "not installed");
     assert_eq!(named("Redis")["detail"], "none");
     assert_eq!(named("Deploys")["detail"], "none yet");
-    assert_eq!(named("fail2ban")["detail"], "not configured yet");
+    assert_eq!(named("fail2ban")["detail"], "not enabled");
+    assert_eq!(named("fail2ban")["ok"], false);
+    assert_eq!(named("ufw")["ok"], false);
+    assert!(
+        services
+            .iter()
+            .filter(|s| s["name"] != "fail2ban" && s["name"] != "ufw")
+            .all(|s| s["ok"] == true),
+        "{services:?}"
+    );
 
     let token = h.machine_token(true).await;
     let read_only = h.get_with_bearer("/api/host", &token).await;

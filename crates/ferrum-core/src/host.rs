@@ -1,6 +1,7 @@
 use crate::apps;
 use crate::deploy::{self, Outcome};
 use crate::metrics::{self, HOST};
+use crate::security::{bans, firewall, sshd_or_default};
 use crate::state::State;
 use crate::{certs, postgres, redis, setup};
 use ferrum_platform::Platform;
@@ -8,7 +9,7 @@ use ferrum_platform::ubuntu::{NGINX_UNIT, pg_cluster_unit};
 use serde::Serialize;
 
 const RENEW_WARN_DAYS: i64 = 30;
-const NOT_CONFIGURED: &str = "not configured yet";
+const NOT_ENABLED: &str = "not enabled";
 
 #[derive(Debug, Clone, Default)]
 pub struct Build {
@@ -151,9 +152,38 @@ pub async fn services(state: &State, platform: &dyn Platform) -> anyhow::Result<
         redis,
         certificates(state, platform).await?,
         deploys(state).await?,
-        service("fail2ban", true, NOT_CONFIGURED),
-        service("ufw", true, NOT_CONFIGURED),
+        hardening_row(
+            "fail2ban",
+            bans::status(state, platform).await.map(|b| {
+                b.installed.then(|| {
+                    format!(
+                        "{}, {} banned",
+                        plural(b.jails.len(), "jail"),
+                        b.banned.len()
+                    )
+                })
+            }),
+        ),
+        hardening_row(
+            "ufw",
+            firewall::status(platform, sshd_or_default(platform)).map(|f| {
+                f.enabled
+                    .then(|| format!("deny incoming, {}", plural(f.rules.len(), "rule")))
+            }),
+        ),
     ])
+}
+
+/// A tool that is off or not answering asks for a look; neither takes the card down.
+fn hardening_row(name: &str, read: anyhow::Result<Option<String>>) -> Service {
+    match read {
+        Ok(Some(detail)) => service(name, true, detail),
+        Ok(None) => service(name, false, NOT_ENABLED),
+        Err(e) => {
+            tracing::warn!(tool = name, error = %e, "reading hardening status");
+            service(name, false, "not answering")
+        }
+    }
 }
 
 async fn certificates(state: &State, platform: &dyn Platform) -> anyhow::Result<Service> {
@@ -290,14 +320,50 @@ mod tests {
         assert_eq!((s.memory_used_mb, s.memory_total_mb), (1024, 2048));
         assert_eq!((s.swap_used_mb, s.swap_total_mb), (0, 0));
         assert_eq!((s.disk_used_gb, s.disk_total_gb), (20.0, 80.0));
-        assert!(s.services.iter().all(|x| x.ok), "{:?}", s.services);
         assert_eq!(detail(&s.services, "nginx").detail, "active");
         assert_eq!(detail(&s.services, "PostgreSQL").detail, "not installed");
         assert_eq!(detail(&s.services, "Redis").detail, "none");
         assert_eq!(detail(&s.services, "Certificates").detail, "no domains yet");
         assert_eq!(detail(&s.services, "Deploys").detail, "none yet");
-        assert_eq!(detail(&s.services, "ufw").detail, NOT_CONFIGURED);
+        assert_eq!(detail(&s.services, "ufw").detail, NOT_ENABLED);
+        assert!(
+            !detail(&s.services, "ufw").ok,
+            "an open box asks for a look"
+        );
+        assert_eq!(detail(&s.services, "fail2ban").detail, NOT_ENABLED);
+        assert!(!detail(&s.services, "fail2ban").ok);
+        assert_eq!(
+            s.services.iter().filter(|x| !x.ok).count(),
+            2,
+            "{:?}",
+            s.services
+        );
         assert_eq!(s.services.len(), 7);
+    }
+
+    #[tokio::test]
+    async fn the_hardened_rows_count_rules_jails_and_bans_and_survive_a_failing_tool() {
+        let (_d, state) = state().await;
+        let p = FakePlatform::new();
+        crate::security::firewall::enable(&p).unwrap();
+        p.set_active("fail2ban");
+        p.set_jails(&[
+            "sshd",
+            "nginx-http-auth",
+            "nginx-botsearch",
+            "nginx-limit-req",
+        ]);
+        p.ban("sshd", "45.148.10.87");
+        p.ban("nginx-botsearch", "185.220.101.4");
+        let all = services(&state, &p).await.unwrap();
+        assert_eq!(detail(&all, "ufw").detail, "deny incoming, 3 rules");
+        assert!(detail(&all, "ufw").ok);
+        assert_eq!(detail(&all, "fail2ban").detail, "4 jails, 2 banned");
+        assert!(detail(&all, "fail2ban").ok);
+        p.fail_next("ufw_status");
+        let broken = services(&state, &p).await.unwrap();
+        assert_eq!(detail(&broken, "ufw").detail, "not answering");
+        assert!(!detail(&broken, "ufw").ok);
     }
 
     #[tokio::test]
