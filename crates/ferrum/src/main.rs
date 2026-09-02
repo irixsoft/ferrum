@@ -87,6 +87,23 @@ async fn main() -> anyhow::Result<()> {
             println!("  This is the only time it is shown.\n");
             Ok(())
         }
+        cli::Command::Deploy {
+            slug,
+            git_ref,
+            token,
+        } => {
+            let token = token
+                .or_else(|| std::env::var("FERRUM_TOKEN").ok())
+                .filter(|t| !t.trim().is_empty());
+            let Some(token) = token else {
+                eprintln!(
+                    "\n  Set FERRUM_TOKEN or pass --token; mint one with `ferrum token create`.\n"
+                );
+                std::process::exit(2);
+            };
+            let code = report(ferrum::client::deploy(&slug, git_ref.as_deref(), &token).await);
+            std::process::exit(code);
+        }
     }
 }
 

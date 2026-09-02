@@ -1,6 +1,7 @@
 pub mod apps;
 pub mod auth;
 pub mod databases;
+pub mod deploys;
 pub mod error;
 pub mod github;
 pub mod health;

@@ -4,12 +4,14 @@ use crate::server::AppState;
 use axum::extract::{Path, State as Extract};
 use axum::http::StatusCode;
 use axum::{Json, Router, routing::get};
-use ferrum_core::apps::{self, AppChanges, AppError, NewApp, env, provision};
+use ferrum_core::apps::unit::unit_name;
+use ferrum_core::apps::{self, App, AppChanges, AppError, NewApp, env, provision};
+use ferrum_core::deploy::{self, Outcome, maintenance, releases};
 use ferrum_core::detect::{self, DetectError, Detected};
 use ferrum_core::redis::{self, RedisError};
 use ferrum_core::runtime::toolchain;
-use ferrum_core::{github, postgres};
-use serde::Deserialize;
+use ferrum_core::{certs, github, postgres};
+use serde::{Deserialize, Serialize};
 
 pub fn router() -> Router<AppState> {
     Router::new()
@@ -25,6 +27,39 @@ pub fn router() -> Router<AppState> {
             "/api/apps/{slug}/redis",
             axum::routing::post(request_redis).delete(release_redis),
         )
+        .route(
+            "/api/apps/{slug}/certificates",
+            axum::routing::post(retry_certificates),
+        )
+}
+
+#[derive(Serialize)]
+struct Listed {
+    #[serde(flatten)]
+    app: App,
+    status: &'static str,
+}
+
+/// What the panel's pill says: the running deploy first, then the maintenance flag, then the
+/// unit.
+async fn status_of(state: &AppState, app: &App) -> anyhow::Result<&'static str> {
+    if deploy::running_for(&state.db, &app.id).await?.is_some() {
+        return Ok("building");
+    }
+    if maintenance::is_on(state.platform.as_ref(), &app.slug) {
+        return Ok("maintenance");
+    }
+    if app.current_release_id.is_none() {
+        let failed = deploy::latest_for(&state.db, &app.id)
+            .await?
+            .is_some_and(|d| d.outcome == Some(Outcome::Failed));
+        return Ok(if failed { "failed" } else { "new" });
+    }
+    if !app.runtime.has_process() || state.platform.service_is_active(&unit_name(&app.slug)) {
+        Ok("live")
+    } else {
+        Ok("stopped")
+    }
 }
 
 #[derive(Deserialize, Default)]
@@ -47,8 +82,13 @@ struct Removal {
     name: String,
 }
 
-async fn list(Extract(app): Extract<AppState>, _: Caller) -> ApiResult<Json<Vec<apps::App>>> {
-    Ok(Json(apps::list(&app.db).await?))
+async fn list(Extract(app): Extract<AppState>, _: Caller) -> ApiResult<Json<Vec<Listed>>> {
+    let mut listed = Vec::new();
+    for found in apps::list(&app.db).await? {
+        let status = status_of(&app, &found).await?;
+        listed.push(Listed { app: found, status });
+    }
+    Ok(Json(listed))
 }
 
 async fn inspect(
@@ -116,6 +156,7 @@ async fn create(
             "The host could not be prepared: {e:#}"
         )));
     }
+    app.issue_certificates_later(created.clone());
     Ok((StatusCode::CREATED, Json(created)))
 }
 
@@ -135,13 +176,38 @@ async fn show(
     let databases = postgres::names_for(&app.db, &found.id).await?;
     let instance = redis::for_app(&app.db, &found.id).await?;
     let managed = env::managed_for(&app.db, &found).await?.keys();
+    let current = match &found.current_release_id {
+        Some(id) => releases::by_id(&app.db, id).await?,
+        None => None,
+    };
+    let status = status_of(&app, &found).await?;
+    let certificates = certs::statuses(&app.db, app.platform.as_ref(), &found).await?;
     let mut value = serde_json::to_value(&found).map_err(anyhow::Error::from)?;
     value["env"] = serde_json::Value::Array(keys);
-    value["deployed"] = serde_json::Value::Bool(false);
+    value["deployed"] = serde_json::Value::Bool(current.is_some());
+    value["current_release"] = serde_json::to_value(current).map_err(anyhow::Error::from)?;
+    value["status"] = serde_json::Value::String(status.into());
+    value["certificates"] = serde_json::to_value(certificates).map_err(anyhow::Error::from)?;
     value["databases"] = serde_json::to_value(databases).map_err(anyhow::Error::from)?;
     value["redis"] = serde_json::to_value(instance).map_err(anyhow::Error::from)?;
     value["managed"] = serde_json::to_value(managed).map_err(anyhow::Error::from)?;
     Ok(Json(value))
+}
+
+async fn retry_certificates(
+    Extract(app): Extract<AppState>,
+    _: Caller,
+    Path(slug): Path<String>,
+) -> ApiResult<StatusCode> {
+    let found = find(&app, &slug).await?;
+    if found.domains.is_empty() {
+        return Err(ApiError::bad_request(
+            "Add a domain under Configuration first.",
+        ));
+    }
+    certs::retry_now(&app.db, &found).await?;
+    app.issue_certificates_later(found);
+    Ok(StatusCode::ACCEPTED)
 }
 
 async fn find(app: &AppState, slug: &str) -> ApiResult<apps::App> {
@@ -247,6 +313,7 @@ async fn update(
     provision::reprovision(&app.db, app.platform.as_ref(), &updated)
         .await
         .map_err(|e| ApiError::bad_request(format!("The host refused the change: {e:#}")))?;
+    app.issue_certificates_later(updated.clone());
     Ok(Json(updated))
 }
 

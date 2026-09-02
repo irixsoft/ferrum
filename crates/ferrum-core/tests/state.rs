@@ -14,6 +14,11 @@ async fn open_creates_database_with_owner_only_permissions() {
     assert!(db.exists());
     let mode = std::fs::metadata(&db).unwrap().permissions().mode() & 0o777;
     assert_eq!(mode, 0o600, "database must not be readable by other users");
+    let dir_mode = std::fs::metadata(dir.path()).unwrap().permissions().mode() & 0o777;
+    assert_eq!(
+        dir_mode, 0o755,
+        "app users and nginx must traverse the data directory to reach toolchains and sites"
+    );
 }
 
 #[tokio::test]

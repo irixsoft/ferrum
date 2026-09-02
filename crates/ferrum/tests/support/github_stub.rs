@@ -65,6 +65,8 @@ impl StubGithub {
             .route("/repos/{owner}/{repo}/git/trees/{git_ref}", get(tree))
             .route("/repos/{owner}/{repo}/contents/{*path}", get(contents))
             .route("/repos/oven-sh/bun/releases/latest", get(bun_latest))
+            .route("/repos/{owner}/{repo}/commits/{*git_ref}", get(commit))
+            .route("/repos/{owner}/{repo}/releases/latest", get(latest_release))
             .with_state(counters.clone());
 
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -235,4 +237,42 @@ async fn contents(
 
 async fn bun_latest() -> Json<Value> {
     Json(json!({ "tag_name": format!("bun-v{BUN_LATEST}"), "name": format!("Bun v{BUN_LATEST}") }))
+}
+
+pub const HEAD_SHA: &str = "a3f9c2d4e81b06f5c9a2f0e1d2c3b4a5968778e9";
+pub const HEAD_MESSAGE: &str = "Add reconciliation window to statement export";
+pub const LATEST_TAG: &str = "v1.4.0";
+
+/// Every branch and tag but `missing` resolves to one commit; the sha carries the ref so a
+/// test can see which one was asked for.
+async fn commit(
+    Path((_owner, _repo, git_ref)): Path<(String, String, String)>,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    if git_ref == "missing" {
+        return Err(not_found());
+    }
+    let sha = if git_ref == "main" {
+        HEAD_SHA.to_string()
+    } else {
+        let mut sha: String = git_ref
+            .chars()
+            .filter(char::is_ascii_hexdigit)
+            .collect::<String>()
+            .to_ascii_lowercase();
+        sha.push_str(&"0".repeat(40));
+        sha.truncate(40);
+        sha
+    };
+    Ok(Json(json!({
+        "sha": sha,
+        "commit": {
+            "message": format!("{HEAD_MESSAGE}\n\nLonger body that the panel never shows."),
+            "author": { "name": "Saeed Sakib" }
+        },
+        "author": { "login": "saeed" }
+    })))
+}
+
+async fn latest_release() -> Json<Value> {
+    Json(json!({ "tag_name": LATEST_TAG, "name": LATEST_TAG }))
 }

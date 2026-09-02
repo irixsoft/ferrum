@@ -12,6 +12,8 @@ use axum::http::{Request, StatusCode, header};
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use ferrum::server::Deps;
+use ferrum_core::acme::Directory;
+use ferrum_core::dns::Lookup;
 use ferrum_core::github::Api;
 use ferrum_core::runtime::toolchain::Store;
 use ferrum_core::runtime::{Mirrors, RuntimeKind};
@@ -31,6 +33,7 @@ use webauthn_rs_proto::{
 
 pub const HOSTNAME: &str = "panel.example.com";
 pub const USER_AGENT: &str = "ferrum-tests";
+pub const PUBLIC_IP: &str = "203.0.113.9";
 const TIMEOUT_MS: u32 = 60_000;
 
 pub struct Harness {
@@ -84,6 +87,7 @@ pub async fn harness_without_hostname(base: &str) -> Harness {
 }
 
 /// `downloads` stands in for nodejs.org: the release index and the tarballs both come from it.
+/// DNS answers are pinned and the ACME directory is unreachable, so no test leaves the machine.
 pub async fn harness_with_deps(github_base: &str, downloads: &str) -> Harness {
     let dir = tempfile::tempdir().unwrap();
     let db = State::open(dir.path()).await.unwrap();
@@ -100,6 +104,15 @@ pub async fn harness_with_deps(github_base: &str, downloads: &str) -> Harness {
             dotnet_script: format!("{downloads}/dotnet-install.sh"),
         },
         codename: "noble".into(),
+        directory: Directory::Custom {
+            url: format!("{NO_GITHUB}/acme"),
+            root_pem: None,
+        },
+        lookup: Lookup::Fixed(vec![(
+            "resolved.example.com".into(),
+            vec![PUBLIC_IP.parse().unwrap()],
+        )]),
+        public_ip: Some(PUBLIC_IP.parse().unwrap()),
     };
     Harness {
         app: ferrum::server::app_with(db.clone(), deps),
@@ -138,8 +151,75 @@ pub fn new_app_json(slug: &str) -> String {
     .to_string()
 }
 
+/// A static site needs no unit and no health check, so its deploy ends at the swap.
+pub fn static_app_json(slug: &str) -> String {
+    serde_json::json!({
+        "slug": slug,
+        "name": slug,
+        "repository": "irixsoft/ledger",
+        "git_ref": "main",
+        "tracking": "branch",
+        "runtime": "static",
+        "toolchain": "node",
+        "runtime_version": "22.11.0",
+        "commands": { "install": "bun install --frozen-lockfile", "build": "bun run build" },
+        "output_dir": "dist",
+        "routes": [{ "path": "/", "port_name": "main" }],
+        "domains": [format!("{slug}.example.com")],
+    })
+    .to_string()
+}
+
 pub fn soft_passkey() -> SoftPasskey {
     SoftPasskey::new(true)
+}
+
+/// A real listener inside the allocator's range answering one status on every path.
+pub struct StubHealth {
+    pub port: u16,
+    hits: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+impl StubHealth {
+    pub async fn start(status: u16) -> Self {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = loop {
+            let port = 20000 + (rand_port() % 9999);
+            if let Ok(l) = tokio::net::TcpListener::bind(("127.0.0.1", port)).await {
+                break l;
+            }
+        };
+        let port = listener.local_addr().unwrap().port();
+        let hits = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counter = hits.clone();
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut socket, _)) = listener.accept().await else {
+                    break;
+                };
+                counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                let mut buf = [0u8; 1024];
+                let _ = socket.read(&mut buf).await;
+                let reply = format!(
+                    "HTTP/1.1 {status} X\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                );
+                let _ = socket.write_all(reply.as_bytes()).await;
+            }
+        });
+        Self { port, hits }
+    }
+
+    pub fn hits(&self) -> usize {
+        self.hits.load(std::sync::atomic::Ordering::SeqCst)
+    }
+}
+
+fn rand_port() -> u16 {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .subsec_nanos();
+    (nanos % 10_000) as u16
 }
 
 pub async fn signed_in() -> (Harness, String) {
@@ -276,7 +356,7 @@ impl Harness {
         };
         std::fs::create_dir_all(dir.join(binary).parent().unwrap()).unwrap();
         std::fs::write(dir.join(binary), "#!").unwrap();
-        sqlx::query("INSERT INTO toolchains (kind, version, path, size_bytes) VALUES (?, ?, ?, 2)")
+        sqlx::query("INSERT OR IGNORE INTO toolchains (kind, version, path, size_bytes) VALUES (?, ?, ?, 2)")
             .bind(kind.as_str())
             .bind(version)
             .bind(dir.to_string_lossy().to_string())
@@ -287,17 +367,60 @@ impl Harness {
 
     /// A signed-in harness with a Node toolchain and a provisioned app called `slug`.
     pub async fn create_app(&self, slug: &str, cookie: &str) {
+        self.create_app_from(&new_app_json(slug), cookie).await;
+    }
+
+    pub async fn create_app_from(&self, json: &str, cookie: &str) -> Value {
         self.pretend_toolchain(RuntimeKind::Node, "22.11.0").await;
-        let res = self
-            .post_with_cookie("/api/apps", &new_app_json(slug), cookie)
-            .await;
+        let res = self.post_with_cookie("/api/apps", json, cookie).await;
         assert_eq!(res.status, StatusCode::CREATED, "{}", res.json);
+        res.json
+    }
+
+    /// The allocator hands out 20000 first, which is never where a test's listener is.
+    pub async fn force_port(&self, slug: &str, port: u16) {
+        sqlx::query(
+            "UPDATE app_ports SET port = ? WHERE name = 'main' AND app_id = (SELECT id FROM apps WHERE slug = ?)",
+        )
+        .bind(port as i64)
+        .bind(slug)
+        .execute(&self.db.pool)
+        .await
+        .unwrap();
     }
 
     pub fn env_file(&self, slug: &str) -> String {
         self.platform
             .written(&format!("/var/lib/ferrum/apps/{slug}/shared/.env"))
             .expect("the env file was written")
+    }
+
+    /// Polls a deploy until it has an outcome.
+    pub async fn wait_for_deploy(&self, id: &str, cookie: &str) -> Value {
+        for _ in 0..600 {
+            let res = self
+                .get_with_cookie(&format!("/api/deploys/{id}"), cookie)
+                .await;
+            assert_eq!(res.status, StatusCode::OK, "{}", res.json);
+            if !res.json["outcome"].is_null() {
+                return res.json;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        panic!("deploy {id} never finished");
+    }
+
+    /// The SSE body as text, read to its end.
+    pub async fn stream_with_cookie(&self, uri: &str, cookie: &str) -> Res {
+        self.send(
+            Request::builder()
+                .uri(uri)
+                .header(header::ACCEPT, "text/event-stream")
+                .header(header::COOKIE, format!("ferrum_session={cookie}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
     }
 
     pub async fn machine_token(&self, read_only: bool) -> String {

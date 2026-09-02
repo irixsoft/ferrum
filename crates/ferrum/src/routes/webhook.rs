@@ -41,9 +41,11 @@ async fn receive(
     }
 
     if webhook::record(&app.db, delivery, &event, &body).await? {
+        let queued = app.deployer.react(&app.db, &event).await?;
         tracing::info!(
             event = event.name(),
             repository = event.repository(),
+            deploys = queued.len(),
             "delivery recorded"
         );
     }

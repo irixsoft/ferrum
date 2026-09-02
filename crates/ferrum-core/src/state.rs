@@ -15,7 +15,7 @@ impl State {
     pub async fn open(data_dir: &Path) -> anyhow::Result<Self> {
         std::fs::create_dir_all(data_dir)
             .with_context(|| format!("creating {}", data_dir.display()))?;
-        std::fs::set_permissions(data_dir, std::fs::Permissions::from_mode(0o700))?;
+        std::fs::set_permissions(data_dir, std::fs::Permissions::from_mode(0o755))?;
 
         let db_path = data_dir.join("ferrum.db");
         let opts = SqliteConnectOptions::new()

@@ -41,6 +41,15 @@ pub enum Command {
         #[command(subcommand)]
         command: TokenCommand,
     },
+    /// Queues a deploy through the running daemon and follows its log.
+    Deploy {
+        slug: String,
+        #[arg(long = "ref")]
+        git_ref: Option<String>,
+        /// Defaults to FERRUM_TOKEN; mint one with `ferrum token create`.
+        #[arg(long)]
+        token: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]

@@ -85,6 +85,7 @@ pub async fn run(opts: SetupOpts) -> anyhow::Result<()> {
         } else {
             Directory::LetsEncrypt
         };
+        crate::server::set_acme_directory(&state, opts.staging).await?;
         let issuer = Issuer::new(&state, directory, &email).await?;
         let cert = issuer.issue(&hostname, public_ip, &cert_dir).await?;
         setup::advance(&state, Stage::CertIssued).await?;
