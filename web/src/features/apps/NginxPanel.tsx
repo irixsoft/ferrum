@@ -2,6 +2,7 @@ import { Lock } from "lucide-react";
 import { Card, CardBody, CardFoot, CardHeader } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
 import { Code } from "@/components/ui/Code";
+import { SampleData } from "@/components/SampleData";
 
 export function NginxPanel({ slug }: { slug: string }) {
   return (
@@ -9,12 +10,15 @@ export function NginxPanel({ slug }: { slug: string }) {
       <Card>
         <CardHeader
           title="Managed by Ferrum"
-          hint={`/etc/nginx/sites-available/ferrum-${slug}.conf`}
+          hint={`/etc/nginx/conf.d/ferrum-${slug}.conf`}
           action={
-            <span className="inline-flex items-center gap-1.5 text-[12.5px] text-ink-4">
-              <Lock size={12} />
-              Read only
-            </span>
+            <>
+              <SampleData />
+              <span className="inline-flex items-center gap-1.5 text-[12.5px] text-ink-4">
+                <Lock size={12} />
+                Read only
+              </span>
+            </>
           }
         />
         <CardBody>
@@ -30,7 +34,7 @@ server {
   add_header Strict-Transport-Security "max-age=31536000";
 
   client_max_body_size 25m;
-  include /etc/nginx/sites-available/ferrum-ledger.custom.conf;
+  include /etc/nginx/ferrum-custom/ledger.conf;
 
   location / {
     proxy_pass http://127.0.0.1:41204;
@@ -51,7 +55,8 @@ server {
       <Card>
         <CardHeader
           title="Your directives"
-          hint={`ferrum-${slug}.custom.conf, included inside the server block`}
+          hint={`/etc/nginx/ferrum-custom/${slug}.conf, included inside the server block`}
+          action={<SampleData />}
         />
         <CardBody>
           <textarea

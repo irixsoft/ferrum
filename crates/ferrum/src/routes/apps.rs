@@ -174,7 +174,7 @@ async fn set_env(
     Extract(app): Extract<AppState>,
     _: Caller,
     Path(slug): Path<String>,
-    Json(vars): Json<Vec<env::EnvVar>>,
+    Json(vars): Json<Vec<env::EnvChange>>,
 ) -> ApiResult<StatusCode> {
     let found = apps::by_slug(&app.db, &slug)
         .await?

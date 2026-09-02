@@ -69,16 +69,39 @@ pub async fn remove(state: &State, app_id: &str, key: &str) -> anyhow::Result<bo
     Ok(done.rows_affected() > 0)
 }
 
-pub async fn replace(state: &State, app_id: &str, vars: &[EnvVar]) -> anyhow::Result<()> {
+/// A row without a value keeps the value already stored, so the panel never has to read one back.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct EnvChange {
+    pub key: String,
+    #[serde(default)]
+    pub value: Option<String>,
+}
+
+pub async fn replace(state: &State, app_id: &str, vars: &[EnvChange]) -> anyhow::Result<()> {
     for var in vars {
         valid_key(&var.key)?;
     }
+    let existing = all(state, app_id).await?;
     let mut tx = state.pool.begin().await?;
-    sqlx::query!("DELETE FROM app_env WHERE app_id = ?", app_id)
-        .execute(&mut *tx)
-        .await?;
+    for (key, _) in &existing {
+        if !vars.iter().any(|v| &v.key == key) {
+            sqlx::query!(
+                "DELETE FROM app_env WHERE app_id = ? AND key = ?",
+                app_id,
+                key
+            )
+            .execute(&mut *tx)
+            .await?;
+        }
+    }
     for var in vars {
-        set_in(&mut tx, app_id, &var.key, &var.value).await?;
+        match &var.value {
+            Some(value) => set_in(&mut tx, app_id, &var.key, value).await?,
+            None if existing.iter().any(|(k, _)| k == &var.key) => {}
+            None => {
+                return Err(AppError::Invalid(format!("{} has no value yet.", var.key)).into());
+            }
+        }
     }
     tx.commit().await?;
     Ok(())
@@ -230,14 +253,46 @@ mod tests {
         replace(
             &state,
             &app.id,
-            &[EnvVar {
+            &[EnvChange {
                 key: "ONLY".into(),
-                value: "this".into(),
+                value: Some("this".into()),
             }],
         )
         .await
         .unwrap();
         assert_eq!(keys(&state, &app.id).await.unwrap(), vec!["ONLY"]);
+
+        replace(
+            &state,
+            &app.id,
+            &[
+                EnvChange {
+                    key: "ONLY".into(),
+                    value: None,
+                },
+                EnvChange {
+                    key: "NEW".into(),
+                    value: Some("n".into()),
+                },
+            ],
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            all(&state, &app.id).await.unwrap(),
+            vec![("NEW".into(), "n".into()), ("ONLY".into(), "this".into())],
+            "a row without a value keeps what was stored"
+        );
+        let unknown = replace(
+            &state,
+            &app.id,
+            &[EnvChange {
+                key: "GHOST".into(),
+                value: None,
+            }],
+        )
+        .await;
+        assert!(unknown.is_err(), "a new key needs a value");
 
         assert!(set(&state, &app.id, "1BAD", "x").await.is_err());
         let forced = sqlx::query("INSERT INTO app_env (app_id, key, value) VALUES (?, 'A-B', 'x')")

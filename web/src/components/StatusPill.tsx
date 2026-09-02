@@ -2,6 +2,7 @@ import type { AppStatus } from "@/types/api";
 import { Badge, type Tone } from "./ui/Badge";
 
 const STATUS: Record<AppStatus, { label: string; tone: Tone }> = {
+  new: { label: "Not deployed", tone: "neutral" },
   live: { label: "Live", tone: "ok" },
   building: { label: "Deploying", tone: "run" },
   failed: { label: "Failed", tone: "fail" },

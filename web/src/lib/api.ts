@@ -4,8 +4,12 @@ import * as mock from "./mock";
 import type {
   ApiToken,
   App,
+  AppChanges,
+  AppDetail,
   Deploy,
+  Detected,
   Enrolled,
+  EnvChange,
   GithubHandoff,
   GithubRepo,
   GithubStatus,
@@ -13,7 +17,11 @@ import type {
   Me,
   MetricSeries,
   MintedToken,
+  NewApp,
+  Progress,
+  Runtimes,
   Session,
+  Toolchain,
   User,
   VersionInfo,
 } from "@/types/api";
@@ -65,6 +73,7 @@ export const keys = {
   tokens: ["tokens"] as const,
   github: ["github"] as const,
   githubRepos: ["github", "repos"] as const,
+  runtimes: ["runtimes"] as const,
 };
 
 export function useMe(enabled = true) {
@@ -90,13 +99,18 @@ export function useHost() {
 }
 
 export function useApps() {
-  return useQuery({ queryKey: keys.apps, queryFn: () => settle<App[]>(mock.apps) });
+  return useQuery({ queryKey: keys.apps, queryFn: () => request<App[]>("/apps") });
 }
 
 export function useApp(slug: string) {
   return useQuery({
     queryKey: keys.app(slug),
-    queryFn: () => settle<App | undefined>(mock.apps.find((a) => a.slug === slug)),
+    queryFn: () =>
+      request<AppDetail>(`/apps/${slug}`).catch((e: unknown) => {
+        if (e instanceof ApiError && e.status === 404) return undefined;
+        throw e;
+      }),
+    retry: false,
   });
 }
 
@@ -153,6 +167,10 @@ export function useGithubRepos() {
   });
 }
 
+export function useRuntimes() {
+  return useQuery({ queryKey: keys.runtimes, queryFn: () => request<Runtimes>("/runtimes") });
+}
+
 function useInvalidating<TArgs, TResult>(
   key: readonly unknown[],
   run: (args: TArgs) => Promise<TResult>,
@@ -164,7 +182,7 @@ function useInvalidating<TArgs, TResult>(
   });
 }
 
-const body = (value: unknown) => ({ method: "POST", body: JSON.stringify(value) });
+const body = (value: unknown, method = "POST") => ({ method, body: JSON.stringify(value) });
 
 export function useCreateUser() {
   return useInvalidating(keys.users, (name: string) =>
@@ -194,6 +212,81 @@ export function useRevokeSession() {
   return useInvalidating(keys.sessions, (id: string) =>
     request<void>(`/sessions/${id}`, { method: "DELETE" }),
   );
+}
+
+export function useDetect() {
+  return useMutation({
+    mutationFn: (input: { repository: string; ref: string; root: string }) =>
+      request<Detected>("/apps/detect", body(input)),
+  });
+}
+
+export function useCreateApp() {
+  return useInvalidating(keys.apps, (app: NewApp) => request<App>("/apps", body(app)));
+}
+
+export function useUpdateApp(slug: string) {
+  return useInvalidating(keys.apps, (changes: AppChanges) =>
+    request<App>(`/apps/${slug}`, body(changes, "PATCH")),
+  );
+}
+
+export function useDeleteApp(slug: string) {
+  return useInvalidating(keys.apps, (name: string) =>
+    request<void>(`/apps/${slug}`, body({ name }, "DELETE")),
+  );
+}
+
+export function useSetEnv(slug: string) {
+  return useInvalidating(keys.app(slug), (vars: EnvChange[]) =>
+    request<void>(`/apps/${slug}/env`, body(vars, "PUT")),
+  );
+}
+
+export async function resolveVersion(kind: Toolchain, wanted: string | null): Promise<string> {
+  const query = wanted ? `?version=${encodeURIComponent(wanted)}` : "";
+  const { version } = await request<{ version: string }>(`/runtimes/${kind}/resolve${query}`);
+  return version;
+}
+
+/** The install streams progress over SSE, and `EventSource` cannot POST. */
+export async function installRuntime(
+  kind: Toolchain,
+  version: string,
+  onProgress: (p: Progress) => void,
+): Promise<void> {
+  const res = await fetch(`/api/runtimes/${kind}/${version}`, {
+    method: "POST",
+    credentials: "same-origin",
+  });
+  if (!res.ok || !res.body) {
+    const failed = await res.json().catch(() => null);
+    throw new ApiError(res.status, failed?.error ?? `${res.status} ${res.statusText}`);
+  }
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffered = "";
+  let last: Progress | null = null;
+  for (;;) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buffered += decoder.decode(value, { stream: true });
+    const events = buffered.split("\n\n");
+    buffered = events.pop() ?? "";
+    for (const event of events) {
+      const data = event
+        .split("\n")
+        .filter((line) => line.startsWith("data:"))
+        .map((line) => line.slice(5).trim())
+        .join("\n");
+      if (!data) continue;
+      last = JSON.parse(data) as Progress;
+      onProgress(last);
+      if (last.state === "failed") throw new ApiError(0, last.error);
+    }
+  }
+  if (last?.state !== "ready") throw new ApiError(0, "The install ended without finishing.");
 }
 
 /** GitHub renders a confirmation page, which only a form the browser submits can reach. */

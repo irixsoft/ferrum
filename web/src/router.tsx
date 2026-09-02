@@ -12,6 +12,7 @@ import { LoginPage } from "@/features/auth/LoginPage";
 import { EnrollPage } from "@/features/auth/EnrollPage";
 import { DashboardPage } from "@/features/dashboard/DashboardPage";
 import { AppsPage } from "@/features/apps/AppsPage";
+import { NewAppPage } from "@/features/apps/NewAppPage";
 import { AppDetailPage } from "@/features/apps/AppDetailPage";
 import { DatabasesPage } from "@/features/databases/DatabasesPage";
 import { SystemPage } from "@/features/system/SystemPage";
@@ -71,6 +72,12 @@ const appsRoute = createRoute({
   component: AppsPage,
 });
 
+const newAppRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/apps/new",
+  component: NewAppPage,
+});
+
 const appDetailRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/apps/$slug",
@@ -102,6 +109,7 @@ const routeTree = rootRoute.addChildren([
   enrollRoute,
   dashboardRoute,
   appsRoute,
+  newAppRoute,
   appDetailRoute,
   databasesRoute,
   systemRoute,

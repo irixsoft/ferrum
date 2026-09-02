@@ -15,6 +15,7 @@ export function MobileShell({ children }: { children: ReactNode }) {
 
   const detail = /^\/apps\/(.+)$/.exec(path);
   const isDetail = detail !== null;
+  const heading = detail?.[1] === "new" ? "New app" : detail ? decodeURIComponent(detail[1]) : null;
   const current = NAV.find((n) => (n.to === "/" ? path === "/" : path.startsWith(n.to)));
 
   return (
@@ -33,7 +34,7 @@ export function MobileShell({ children }: { children: ReactNode }) {
             <Mark size={18} className="text-ink-3" />
           )}
           <span className="font-display text-[17px] text-ink">
-            {isDetail ? decodeURIComponent(detail![1]) : (current?.label ?? "Ferrum")}
+            {heading ?? current?.label ?? "Ferrum"}
           </span>
           <div className="ml-auto flex items-center gap-1">
             {deploy ? (

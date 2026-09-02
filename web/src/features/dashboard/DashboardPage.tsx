@@ -37,10 +37,12 @@ export function DashboardPage() {
         action={
           <>
             <SearchPill />
-            <Button variant="primary" className="h-12 sm:h-14 px-5 sm:px-6 rounded-full shrink-0">
-              <Plus size={16} />
-              New app
-            </Button>
+            <Link to="/apps/new">
+              <Button variant="primary" className="h-12 sm:h-14 px-5 sm:px-6 rounded-full shrink-0">
+                <Plus size={16} />
+                New app
+              </Button>
+            </Link>
           </>
         }
       />

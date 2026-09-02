@@ -1,6 +1,9 @@
 export type Runtime = "node" | "bun" | "dotnet" | "static";
+export type Toolchain = Exclude<Runtime, "static">;
+export type Tracking = "branch" | "releases";
+export type PackageManager = "npm" | "pnpm" | "yarn" | "bun";
 
-export type AppStatus = "live" | "building" | "failed" | "stopped" | "maintenance";
+export type AppStatus = "new" | "live" | "building" | "failed" | "stopped" | "maintenance";
 
 export const DEPLOY_STATES = [
   "Queued",
@@ -50,41 +53,138 @@ export interface Route {
   websocket: boolean;
 }
 
-export interface Domain {
-  host: string;
-  primary: boolean;
-  dns_ok: boolean;
-  cert_expires_at: string | null;
+export interface RouteInput {
+  path: string;
+  port_name: string;
+  websocket: boolean;
 }
 
-export interface AppResources {
-  memory_high_mb: number;
-  memory_max_mb: number;
-  memory_current_mb: number;
-  memory_peak_mb: number;
-  cpu_quota_pct: number;
-  cpu_current_pct: number;
+export interface Commands {
+  install: string | null;
+  build: string | null;
+  start: string | null;
+  migrate: string | null;
+}
+
+export interface Health {
+  path: string;
+  startup_budget_secs: number;
 }
 
 export interface App {
+  id: string;
   slug: string;
   name: string;
-  repo: string;
-  ref: string;
+  repository: string;
+  git_ref: string;
+  tracking: Tracking;
+  root: string;
   runtime: Runtime;
+  toolchain: Toolchain;
   runtime_version: string;
-  status: AppStatus;
-  domains: Domain[];
+  commands: Commands;
+  output_dir: string | null;
+  health: Health;
+  memory_mb: number;
+  cpu_percent: number;
+  pause_for_migrations: boolean;
   routes: Route[];
-  resources: AppResources;
-  migration_command: string;
-  pause_traffic_during_migration: boolean;
-  system_packages: string[];
-  linked_databases: string[];
-  linked_redis: string | null;
-  env_count: number;
-  last_deploy: Deploy | null;
+  packages: string[];
+  domains: string[];
+  created_at: string;
+  updated_at: string;
 }
+
+export interface AppDetail extends App {
+  env: Array<{ key: string }>;
+  deployed: boolean;
+}
+
+export interface EnvVar {
+  key: string;
+  value: string;
+}
+
+/** A row without a value keeps the value already stored; values are never read back. */
+export interface EnvChange {
+  key: string;
+  value?: string;
+}
+
+export interface NewApp {
+  slug: string;
+  name: string;
+  repository: string;
+  git_ref: string;
+  tracking: Tracking;
+  root: string;
+  runtime: Runtime;
+  toolchain: Toolchain;
+  runtime_version: string;
+  commands: Commands;
+  output_dir: string | null;
+  health: Health;
+  memory_mb: number;
+  cpu_percent: number;
+  pause_for_migrations: boolean;
+  routes: RouteInput[];
+  packages: string[];
+  domains: string[];
+  env: EnvVar[];
+}
+
+export type AppChanges = Partial<Omit<NewApp, "slug" | "repository" | "env">>;
+
+export interface Detection {
+  kind: Runtime;
+  toolchain: Toolchain;
+  version: string | null;
+  confidence: number;
+  reasons: string[];
+  commands: Commands;
+  output_dir: string | null;
+  health: Health;
+  package_manager: PackageManager | null;
+}
+
+export interface FerrumToml {
+  runtime: Runtime | null;
+  version: string | null;
+  install: string | null;
+  build: string | null;
+  start: string | null;
+  migrate: string | null;
+  output_dir: string | null;
+  health_path: string | null;
+  packages: string[];
+}
+
+export interface Detected {
+  candidates: Detection[];
+  ferrum_toml: FerrumToml | null;
+  aptfile: string[];
+  aptfile_rejected: string[];
+}
+
+export interface InstalledToolchain {
+  kind: Toolchain;
+  version: string;
+  path: string;
+  size_bytes: number;
+  installed_at: string;
+}
+
+export interface Runtimes {
+  installed: InstalledToolchain[];
+  dotnet_channels: string[];
+}
+
+export type Progress =
+  | { state: "downloading"; received: number; total: number | null }
+  | { state: "extracting" }
+  | { state: "installing" }
+  | { state: "ready" }
+  | { state: "failed"; error: string };
 
 export interface Database {
   name: string;

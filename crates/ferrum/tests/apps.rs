@@ -201,6 +201,23 @@ async fn env_values_are_write_only() {
         )
         .await;
     assert_eq!(bad.status, StatusCode::BAD_REQUEST);
+
+    let kept = h
+        .put_with_cookie(
+            "/api/apps/ledger/env",
+            r#"[{"key":"SECRET"},{"key":"OTHER","value":"o"}]"#,
+            &cookie,
+        )
+        .await;
+    assert_eq!(kept.status, StatusCode::NO_CONTENT, "{}", kept.json);
+    let env = h
+        .platform
+        .written("/var/lib/ferrum/apps/ledger/shared/.env")
+        .unwrap();
+    assert!(
+        env.contains("SECRET=hunter2\n") && env.contains("OTHER=o\n"),
+        "a row without a value keeps the stored one: {env}"
+    );
 }
 
 #[tokio::test]

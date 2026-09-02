@@ -313,13 +313,16 @@ mod tests {
                 let (mut socket, _) = listener.accept().await.unwrap();
                 counter.fetch_add(1, Ordering::SeqCst);
                 let mut buf = [0u8; 4096];
-                let _ = socket.read(&mut buf).await;
+                let n = socket.read(&mut buf).await.unwrap_or(0);
+                let request = String::from_utf8_lossy(&buf[..n]).to_string();
+                let script = request.lines().next().is_some_and(|l| l.contains(".sh "));
+                let payload: &[u8] = if script { b"#!/bin/bash\n" } else { &body };
                 let head = format!(
-                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nContent-Type: application/gzip\r\nConnection: close\r\n\r\n",
-                    body.len()
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    payload.len()
                 );
                 let _ = socket.write_all(head.as_bytes()).await;
-                let _ = socket.write_all(&body).await;
+                let _ = socket.write_all(payload).await;
                 let _ = socket.shutdown().await;
             }
         });

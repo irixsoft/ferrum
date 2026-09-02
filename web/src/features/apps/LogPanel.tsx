@@ -2,6 +2,7 @@ import { useState } from "react";
 import { Card, CardBody, CardHeader } from "@/components/ui/Card";
 import { Badge } from "@/components/ui/Badge";
 import { Segmented } from "@/components/ui/Segmented";
+import { SampleData } from "@/components/SampleData";
 
 
 type Source = "app" | "access" | "build";
@@ -42,6 +43,7 @@ export function LogPanel({ slug }: { slug: string }) {
           <span className="flex items-center gap-2">
             Logs
             <Badge tone="ok">Live</Badge>
+            <SampleData />
           </span>
         }
         hint={`journalctl -u ferrum-app-${slug} --follow`}
