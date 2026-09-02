@@ -294,6 +294,19 @@ pub async fn by_name(state: &State, name: &str) -> anyhow::Result<Option<Databas
     Ok(rows(state).await?.into_iter().find(|d| d.name == name))
 }
 
+pub async fn by_id(state: &State, id: &str) -> anyhow::Result<Option<Database>> {
+    Ok(rows(state).await?.into_iter().find(|d| d.id == id))
+}
+
+pub async fn linked_to(state: &State, app_id: &str) -> anyhow::Result<Vec<Database>> {
+    let names = names_for(state, app_id).await?;
+    let all = rows(state).await?;
+    Ok(names
+        .iter()
+        .filter_map(|name| all.iter().find(|d| &d.name == name).cloned())
+        .collect())
+}
+
 /// Sizes and connection counts come from one query against the cluster; when it cannot answer,
 /// the list still does.
 pub async fn list(state: &State, platform: &dyn Platform) -> anyhow::Result<Vec<Database>> {

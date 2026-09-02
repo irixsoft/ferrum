@@ -1,6 +1,7 @@
 use super::unit::{render_unit, unit_name, unit_path};
 use super::vhost::{custom_path, render_vhost, vhost_path};
 use super::{App, env};
+use crate::deploy::maintenance;
 use crate::runtime::toolchain::Store;
 use crate::state::State;
 use crate::{APPS_DIR, acme, nginx, redis};
@@ -49,11 +50,14 @@ pub async fn provision(state: &State, platform: &dyn Platform, app: &App) -> any
     if !platform.file_exists(&custom) {
         platform.write_file(&custom, "", 0o644)?;
     }
-    let cert_dir = app
-        .primary_domain()
-        .map(acme::cert_dir)
-        .filter(|d| platform.file_exists(&d.join("fullchain.pem")));
-    let vhost = render_vhost(app, &app.domains, cert_dir.as_deref());
+    maintenance::ensure_page(platform)?;
+    let with_tls: Vec<String> = app
+        .domains
+        .iter()
+        .filter(|d| platform.file_exists(&acme::cert_dir(d).join("fullchain.pem")))
+        .cloned()
+        .collect();
+    let vhost = render_vhost(app, &app.domains, &with_tls);
     nginx::replace_and_reload(platform, &vhost_path(&app.slug), &vhost)
         .context("nginx refused the generated site configuration")?;
     Ok(())

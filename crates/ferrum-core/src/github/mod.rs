@@ -1,3 +1,4 @@
+pub mod commits;
 pub mod contents;
 pub mod manifest;
 pub mod repos;
@@ -15,6 +16,7 @@ pub const GITHUB_API: &str = "https://api.github.com";
 pub struct Api {
     base: String,
     installation: Arc<Mutex<Option<token::Installed>>>,
+    fixed_token: Option<String>,
 }
 
 impl Default for Api {
@@ -28,7 +30,14 @@ impl Api {
         Self {
             base: base.into(),
             installation: Arc::new(Mutex::new(None)),
+            fixed_token: None,
         }
+    }
+
+    /// A clone token handed in rather than minted; only tests without a GitHub stub want this.
+    pub fn with_fixed_token(mut self, token: impl Into<String>) -> Self {
+        self.fixed_token = Some(token.into());
+        self
     }
 
     pub fn anonymous(&self) -> anyhow::Result<octocrab::Octocrab> {

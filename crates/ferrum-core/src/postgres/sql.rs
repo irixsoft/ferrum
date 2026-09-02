@@ -37,6 +37,16 @@ pub fn create_extension(extension: &str) -> String {
     )
 }
 
+/// An empty database under the same role, ready for a restore; the role and its password survive.
+pub fn recreate_database(name: &str, role: &str) -> String {
+    format!(
+        "DROP DATABASE IF EXISTS {} WITH (FORCE);\n{}{}",
+        quote_ident(name),
+        create_database(name, role),
+        isolate(name, role)
+    )
+}
+
 pub fn drop_database(name: &str, role: &str) -> String {
     format!(
         "DROP DATABASE IF EXISTS {} WITH (FORCE);\nDROP ROLE IF EXISTS {};\n",

@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE deploys SET git_ref = ?, commit_sha = ?, commit_message = ?, author = ? WHERE id = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 5
+    },
+    "nullable": []
+  },
+  "hash": "327ef150825c5581176e7d0d3889a8b2abb0cffe066d8920dbb43d2c64ca7b95"
+}

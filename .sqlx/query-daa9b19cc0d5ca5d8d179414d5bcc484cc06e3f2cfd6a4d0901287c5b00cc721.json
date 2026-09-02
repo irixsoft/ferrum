@@ -1,0 +1,38 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT attempts AS \"attempts!\", last_error, next_at,\n                  (next_at IS NOT NULL AND next_at > datetime('now')) AS \"waiting!: bool\"\n           FROM cert_attempts WHERE domain = ?",
+  "describe": {
+    "columns": [
+      {
+        "name": "attempts!",
+        "ordinal": 0,
+        "type_info": "Integer"
+      },
+      {
+        "name": "last_error",
+        "ordinal": 1,
+        "type_info": "Text"
+      },
+      {
+        "name": "next_at",
+        "ordinal": 2,
+        "type_info": "Text"
+      },
+      {
+        "name": "waiting!: bool",
+        "ordinal": 3,
+        "type_info": "Null"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false,
+      true,
+      true,
+      null
+    ]
+  },
+  "hash": "daa9b19cc0d5ca5d8d179414d5bcc484cc06e3f2cfd6a4d0901287c5b00cc721"
+}

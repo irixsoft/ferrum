@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO cert_attempts (domain, attempts, last_error, next_at)\n         VALUES (?, ?, ?, datetime('now', ?))\n         ON CONFLICT(domain) DO UPDATE SET attempts = excluded.attempts,\n             last_error = excluded.last_error, next_at = excluded.next_at",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 4
+    },
+    "nullable": []
+  },
+  "hash": "eba93a749e432fd2839f68b80d72492cb6dfa3de385463c7394f0a0e09d8d0e1"
+}

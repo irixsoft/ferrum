@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE deploy_steps SET status = 'active', started_at = datetime('now'), finished_at = NULL\n         WHERE deploy_id = ? AND state = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": []
+  },
+  "hash": "350a926d558d5b240e3a30a54c7c9339e55bd4527ea795ae3e25bc3bc620879e"
+}

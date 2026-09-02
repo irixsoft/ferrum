@@ -141,6 +141,30 @@ pub async fn verify(host: &str, expected: IpAddr) -> Result<Verdict, DnsLookupEr
     Ok(classify(&resolve_a(host).await?, expected))
 }
 
+/// Where lookups go. Tests pin answers so no test reaches a resolver.
+#[derive(Debug, Clone)]
+pub enum Lookup {
+    Public,
+    Fixed(Vec<(String, Vec<IpAddr>)>),
+}
+
+impl Lookup {
+    pub async fn resolve(&self, host: &str) -> Result<Vec<IpAddr>, DnsLookupError> {
+        match self {
+            Self::Public => resolve_a(host).await,
+            Self::Fixed(answers) => Ok(answers
+                .iter()
+                .find(|(name, _)| name == host)
+                .map(|(_, ips)| ips.clone())
+                .unwrap_or_default()),
+        }
+    }
+
+    pub async fn verify(&self, host: &str, expected: IpAddr) -> Result<Verdict, DnsLookupError> {
+        Ok(classify(&self.resolve(host).await?, expected))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

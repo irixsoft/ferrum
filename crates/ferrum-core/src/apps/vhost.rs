@@ -1,6 +1,7 @@
 use super::App;
 use super::provision::app_dir;
-use crate::ACME_ROOT;
+use crate::deploy::maintenance;
+use crate::{ACME_ROOT, PAGES_DIR, acme};
 use ferrum_platform::ubuntu::{NGINX_CONF_DIR, NGINX_CUSTOM_DIR};
 use std::fmt::Write;
 use std::path::{Path, PathBuf};
@@ -35,7 +36,8 @@ pub fn custom_path(slug: &str) -> PathBuf {
     Path::new(NGINX_CUSTOM_DIR).join(format!("{slug}.conf"))
 }
 
-pub fn render_vhost(app: &App, domains: &[String], cert_dir: Option<&Path>) -> String {
+/// `with_tls` names the domains whose certificate is on disk; each gets its own `:443` block.
+pub fn render_vhost(app: &App, domains: &[String], with_tls: &[String]) -> String {
     let mut out = format!(
         "# managed by Ferrum — do not edit. Your own directives go in {}\n\n",
         custom_path(&app.slug).display()
@@ -43,47 +45,59 @@ pub fn render_vhost(app: &App, domains: &[String], cert_dir: Option<&Path>) -> S
     let Some(primary) = domains.first() else {
         return out;
     };
+    let primary_tls = with_tls.contains(primary);
 
     out.push_str("server {\n    listen 80;\n    listen [::]:80;\n");
     let _ = writeln!(out, "    server_name {primary};\n");
     out.push_str(&acme());
-    match cert_dir {
-        Some(_) => {
-            out.push_str(
-                "    location / {\n        return 301 https://$host$request_uri;\n    }\n}\n",
-            );
-        }
-        None => {
-            out.push_str(HEADERS);
-            out.push_str(&body(app));
-            out.push_str("}\n");
-        }
+    if primary_tls {
+        out.push_str("    location / {\n        return 301 https://$host$request_uri;\n    }\n}\n");
+    } else {
+        out.push_str(HEADERS);
+        out.push_str(&body(app));
+        out.push_str("}\n");
     }
 
-    if let Some(cert_dir) = cert_dir {
-        out.push_str("\nserver {\n    listen 443 ssl;\n    listen [::]:443 ssl;\n    http2 on;\n");
-        let _ = writeln!(out, "    server_name {primary};\n");
-        let _ = writeln!(
-            out,
-            "    ssl_certificate     {0}/fullchain.pem;\n    ssl_certificate_key {0}/key.pem;",
-            cert_dir.display()
-        );
-        out.push_str(TLS);
+    if primary_tls {
+        out.push_str(&tls_server(primary));
         out.push_str(HEADERS);
         out.push_str(&acme());
         out.push_str(&body(app));
         out.push_str("}\n");
     }
 
+    let scheme = if primary_tls { "https" } else { "$scheme" };
     for secondary in &domains[1..] {
         out.push_str("\nserver {\n    listen 80;\n    listen [::]:80;\n");
         let _ = writeln!(out, "    server_name {secondary};\n");
         out.push_str(&acme());
         let _ = writeln!(
             out,
-            "    location / {{\n        return 301 $scheme://{primary}$request_uri;\n    }}\n}}"
+            "    location / {{\n        return 301 {scheme}://{primary}$request_uri;\n    }}\n}}"
         );
+        if with_tls.contains(secondary) {
+            out.push_str(&tls_server(secondary));
+            out.push_str(&acme());
+            let _ = writeln!(
+                out,
+                "    location / {{\n        return 301 https://{primary}$request_uri;\n    }}\n}}"
+            );
+        }
     }
+    out
+}
+
+fn tls_server(domain: &str) -> String {
+    let cert_dir = acme::cert_dir(domain);
+    let mut out = String::new();
+    out.push_str("\nserver {\n    listen 443 ssl;\n    listen [::]:443 ssl;\n    http2 on;\n");
+    let _ = writeln!(out, "    server_name {domain};\n");
+    let _ = writeln!(
+        out,
+        "    ssl_certificate     {0}/fullchain.pem;\n    ssl_certificate_key {0}/key.pem;",
+        cert_dir.display()
+    );
+    out.push_str(TLS);
     out
 }
 
@@ -91,9 +105,20 @@ fn acme() -> String {
     format!("    location /.well-known/acme-challenge/ {{\n        root {ACME_ROOT};\n    }}\n")
 }
 
+/// The flag file toggles the page with no reload; nginx checks it on every request.
+fn maintenance(app: &App) -> String {
+    format!(
+        "    if (-f {flag}) {{ return 503; }}\n    error_page 503 @maintenance;\n    location @maintenance {{\n        root {pages};\n        add_header Retry-After 10 always;\n        rewrite ^ /{page} break;\n    }}\n\n",
+        flag = maintenance::flag_path(&app.slug).display(),
+        pages = PAGES_DIR,
+        page = maintenance::PAGE_NAME,
+    )
+}
+
 fn body(app: &App) -> String {
     let mut out = String::new();
     let _ = writeln!(out, "    include {};\n", custom_path(&app.slug).display());
+    out.push_str(&maintenance(app));
 
     if !app.runtime.has_process() {
         let root = app_dir(&app.slug)
@@ -152,7 +177,7 @@ mod tests {
         let v = render_vhost(
             &a,
             &["ledger.example.com".into()],
-            Some(Path::new("/var/lib/ferrum/certs/ledger.example.com")),
+            &["ledger.example.com".into()],
         );
 
         let tls = v.find("listen 443 ssl;").unwrap();
@@ -180,7 +205,7 @@ mod tests {
 
     #[test]
     fn the_vhost_includes_the_user_snippet_from_outside_conf_d() {
-        let v = render_vhost(&app("ledger"), &["ledger.example.com".into()], None);
+        let v = render_vhost(&app("ledger"), &["ledger.example.com".into()], &[]);
         assert!(v.contains("include /etc/nginx/ferrum-custom/ledger.conf;"));
         assert!(v.starts_with("# managed by Ferrum"));
         assert!(
@@ -190,8 +215,48 @@ mod tests {
     }
 
     #[test]
+    fn the_vhost_serves_the_maintenance_page_only_while_the_flag_exists() {
+        let v = render_vhost(
+            &app("ledger"),
+            &["ledger.example.com".into()],
+            &["ledger.example.com".into()],
+        );
+        assert_eq!(
+            v.matches("if (-f /var/lib/ferrum/apps/ledger/maintenance) { return 503; }")
+                .count(),
+            1,
+            "the :80 block only redirects once TLS is on, so the page is served from :443"
+        );
+        assert!(v.contains("error_page 503 @maintenance;"));
+        assert!(v.contains("add_header Retry-After 10 always;"));
+        assert!(v.contains("root /var/lib/ferrum/pages;"));
+        assert!(v.contains("rewrite ^ /maintenance.html break;"));
+        let plain = render_vhost(&app("ledger"), &["ledger.example.com".into()], &[]);
+        assert_eq!(plain.matches("return 503;").count(), 1);
+    }
+
+    #[test]
+    fn a_secondary_domain_with_its_own_certificate_redirects_over_tls() {
+        let v = render_vhost(
+            &app("ledger"),
+            &["ledger.example.com".into(), "www.ledger.example.com".into()],
+            &["ledger.example.com".into(), "www.ledger.example.com".into()],
+        );
+        assert!(v.contains(
+            "ssl_certificate     /var/lib/ferrum/certs/www.ledger.example.com/fullchain.pem;"
+        ));
+        assert_eq!(v.matches("listen 443 ssl;").count(), 2);
+        assert_eq!(
+            v.matches("return 301 https://ledger.example.com$request_uri;")
+                .count(),
+            2
+        );
+        assert!(!v.contains("$scheme://ledger.example.com"));
+    }
+
+    #[test]
     fn without_a_certificate_the_vhost_serves_http_only_and_still_answers_acme() {
-        let v = render_vhost(&app("ledger"), &["ledger.example.com".into()], None);
+        let v = render_vhost(&app("ledger"), &["ledger.example.com".into()], &[]);
         assert!(v.contains("listen 80;"));
         assert!(!v.contains("listen 443"));
         assert!(
@@ -210,7 +275,7 @@ mod tests {
         let mut a = app("docs");
         a.runtime = RuntimeKind::Static;
         a.output_dir = Some("dist".into());
-        let v = render_vhost(&a, &["docs.example.com".into()], None);
+        let v = render_vhost(&a, &["docs.example.com".into()], &[]);
         assert!(v.contains("root /var/lib/ferrum/apps/docs/current/dist;"));
         assert!(v.contains("try_files $uri $uri/ /index.html;"));
         assert!(!v.contains("proxy_pass"));
@@ -221,7 +286,7 @@ mod tests {
         let v = render_vhost(
             &app("ledger"),
             &["ledger.example.com".into(), "www.ledger.example.com".into()],
-            None,
+            &[],
         );
         assert!(v.contains("server_name www.ledger.example.com;"));
         assert!(v.contains("return 301 $scheme://ledger.example.com$request_uri;"));
@@ -229,7 +294,7 @@ mod tests {
 
     #[test]
     fn without_a_domain_there_is_nothing_to_serve() {
-        let v = render_vhost(&app("ledger"), &[], None);
+        let v = render_vhost(&app("ledger"), &[], &[]);
         assert!(!v.contains("server {"));
     }
 

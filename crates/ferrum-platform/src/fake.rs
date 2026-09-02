@@ -368,7 +368,9 @@ impl Platform for FakePlatform {
         self.record(format!(
             "git_checkout {} {commit_sha}",
             dir.to_string_lossy()
-        ))
+        ))?;
+        self.inner.lock().unwrap().head = commit_sha.to_string();
+        Ok(())
     }
 
     fn git_head(&self, dir: &Path) -> Result<String, PlatformError> {

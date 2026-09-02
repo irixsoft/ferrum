@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE deploy_steps SET status = 'skipped', note = ? WHERE deploy_id = ? AND state = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": []
+  },
+  "hash": "b2aa46c7db6ea5399621648b2b3baf339e3b9478e5e4cd68ae175bb912353ab8"
+}

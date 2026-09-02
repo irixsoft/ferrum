@@ -1,6 +1,8 @@
 pub mod acme;
 pub mod apps;
+pub mod certs;
 pub mod credentials;
+pub mod deploy;
 pub mod detect;
 pub mod dns;
 pub mod enrollment;
@@ -31,6 +33,8 @@ pub const ACME_WEBROOT: &str = "/var/lib/ferrum/acme/.well-known/acme-challenge"
 pub const CERTS_DIR: &str = "/var/lib/ferrum/certs";
 pub const APPS_DIR: &str = "/var/lib/ferrum/apps";
 pub const REDIS_DIR: &str = "/var/lib/ferrum/redis";
+pub const SNAPSHOTS_DIR: &str = "/var/lib/ferrum/snapshots";
+pub const PAGES_DIR: &str = "/var/lib/ferrum/pages";
 
 #[cfg(test)]
 mod tests {
@@ -44,6 +48,8 @@ mod tests {
             CERTS_DIR,
             APPS_DIR,
             REDIS_DIR,
+            SNAPSHOTS_DIR,
+            PAGES_DIR,
             runtime::toolchain::RUNTIMES_DIR,
         ] {
             assert!(p.starts_with(DATA_DIR), "{p}");

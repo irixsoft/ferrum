@@ -83,6 +83,7 @@ pub struct App {
     pub routes: Vec<Route>,
     pub packages: Vec<String>,
     pub domains: Vec<String>,
+    pub current_release_id: Option<String>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -489,6 +490,17 @@ pub async fn update(state: &State, slug: &str, changes: AppChanges) -> anyhow::R
         .ok_or_else(|| AppError::NotFound.into())
 }
 
+pub async fn set_git_ref(state: &State, id: &str, git_ref: &str) -> anyhow::Result<()> {
+    sqlx::query!(
+        "UPDATE apps SET git_ref = ?, updated_at = datetime('now') WHERE id = ?",
+        git_ref,
+        id
+    )
+    .execute(&state.pool)
+    .await?;
+    Ok(())
+}
+
 pub async fn delete(state: &State, slug: &str) -> anyhow::Result<bool> {
     let done = sqlx::query!("DELETE FROM apps WHERE slug = ?", slug)
         .execute(&state.pool)
@@ -572,8 +584,8 @@ pub async fn list(state: &State) -> anyhow::Result<Vec<App>> {
                   runtime_version AS "runtime_version!", install_cmd, build_cmd, start_cmd, migrate_cmd,
                   output_dir, health_path AS "health_path!", startup_budget_secs AS "startup_budget_secs!",
                   memory_mb AS "memory_mb!", cpu_percent AS "cpu_percent!",
-                  pause_for_migrations AS "pause_for_migrations!: bool", created_at AS "created_at!",
-                  updated_at AS "updated_at!"
+                  pause_for_migrations AS "pause_for_migrations!: bool", current_release_id,
+                  created_at AS "created_at!", updated_at AS "updated_at!"
            FROM apps ORDER BY name, slug"#
     )
     .fetch_all(&state.pool)
@@ -612,6 +624,7 @@ pub async fn list(state: &State) -> anyhow::Result<Vec<App>> {
             routes,
             packages,
             domains,
+            current_release_id: r.current_release_id,
             created_at: time::utc(r.created_at),
             updated_at: time::utc(r.updated_at),
         });
@@ -621,6 +634,18 @@ pub async fn list(state: &State) -> anyhow::Result<Vec<App>> {
 
 pub async fn by_slug(state: &State, slug: &str) -> anyhow::Result<Option<App>> {
     Ok(list(state).await?.into_iter().find(|a| a.slug == slug))
+}
+
+pub async fn by_id(state: &State, id: &str) -> anyhow::Result<Option<App>> {
+    Ok(list(state).await?.into_iter().find(|a| a.id == id))
+}
+
+pub async fn by_repository(state: &State, repository: &str) -> anyhow::Result<Vec<App>> {
+    Ok(list(state)
+        .await?
+        .into_iter()
+        .filter(|a| a.repository == repository)
+        .collect())
 }
 
 async fn routes_of(state: &State, app_id: &str) -> anyhow::Result<Vec<Route>> {
@@ -732,6 +757,7 @@ pub(crate) mod tests {
             routes: vec![route("/", "main", 20000, false)],
             packages: Vec::new(),
             domains: vec![format!("{slug}.example.com")],
+            current_release_id: None,
             created_at: "2026-09-02T00:00:00Z".into(),
             updated_at: "2026-09-02T00:00:00Z".into(),
         }

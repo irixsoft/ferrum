@@ -160,30 +160,41 @@ pub async fn keys(state: &State, app_id: &str) -> anyhow::Result<Vec<String>> {
         .collect())
 }
 
-/// systemd's `EnvironmentFile=` dialect: no expansion, but an unquoted backslash is an escape.
-/// A managed key wins over a user variable of the same name.
-pub fn render(vars: &[(String, String)], managed: &Managed, routes: &[Route]) -> String {
+/// Everything the env file carries, in its order. A managed key wins over a user variable of
+/// the same name.
+pub fn pairs(
+    vars: &[(String, String)],
+    managed: &Managed,
+    routes: &[Route],
+) -> Vec<(String, String)> {
     let managed = managed.pairs();
-    let mut out = String::new();
-    for (key, value) in vars
+    let mut out: Vec<(String, String)> = vars
         .iter()
         .filter(|(key, _)| !managed.iter().any(|(m, _)| m == key))
         .chain(managed.iter())
-    {
-        out.push_str(key);
-        out.push('=');
-        out.push_str(&quote(value));
-        out.push('\n');
-    }
+        .cloned()
+        .collect();
     let mut seen = Vec::new();
     for route in routes {
         if seen.contains(&route.port_name) {
             continue;
         }
         seen.push(route.port_name.clone());
-        out.push_str(&format!("{}={}\n", port_var(&route.port_name), route.port));
+        out.push((port_var(&route.port_name), route.port.to_string()));
     }
-    out.push_str(&format!("HOST={HOST}\n"));
+    out.push(("HOST".into(), HOST.into()));
+    out
+}
+
+/// systemd's `EnvironmentFile=` dialect: no expansion, but an unquoted backslash is an escape.
+pub fn render(vars: &[(String, String)], managed: &Managed, routes: &[Route]) -> String {
+    let mut out = String::new();
+    for (key, value) in pairs(vars, managed, routes) {
+        out.push_str(&key);
+        out.push('=');
+        out.push_str(&quote(&value));
+        out.push('\n');
+    }
     out
 }
 

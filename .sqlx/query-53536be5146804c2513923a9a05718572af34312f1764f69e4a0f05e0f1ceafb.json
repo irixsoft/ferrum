@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE deploys SET commit_sha = coalesce(?, commit_sha),\n                            commit_message = coalesce(?, commit_message),\n                            author = coalesce(?, author)\n         WHERE id = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 4
+    },
+    "nullable": []
+  },
+  "hash": "53536be5146804c2513923a9a05718572af34312f1764f69e4a0f05e0f1ceafb"
+}

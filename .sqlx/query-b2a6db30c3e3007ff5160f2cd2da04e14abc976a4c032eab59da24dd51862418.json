@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT id AS \"id!\", slug AS \"slug!\", name AS \"name!\", repository AS \"repository!\",\n                  git_ref AS \"git_ref!\", tracking AS \"tracking!: Tracking\", root AS \"root!\",\n                  runtime AS \"runtime!: RuntimeKind\", toolchain AS \"toolchain!: RuntimeKind\",\n                  runtime_version AS \"runtime_version!\", install_cmd, build_cmd, start_cmd, migrate_cmd,\n                  output_dir, health_path AS \"health_path!\", startup_budget_secs AS \"startup_budget_secs!\",\n                  memory_mb AS \"memory_mb!\", cpu_percent AS \"cpu_percent!\",\n                  pause_for_migrations AS \"pause_for_migrations!: bool\", created_at AS \"created_at!\",\n                  updated_at AS \"updated_at!\"\n           FROM apps ORDER BY name, slug",
+  "query": "SELECT id AS \"id!\", slug AS \"slug!\", name AS \"name!\", repository AS \"repository!\",\n                  git_ref AS \"git_ref!\", tracking AS \"tracking!: Tracking\", root AS \"root!\",\n                  runtime AS \"runtime!: RuntimeKind\", toolchain AS \"toolchain!: RuntimeKind\",\n                  runtime_version AS \"runtime_version!\", install_cmd, build_cmd, start_cmd, migrate_cmd,\n                  output_dir, health_path AS \"health_path!\", startup_budget_secs AS \"startup_budget_secs!\",\n                  memory_mb AS \"memory_mb!\", cpu_percent AS \"cpu_percent!\",\n                  pause_for_migrations AS \"pause_for_migrations!: bool\", current_release_id,\n                  created_at AS \"created_at!\", updated_at AS \"updated_at!\"\n           FROM apps ORDER BY name, slug",
   "describe": {
     "columns": [
       {
@@ -104,13 +104,18 @@
         "type_info": "Integer"
       },
       {
-        "name": "created_at!",
+        "name": "current_release_id",
         "ordinal": 20,
         "type_info": "Text"
       },
       {
-        "name": "updated_at!",
+        "name": "created_at!",
         "ordinal": 21,
+        "type_info": "Text"
+      },
+      {
+        "name": "updated_at!",
+        "ordinal": 22,
         "type_info": "Text"
       }
     ],
@@ -138,9 +143,10 @@
       false,
       false,
       false,
+      true,
       false,
       false
     ]
   },
-  "hash": "86911b48b4c8338ccb55b5418b8e786fe0a8e27b604bfccf67c8802c623aee04"
+  "hash": "b2a6db30c3e3007ff5160f2cd2da04e14abc976a4c032eab59da24dd51862418"
 }

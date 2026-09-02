@@ -1,0 +1,50 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT s.id AS \"id!\", s.database_id AS \"database_id!\", d.name AS \"database!\",\n                  s.deploy_id, s.path AS \"path!\", s.taken_at AS \"taken_at!\"\n           FROM snapshots s JOIN databases d ON d.id = s.database_id\n           WHERE (? IS NULL OR s.id = ?) AND (? IS NULL OR s.deploy_id = ?)\n           ORDER BY s.rowid",
+  "describe": {
+    "columns": [
+      {
+        "name": "id!",
+        "ordinal": 0,
+        "type_info": "Text"
+      },
+      {
+        "name": "database_id!",
+        "ordinal": 1,
+        "type_info": "Text"
+      },
+      {
+        "name": "database!",
+        "ordinal": 2,
+        "type_info": "Text"
+      },
+      {
+        "name": "deploy_id",
+        "ordinal": 3,
+        "type_info": "Text"
+      },
+      {
+        "name": "path!",
+        "ordinal": 4,
+        "type_info": "Text"
+      },
+      {
+        "name": "taken_at!",
+        "ordinal": 5,
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Right": 4
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      true,
+      false,
+      false
+    ]
+  },
+  "hash": "fe5423512f7c1d570e012dbeeb60c1bee4c305040be01c77dd280f2c087e2e49"
+}

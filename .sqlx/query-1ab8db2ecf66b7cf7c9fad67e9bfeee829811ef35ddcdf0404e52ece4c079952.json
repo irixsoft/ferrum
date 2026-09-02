@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE deploys SET release_id = ?, restore_deploy_id = ? WHERE id = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": []
+  },
+  "hash": "1ab8db2ecf66b7cf7c9fad67e9bfeee829811ef35ddcdf0404e52ece4c079952"
+}

@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO snapshots (id, database_id, deploy_id, path) VALUES (?, ?, ?, ?)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 4
+    },
+    "nullable": []
+  },
+  "hash": "b523f3dc06543015fb5de0e7d5cbd0643143d8473da5ffaa4445443d84be42c7"
+}

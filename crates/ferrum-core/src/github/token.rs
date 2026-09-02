@@ -92,6 +92,9 @@ impl Api {
     pub async fn installation_token(&self, state: &State) -> anyhow::Result<String> {
         use secrecy::ExposeSecret;
 
+        if let Some(token) = &self.fixed_token {
+            return Ok(token.clone());
+        }
         let client = self.installed(state).await?;
         let token = client
             .installation_token_with_buffer(chrono::Duration::minutes(REFRESH_MARGIN_MINUTES))
