@@ -43,6 +43,7 @@ pub(crate) struct Listed {
     #[serde(flatten)]
     app: App,
     status: &'static str,
+    never_live: bool,
 }
 
 /// What the panel's pill says: the running deploy first, then the maintenance flag, then the
@@ -91,7 +92,12 @@ pub(crate) async fn listed(app: &AppState) -> anyhow::Result<Vec<Listed>> {
     let mut listed = Vec::new();
     for found in apps::list(&app.db).await? {
         let status = status_of(app, &found).await?;
-        listed.push(Listed { app: found, status });
+        let never_live = found.current_release_id.is_none();
+        listed.push(Listed {
+            app: found,
+            status,
+            never_live,
+        });
     }
     Ok(listed)
 }
@@ -216,6 +222,7 @@ pub(crate) async fn detail(app: &AppState, found: &App) -> anyhow::Result<serde_
     value["deployed"] = serde_json::Value::Bool(current.is_some());
     value["current_release"] = serde_json::to_value(current)?;
     value["status"] = serde_json::Value::String(status.into());
+    value["never_live"] = serde_json::Value::Bool(found.current_release_id.is_none());
     value["certificates"] = serde_json::to_value(certificates)?;
     value["databases"] = serde_json::to_value(databases)?;
     value["redis"] = serde_json::to_value(instance)?;

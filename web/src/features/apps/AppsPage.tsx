@@ -93,7 +93,7 @@ export function AppsPage() {
                   </td>
                   <td className="px-3 py-3 text-[12.5px] text-ink-3">{ago(app.created_at)}</td>
                   <td className="px-5 py-3 text-right">
-                    <StatusPill status={app.status} />
+                    <StatusPill status={app.status} neverLive={app.never_live} />
                   </td>
                 </tr>
               ))}

@@ -20,7 +20,7 @@ export function AppCard({ app }: { app: App }) {
           <h3 className="font-display text-[19px] text-ink leading-none">{app.name}</h3>
           <p className="mt-1.5 text-[13px] text-ink-3 truncate">{primary ?? "No domain yet"}</p>
         </div>
-        <StatusPill status={app.status} />
+        <StatusPill status={app.status} neverLive={app.never_live} />
       </div>
 
       <div className="mt-4 flex items-center gap-3 flex-wrap">

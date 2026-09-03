@@ -93,6 +93,73 @@ async fn a_manual_deploy_resolves_the_branch_head_runs_and_streams_its_log() {
 }
 
 #[tokio::test]
+async fn an_app_says_it_has_never_gone_live_until_a_deploy_does() {
+    let (h, cookie, _github) = signed_in_and_connected().await;
+    h.create_app("ledger", &cookie).await;
+    let health = StubHealth::start(200).await;
+    h.force_port("ledger", health.port).await;
+    h.platform.set_active("ferrum-app-ledger");
+
+    let fresh = h.get_with_cookie("/api/apps/ledger", &cookie).await;
+    assert_eq!(fresh.json["status"], "new");
+    assert_eq!(fresh.json["never_live"], true);
+
+    async fn build(h: &Harness, cookie: &str, lines: &[&str], exit: Exit) -> Value {
+        h.platform.script_run("bun run build", lines, exit);
+        let res = h
+            .post_with_cookie("/api/apps/ledger/deploys", "", cookie)
+            .await;
+        let id = res.json["id"].as_str().unwrap();
+        h.wait_for_deploy(id, cookie).await["outcome"].clone()
+    }
+    assert_eq!(
+        build(&h, &cookie, &["Type error in app.ts"], Exit::Code(1)).await,
+        "Failed"
+    );
+
+    let app = h.get_with_cookie("/api/apps/ledger", &cookie).await;
+    assert_eq!(app.json["status"], "failed");
+    assert_eq!(app.json["never_live"], true);
+    assert!(app.json["current_release_id"].is_null());
+    let listed = h.get_with_cookie("/api/apps", &cookie).await;
+    assert_eq!(listed.json[0]["never_live"], true);
+    let refused = h
+        .post_with_cookie("/api/apps/ledger/restart", "", &cookie)
+        .await;
+    assert_eq!(refused.status, StatusCode::CONFLICT);
+    assert_eq!(
+        refused.json["error"],
+        "ledger has not been deployed yet; there is nothing to restart."
+    );
+
+    assert_eq!(
+        build(&h, &cookie, &["Compiled"], Exit::Code(0)).await,
+        "Live"
+    );
+    let app = h.get_with_cookie("/api/apps/ledger", &cookie).await;
+    assert_eq!(app.json["status"], "live");
+    assert_eq!(app.json["never_live"], false);
+
+    assert_eq!(
+        build(&h, &cookie, &["Type error in app.ts"], Exit::Code(1)).await,
+        "Failed"
+    );
+    let app = h.get_with_cookie("/api/apps/ledger", &cookie).await;
+    assert_eq!(
+        app.json["status"], "live",
+        "the old release keeps serving: {}",
+        app.json
+    );
+    assert_eq!(app.json["never_live"], false);
+    assert_eq!(
+        h.post_with_cookie("/api/apps/ledger/restart", "", &cookie)
+            .await
+            .status,
+        StatusCode::ACCEPTED
+    );
+}
+
+#[tokio::test]
 async fn release_tracking_deploys_the_latest_release_tag() {
     let (h, cookie, _github) = signed_in_and_connected().await;
     let json =

@@ -10,12 +10,15 @@ const STATUS: Record<AppStatus, { label: string; tone: Tone }> = {
   maintenance: { label: "Paused", tone: "hold" },
 };
 
-export function StatusPill({ status }: { status: AppStatus }) {
+export const NEVER_LIVE = "This app has never gone live; the next good deploy starts it.";
+
+export function StatusPill({ status, neverLive = false }: { status: AppStatus; neverLive?: boolean }) {
   const s = STATUS[status];
+  const stuck = status === "failed" && neverLive;
   return (
-    <Badge tone={s.tone}>
+    <Badge tone={s.tone} title={stuck ? NEVER_LIVE : undefined}>
       <span className="h-1.5 w-1.5 rounded-full bg-current" />
-      {s.label}
+      {stuck ? "Failed, never live" : s.label}
     </Badge>
   );
 }

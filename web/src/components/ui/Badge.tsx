@@ -17,14 +17,17 @@ export function Badge({
   children,
   className,
   mono,
+  title,
 }: {
   tone?: Tone;
   children: ReactNode;
   className?: string;
   mono?: boolean;
+  title?: string;
 }) {
   return (
     <span
+      title={title}
       className={cn(
         "inline-flex items-center gap-1.5 rounded-full border px-2 text-[12px] font-medium leading-5 py-0.5",
         mono && "font-mono text-[11.5px]",

@@ -20,7 +20,7 @@ import { Meter } from "@/components/ui/Meter";
 import { useShell } from "@/shells/useShell";
 import { PageTitle } from "@/components/PageTitle";
 import { RuntimeMark, runtimeLabel } from "@/components/RuntimeMark";
-import { StatusPill } from "@/components/StatusPill";
+import { NEVER_LIVE, StatusPill } from "@/components/StatusPill";
 import { DeployLadder, DeployRail } from "@/components/DeployLadder";
 import { Card, CardBody, CardFoot, CardHeader } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
@@ -82,7 +82,7 @@ export function AppDetailPage({ slug }: { slug: string }) {
       <PageTitle
         above={
           <span className="inline-flex items-center gap-2 flex-wrap">
-            <StatusPill status={app.status} />
+            <StatusPill status={app.status} neverLive={app.never_live} />
             <RuntimeMark runtime={app.runtime} version={app.runtime_version} />
           </span>
         }
@@ -98,8 +98,8 @@ export function AppDetailPage({ slug }: { slug: string }) {
               <Button
                 size="md"
                 variant="ghost"
-                disabled={active !== undefined || !app.current_release || restart.isPending}
-                title={app.current_release ? "systemctl restart the unit" : "Nothing to restart before the first deploy"}
+                disabled={active !== undefined || app.never_live || restart.isPending}
+                title={app.never_live ? NEVER_LIVE : "systemctl restart the unit"}
                 onClick={() => restart.mutate(undefined)}
               >
                 Restart

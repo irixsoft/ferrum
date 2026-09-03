@@ -138,6 +138,8 @@ export interface App {
   domains: string[];
   current_release_id: string | null;
   status: AppStatus;
+  /** No deploy has ever gone live, so there is no unit to restart. */
+  never_live: boolean;
   created_at: string;
   updated_at: string;
 }
