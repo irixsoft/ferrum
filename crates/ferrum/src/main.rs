@@ -128,6 +128,17 @@ async fn main() -> anyhow::Result<()> {
             report(ferrum::client::restart(&slug, &token).await);
             Ok(())
         }
+        cli::Command::Rollback {
+            slug,
+            to,
+            restore,
+            token,
+        } => {
+            let token = need_token(token);
+            let code =
+                report(ferrum::client::rollback(&slug, to.as_deref(), restore, &token).await);
+            std::process::exit(code);
+        }
         cli::Command::Update { check, token } => {
             let token = need_token(token);
             let code = report(ferrum::client::update(check, &token).await);

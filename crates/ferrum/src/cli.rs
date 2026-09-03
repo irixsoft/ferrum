@@ -82,6 +82,18 @@ pub enum Command {
         #[arg(long)]
         token: Option<String>,
     },
+    /// Rolls an application back to the release before the current one and follows the log.
+    Rollback {
+        slug: String,
+        /// A release id or commit sha prefix; the previous release by default.
+        #[arg(long)]
+        to: Option<String>,
+        /// Also restore the database snapshot taken by the deploy that replaced the release.
+        #[arg(long)]
+        restore: bool,
+        #[arg(long)]
+        token: Option<String>,
+    },
     /// Checks GitHub for a newer release and installs it through the running daemon.
     Update {
         /// Only report whether a newer release exists.

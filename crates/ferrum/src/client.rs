@@ -85,8 +85,18 @@ pub async fn deploy(slug: &str, git_ref: Option<&str>, token: &str) -> anyhow::R
         ),
     }
 
+    follow(&http, &base, &queued.id, token).await
+}
+
+/// Prints a deploy's log until its `done` frame; 0 when it ends live, 1 otherwise.
+async fn follow(
+    http: &reqwest::Client,
+    base: &str,
+    deploy_id: &str,
+    token: &str,
+) -> anyhow::Result<i32> {
     let mut res = http
-        .get(format!("{base}/deploys/{}/log", queued.id))
+        .get(format!("{base}/deploys/{deploy_id}/log"))
         .bearer_auth(token)
         .header("accept", "text/event-stream")
         .send()
@@ -122,6 +132,120 @@ pub async fn deploy(slug: &str, git_ref: Option<&str>, token: &str) -> anyhow::R
 fn short(sha: Option<&str>) -> String {
     sha.map(|s| s.chars().take(7).collect())
         .unwrap_or_else(|| "HEAD".to_string())
+}
+
+#[derive(Deserialize, Debug, PartialEq)]
+pub struct ReleaseRow {
+    pub id: String,
+    pub git_ref: String,
+    pub commit_sha: String,
+    pub current: bool,
+}
+
+#[derive(Deserialize, Debug)]
+pub struct DeployRow {
+    pub id: String,
+    pub release_id: Option<String>,
+    pub outcome: Option<String>,
+    pub snapshots: Vec<serde_json::Value>,
+}
+
+/// Releases arrive newest first; without `--to` the one after the current is the previous.
+pub fn pick_release<'a>(
+    releases: &'a [ReleaseRow],
+    to: Option<&str>,
+) -> Result<&'a ReleaseRow, String> {
+    if let Some(wanted) = to {
+        return releases
+            .iter()
+            .find(|r| r.id == wanted || (wanted.len() >= 7 && r.commit_sha.starts_with(wanted)))
+            .ok_or_else(|| format!("No release matches {wanted}."));
+    }
+    let current = releases
+        .iter()
+        .position(|r| r.current)
+        .ok_or_else(|| "No release is current; name one with --to.".to_string())?;
+    releases
+        .get(current + 1)
+        .ok_or_else(|| "There is no release before the current one.".to_string())
+}
+
+/// The deploy that replaced the release is the one whose pre-migration snapshot puts the data
+/// back; deploys arrive newest first, so it is the nearest live deploy above the release's.
+pub fn snapshot_for<'a>(deploys: &'a [DeployRow], release_id: &str) -> Option<&'a DeployRow> {
+    let index = deploys
+        .iter()
+        .position(|d| d.release_id.as_deref() == Some(release_id))?;
+    deploys[..index]
+        .iter()
+        .rev()
+        .find(|d| !d.snapshots.is_empty() && d.outcome.as_deref() == Some("Live"))
+}
+
+pub async fn rollback(
+    slug: &str,
+    to: Option<&str>,
+    restore: bool,
+    token: &str,
+) -> anyhow::Result<i32> {
+    let base = format!("http://{LISTEN_ADDR}/api");
+    let http = ferrum_core::http::client();
+    let res = http
+        .get(format!("{base}/apps/{slug}/releases"))
+        .bearer_auth(token)
+        .send()
+        .await
+        .context("reaching the Ferrum daemon on loopback")?;
+    if !res.status().is_success() {
+        return Err(refused(res).await);
+    }
+    let releases: Vec<ReleaseRow> = res.json().await?;
+    let release = pick_release(&releases, to).map_err(|e| anyhow::anyhow!("{e}"))?;
+
+    let restore_deploy_id = if restore {
+        let deploys: Vec<DeployRow> = http
+            .get(format!("{base}/apps/{slug}/deploys"))
+            .bearer_auth(token)
+            .send()
+            .await?
+            .error_for_status()?
+            .json()
+            .await?;
+        let owner = snapshot_for(&deploys, &release.id).ok_or_else(|| {
+            anyhow::anyhow!(
+                "--restore needs a snapshot from the deploy that replaced this release; none was taken."
+            )
+        })?;
+        Some(owner.id.clone())
+    } else {
+        None
+    };
+
+    let body = serde_json::json!({
+        "release_id": release.id,
+        "restore_deploy_id": restore_deploy_id,
+    });
+    let res = http
+        .post(format!("{base}/apps/{slug}/rollback"))
+        .bearer_auth(token)
+        .json(&body)
+        .send()
+        .await?;
+    if !res.status().is_success() {
+        return Err(refused(res).await);
+    }
+    let queued: Queued = res.json().await?;
+    println!(
+        "  Rolling {slug} back to {} ({}){}.",
+        short(Some(&release.commit_sha)),
+        release.git_ref,
+        if restore_deploy_id.is_some() {
+            " and restoring the snapshot"
+        } else {
+            ""
+        }
+    );
+    follow(&http, &base, &queued.id, token).await
 }
 
 #[derive(Deserialize)]
@@ -425,6 +549,73 @@ mod tests {
             ]
         );
         assert_eq!(buffer, "event: line\ndata: par");
+    }
+
+    fn release(id: &str, sha: &str, current: bool) -> ReleaseRow {
+        ReleaseRow {
+            id: id.into(),
+            git_ref: "main".into(),
+            commit_sha: sha.into(),
+            current,
+        }
+    }
+
+    #[test]
+    fn the_previous_release_is_the_one_after_the_current_or_what_to_names() {
+        let newest = release("r3", "cccccccc3", true);
+        let older = release("r2", "bbbbbbbb2", false);
+        let oldest = release("r1", "aaaaaaaa1", false);
+        let releases = vec![newest, older, oldest];
+
+        assert_eq!(pick_release(&releases, None).unwrap().id, "r2");
+        assert_eq!(pick_release(&releases, Some("r1")).unwrap().id, "r1");
+        assert_eq!(pick_release(&releases, Some("aaaaaaa")).unwrap().id, "r1");
+        assert_eq!(
+            pick_release(&releases, Some("aaa")).unwrap_err(),
+            "No release matches aaa.",
+            "a sha prefix must be seven characters or more"
+        );
+        assert_eq!(
+            pick_release(&releases, Some("r9")).unwrap_err(),
+            "No release matches r9."
+        );
+
+        let oldest_current = vec![
+            release("r3", "cccccccc3", false),
+            release("r1", "aaaaaaaa1", true),
+        ];
+        assert_eq!(
+            pick_release(&oldest_current, None).unwrap_err(),
+            "There is no release before the current one."
+        );
+        let none_current = vec![release("r1", "aaaaaaaa1", false)];
+        assert_eq!(
+            pick_release(&none_current, None).unwrap_err(),
+            "No release is current; name one with --to."
+        );
+    }
+
+    #[test]
+    fn the_snapshot_to_restore_belongs_to_the_live_deploy_that_replaced_the_release() {
+        let deploy = |id: &str, release: Option<&str>, outcome: &str, snapshots: usize| DeployRow {
+            id: id.into(),
+            release_id: release.map(str::to_string),
+            outcome: Some(outcome.into()),
+            snapshots: vec![serde_json::json!({}); snapshots],
+        };
+        let deploys = vec![
+            deploy("d5", Some("r3"), "Live", 1),
+            deploy("d4", None, "Failed", 1),
+            deploy("d3", Some("r2"), "Live", 0),
+            deploy("d2", Some("r1"), "Live", 1),
+        ];
+        assert_eq!(snapshot_for(&deploys, "r2").unwrap().id, "d5");
+        assert_eq!(snapshot_for(&deploys, "r1").unwrap().id, "d5");
+        assert!(
+            snapshot_for(&deploys, "r3").is_none(),
+            "nothing replaced the newest"
+        );
+        assert!(snapshot_for(&deploys, "r0").is_none());
     }
 
     #[test]

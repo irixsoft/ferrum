@@ -21,6 +21,25 @@ fn unknown_subcommand_fails() {
 }
 
 #[test]
+fn rollback_needs_a_slug_and_then_a_token() {
+    let usage = Command::new(bin()).arg("rollback").output().unwrap();
+    assert_eq!(usage.status.code(), Some(2));
+    assert!(String::from_utf8(usage.stderr).unwrap().contains("<SLUG>"));
+
+    let no_token = Command::new(bin())
+        .args(["rollback", "ledger", "--restore"])
+        .env_remove("FERRUM_TOKEN")
+        .output()
+        .unwrap();
+    assert_eq!(no_token.status.code(), Some(2));
+    assert!(
+        String::from_utf8(no_token.stderr)
+            .unwrap()
+            .contains("Set FERRUM_TOKEN")
+    );
+}
+
+#[test]
 fn no_subcommand_prints_help_and_fails() {
     let out = Command::new(bin()).output().unwrap();
     assert_eq!(out.status.code(), Some(2));
