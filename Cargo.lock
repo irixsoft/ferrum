@@ -1159,6 +1159,7 @@ dependencies = [
  "flate2",
  "mimalloc",
  "mime_guess",
+ "percent-encoding",
  "rand 0.9.5",
  "reqwest",
  "rmcp",

@@ -7,10 +7,22 @@ use axum::response::{IntoResponse, Redirect, Response};
 use axum::{Json, Router, routing::get};
 use ferrum_core::github::{self, manifest};
 use ferrum_core::setup;
+use percent_encoding::{AsciiSet, CONTROLS, utf8_percent_encode};
 use serde::{Deserialize, Serialize};
 
 const SETTINGS: &str = "/settings";
 const EXPIRED: &str = "That connection attempt expired. Start again from Settings.";
+const QUERY: &AsciiSet = &CONTROLS
+    .add(b' ')
+    .add(b'"')
+    .add(b'#')
+    .add(b'%')
+    .add(b'&')
+    .add(b'+')
+    .add(b'<')
+    .add(b'>')
+    .add(b'=')
+    .add(b'?');
 
 pub fn router() -> Router<AppState> {
     Router::new()
@@ -60,6 +72,11 @@ async fn connect(Extract(app): Extract<AppState>, _: Caller) -> ApiResult<Json<H
 async fn callback(Extract(app): Extract<AppState>, Query(query): Query<Callback>) -> Response {
     match exchange(&app, query).await {
         Ok(()) => Redirect::to(&format!("{SETTINGS}?github=connected")).into_response(),
+        Err(e) if e.status.is_client_error() => Redirect::to(&format!(
+            "{SETTINGS}?github=failed&reason={}",
+            utf8_percent_encode(&e.message, QUERY)
+        ))
+        .into_response(),
         Err(e) => e.into_response(),
     }
 }

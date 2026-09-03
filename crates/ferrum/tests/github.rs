@@ -62,17 +62,25 @@ async fn connecting_requires_authentication_but_the_callback_does_not() {
     );
 }
 
+const FAILED: &str = "/settings?github=failed&reason=";
+
+fn landed_on(res: &support::Res) -> &str {
+    assert_eq!(res.status, StatusCode::SEE_OTHER, "{}", res.text);
+    res.header("location")
+        .expect("a redirect names where to go")
+}
+
 #[tokio::test]
 async fn an_unknown_state_is_refused_before_the_code_is_exchanged() {
     let h = harness().await;
     let res = h
         .get("/api/github/callback?code=realcode&state=never-issued")
         .await;
-    assert_eq!(res.status, StatusCode::BAD_REQUEST);
-    assert!(
-        res.json["error"].as_str().unwrap().contains("expired"),
-        "{}",
-        res.json
+    assert_eq!(
+        landed_on(&res),
+        format!(
+            "{FAILED}That%20connection%20attempt%20expired.%20Start%20again%20from%20Settings."
+        )
     );
 }
 
@@ -81,19 +89,18 @@ async fn a_callback_without_a_code_does_not_consume_the_state() {
     let (h, cookie) = signed_in().await;
     let state = h.connect_state(&cookie).await;
 
+    let missing = h.get(&format!("/api/github/callback?state={state}")).await;
     assert_eq!(
-        h.get(&format!("/api/github/callback?state={state}"))
-            .await
-            .status,
-        StatusCode::BAD_REQUEST
+        landed_on(&missing),
+        format!("{FAILED}GitHub%20did%20not%20send%20a%20code.")
     );
     let res = h
         .get(&format!("/api/github/callback?code=x&state={state}"))
         .await;
     assert!(
-        !res.json["error"].as_str().unwrap().contains("expired"),
+        !landed_on(&res).contains("expired"),
         "a missing code must not burn the state: {}",
-        res.json
+        res.text
     );
 }
 
@@ -109,12 +116,28 @@ async fn a_state_can_only_be_used_once() {
         .get(&format!("/api/github/callback?code=x&state={state}"))
         .await;
 
-    assert_eq!(second.status, StatusCode::BAD_REQUEST);
-    assert!(second.json["error"].as_str().unwrap().contains("expired"));
-    assert_ne!(
-        first.json, second.json,
-        "the first attempt got past the state check"
+    assert_eq!(
+        landed_on(&first),
+        format!("{FAILED}GitHub%20refused%20the%20connection.%20Start%20again%20from%20Settings."),
+        "the stub answers no conversion, and that is GitHub refusing"
     );
+    assert!(landed_on(&second).contains("expired"));
+}
+
+#[tokio::test]
+async fn only_a_refusal_the_user_can_act_on_lands_on_the_card() {
+    let (h, cookie) = signed_in().await;
+    let state = h.connect_state(&cookie).await;
+    sqlx::query("DROP TABLE github_state")
+        .execute(&h.db.pool)
+        .await
+        .unwrap();
+
+    let res = h
+        .get(&format!("/api/github/callback?code=x&state={state}"))
+        .await;
+    assert_eq!(res.status, StatusCode::INTERNAL_SERVER_ERROR);
+    assert!(res.json["error"].is_string(), "{}", res.text);
 }
 
 #[tokio::test]

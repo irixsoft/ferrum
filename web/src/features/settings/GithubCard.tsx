@@ -6,9 +6,20 @@ import { Button } from "@/components/ui/Button";
 import { Row } from "@/components/ui/Row";
 import { ago } from "@/lib/utils";
 
+/** GitHub sends the browser back with the sentence in the URL; read it once, then take it out. */
+function handoffFailure(): string | null {
+  const params = new URLSearchParams(window.location.search);
+  if (params.get("github") !== "failed") return null;
+  const reason = params.get("reason");
+  window.history.replaceState(null, "", window.location.pathname);
+  return reason ?? "GitHub refused the connection. Start again from Settings.";
+}
+
 export function GithubCard() {
   const { data: github, isLoading } = useGithub();
   const connect = useConnectGithub();
+  const [failure] = useState(handoffFailure);
+  const problem = connect.error?.message ?? failure;
 
   return (
     <Card>
@@ -35,9 +46,7 @@ export function GithubCard() {
               <Button variant="primary" onClick={() => connect.mutate()} disabled={connect.isPending}>
                 Connect GitHub
               </Button>
-              {connect.error ? (
-                <span className="text-[12.5px] text-fail">{connect.error.message}</span>
-              ) : null}
+              {problem ? <span className="text-[12.5px] text-fail">{problem}</span> : null}
             </div>
           </div>
         )}
