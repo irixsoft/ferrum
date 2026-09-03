@@ -3,7 +3,7 @@ use crate::deploy::{self, Outcome};
 use crate::metrics::{self, HOST};
 use crate::security::{bans, firewall, sshd_or_default};
 use crate::state::State;
-use crate::{certs, postgres, redis, setup};
+use crate::{acme, certs, postgres, redis, setup};
 use ferrum_platform::Platform;
 use ferrum_platform::ubuntu::{NGINX_UNIT, pg_cluster_unit};
 use serde::Serialize;
@@ -44,6 +44,7 @@ pub struct HostStatus {
     pub swap_total_mb: u64,
     pub disk_used_gb: f64,
     pub disk_total_gb: f64,
+    pub certificates_staging: bool,
     pub services: Vec<Service>,
 }
 
@@ -98,6 +99,7 @@ pub async fn status(
         .await?
         .map(|s| s.cpu_pct)
         .unwrap_or(0.0);
+    let staging = matches!(acme::directory(state).await?, acme::Directory::Staging);
     Ok(HostStatus {
         hostname: setup::hostname(state).await?.unwrap_or_default(),
         ferrum_version: build.version.clone(),
@@ -114,7 +116,17 @@ pub async fn status(
         swap_total_mb: mem.swap_total_kb / 1024,
         disk_used_gb: gb(disk.used_bytes),
         disk_total_gb: gb(disk.total_bytes),
-        services: services(state, platform).await?,
+        certificates_staging: staging,
+        services: services(state, platform)
+            .await?
+            .into_iter()
+            .map(|s| match s {
+                Service { name, ok, detail } if staging && name == "Certificates" => {
+                    service(&name, ok, format!("{detail}, staging"))
+                }
+                s => s,
+            })
+            .collect(),
     })
 }
 

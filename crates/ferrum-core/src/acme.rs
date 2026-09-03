@@ -12,6 +12,7 @@ use std::time::Duration;
 use time::OffsetDateTime;
 
 const ACCOUNT_SETTING: &str = "acme.account";
+const DIRECTORY_SETTING: &str = "acme.directory";
 const RENEW_AT_DAYS: i64 = 30;
 
 #[derive(Debug, thiserror::Error)]
@@ -40,6 +41,21 @@ pub enum Directory {
         url: String,
         root_pem: Option<PathBuf>,
     },
+}
+
+pub async fn set_directory(state: &State, staging: bool) -> anyhow::Result<()> {
+    let name = if staging { "staging" } else { "production" };
+    state.set_setting(DIRECTORY_SETTING, name).await
+}
+
+/// What `ferrum setup` chose; a box set up with `--staging` keeps it until a production setup.
+pub async fn directory(state: &State) -> anyhow::Result<Directory> {
+    Ok(
+        match state.get_setting(DIRECTORY_SETTING).await?.as_deref() {
+            Some("staging") => Directory::Staging,
+            _ => Directory::LetsEncrypt,
+        },
+    )
 }
 
 impl Directory {

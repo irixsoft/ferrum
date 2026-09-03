@@ -20,8 +20,6 @@ use tower_http::trace::TraceLayer;
 
 pub use ferrum_core::LISTEN_ADDR;
 
-const ACME_DIRECTORY_SETTING: &str = "acme.directory";
-
 /// Everything a test may want to stand a stub in for, exactly as `Directory::Custom` does for
 /// Let's Encrypt.
 #[derive(Clone)]
@@ -166,20 +164,6 @@ pub fn app_with(db: State, deps: Deps) -> Router {
     router(AppState::new(db, deps))
 }
 
-pub async fn set_acme_directory(state: &State, staging: bool) -> anyhow::Result<()> {
-    let name = if staging { "staging" } else { "production" };
-    state.set_setting(ACME_DIRECTORY_SETTING, name).await
-}
-
-pub async fn acme_directory(state: &State) -> anyhow::Result<Directory> {
-    Ok(
-        match state.get_setting(ACME_DIRECTORY_SETTING).await?.as_deref() {
-            Some("staging") => Directory::Staging,
-            _ => Directory::LetsEncrypt,
-        },
-    )
-}
-
 fn router(state: AppState) -> Router {
     let public = Router::new()
         .route("/api/health", get(crate::routes::health::get))
@@ -227,7 +211,7 @@ fn router(state: AppState) -> Router {
 pub async fn serve(data_dir: &Path) -> anyhow::Result<()> {
     let state = State::open(data_dir).await?;
     let deps = Deps {
-        directory: acme_directory(&state).await?,
+        directory: ferrum_core::acme::directory(&state).await?,
         hostname: ferrum_core::setup::hostname(&state).await?,
         ..Deps::default()
     };

@@ -50,6 +50,30 @@ async fn the_host_card_reads_the_box_and_says_what_is_not_there_yet() {
 }
 
 #[tokio::test]
+async fn staging_certificates_are_named_on_the_host_card() {
+    let (h, cookie) = signed_in().await;
+    let production = h.get_with_cookie("/api/host", &cookie).await;
+    assert_eq!(production.json["certificates_staging"], false);
+
+    ferrum_core::acme::set_directory(&h.db, true).await.unwrap();
+    let staging = h.get_with_cookie("/api/host", &cookie).await;
+    assert_eq!(staging.json["certificates_staging"], true);
+    let certificates = staging.json["services"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|s| s["name"] == "Certificates")
+        .unwrap();
+    assert_eq!(certificates["detail"], "no domains yet, staging");
+
+    ferrum_core::acme::set_directory(&h.db, false)
+        .await
+        .unwrap();
+    let back = h.get_with_cookie("/api/host", &cookie).await;
+    assert_eq!(back.json["certificates_staging"], false);
+}
+
+#[tokio::test]
 async fn an_app_reports_its_cgroup_only_while_the_unit_exists() {
     let (h, cookie) = signed_in().await;
     h.create_app("ledger", &cookie).await;

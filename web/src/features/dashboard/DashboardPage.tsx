@@ -13,6 +13,7 @@ import { Badge } from "@/components/ui/Badge";
 import { uptime } from "@/lib/utils";
 import { useRange } from "@/lib/range";
 import { SearchPill } from "@/components/SearchPill";
+import { StagingBadge } from "@/components/StagingBadge";
 import { Segmented } from "@/components/ui/Segmented";
 
 export function DashboardPage() {
@@ -142,6 +143,7 @@ export function DashboardPage() {
                       <CircleX size={15} className="text-run shrink-0" />
                     )}
                     <span className="text-[13.5px] text-ink shrink-0">{s.name}</span>
+                    {s.name === "Certificates" && host.certificates_staging ? <StagingBadge /> : null}
                     <span className="ml-auto text-[12.5px] text-ink-4 truncate text-right min-w-0">
                       {s.detail}
                     </span>

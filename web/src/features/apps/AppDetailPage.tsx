@@ -14,7 +14,8 @@ import {
   useTriggerDeploy,
   useUpdateApp,
 } from "@/lib/api";
-import { useApp } from "@/lib/api";
+import { useApp, useHost } from "@/lib/api";
+import { StagingBadge } from "@/components/StagingBadge";
 import { ChartKey, MetricChart, type Band } from "@/components/MetricChart";
 import { Meter } from "@/components/ui/Meter";
 import { useShell } from "@/shells/useShell";
@@ -167,6 +168,7 @@ export function AppDetailPage({ slug }: { slug: string }) {
 function Overview({ app }: { app: AppDetail }) {
   const isStatic = app.runtime === "static";
   const retry = useRetryCertificate(app.slug);
+  const { data: host } = useHost();
   return (
     <div className="grid gap-4 lg:grid-cols-12">
       <div className="lg:col-span-7 grid gap-4">
@@ -333,6 +335,7 @@ function Overview({ app }: { app: AppDetail }) {
                       <span className="text-[13.5px] text-ink truncate">{c.domain}</span>
                       {i === 0 ? <Badge>Primary</Badge> : <Badge>Redirects</Badge>}
                       <Certificate status={c.status} />
+                      {host?.certificates_staging && c.status.kind === "issued" ? <StagingBadge /> : null}
                     </div>
                     {c.status.kind === "waiting_for_dns" || c.status.kind === "failed" ? (
                       <p className="text-[12px] text-ink-4 mt-1">{c.status.detail}</p>
