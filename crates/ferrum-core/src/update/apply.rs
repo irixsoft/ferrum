@@ -238,11 +238,16 @@ impl Updater {
     }
 }
 
-/// An `UpdateError` is a sentence already; anything else gets its chain.
+/// An `UpdateError` is a sentence already; anything else gets its chain, cut where GitHub
+/// appends a documentation link.
 pub fn describe(e: &anyhow::Error) -> String {
     match e.downcast_ref::<UpdateError>() {
         Some(known) => known.to_string(),
-        None => format!("{e:#}"),
+        None => format!("{e:#}")
+            .lines()
+            .next()
+            .unwrap_or_default()
+            .to_string(),
     }
 }
 
