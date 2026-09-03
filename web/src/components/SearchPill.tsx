@@ -1,9 +1,11 @@
 import { Command, Search } from "lucide-react";
+import { openPalette } from "./CommandPalette";
 
 export function SearchPill() {
   return (
     <button
       type="button"
+      onClick={openPalette}
       className="group flex items-center gap-3 h-12 sm:h-14 pl-2.5 sm:pl-3 pr-4 sm:pr-5 rounded-full bg-surface border border-line hover:border-line-strong transition-colors duration-100 flex-1 sm:flex-none sm:w-[20rem] min-w-0"
     >
       <span className="h-8 w-8 sm:h-9 sm:w-9 grid place-items-center rounded-full bg-inset text-ink-3 shrink-0">

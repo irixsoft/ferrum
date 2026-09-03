@@ -70,7 +70,7 @@ export function SettingsPage() {
 
       {tab === "people" && <People />}
       {tab === "tokens" && <Tokens />}
-      {tab === "connections" && <Connections />}
+      {tab === "connections" && <Connections onTokens={() => setTab("tokens")} />}
       {tab === "builds" && <Builds />}
       {tab === "appearance" && <Appearance />}
       {tab === "about" && (
@@ -388,25 +388,21 @@ function Handoff({
   );
 }
 
-function Connections() {
+function Connections({ onTokens }: { onTokens: () => void }) {
   return (
     <div className="grid gap-4 lg:grid-cols-2">
       <GithubCard />
 
       <Card>
-        <CardHeader title="MCP" hint="Point your own agent at this server" />
+        <CardHeader title="Your agent" hint="Ferrum is an MCP server; any agent with a token can drive it" />
         <CardBody>
-          <pre className="bg-inset border border-line rounded-inset p-3 font-mono text-[12px] leading-relaxed text-ink-3 overflow-x-auto">
-{`{
-  "mcpServers": {
-    "ferrum": {
-      "type": "http",
-      "url": "${location.origin}/mcp",
-      "headers": { "Authorization": "Bearer ferr_…" }
-    }
-  }
-}`}
-          </pre>
+          <p className="text-[13.5px] text-ink-2 leading-relaxed max-w-prose">
+            Create an API token and paste the snippet from{" "}
+            <button type="button" onClick={onTokens} className="text-accent hover:underline">
+              Connect your agent
+            </button>{" "}
+            under API tokens.
+          </p>
         </CardBody>
         <CardFoot>
           <span>
