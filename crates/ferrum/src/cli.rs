@@ -21,12 +21,16 @@ pub struct Cli {
 
 #[derive(Subcommand)]
 pub enum Command {
+    /// Prints the version, build id and commit this binary was built from.
     Version,
+    /// Checks that this host is an Ubuntu release Ferrum supports.
     Doctor,
+    /// Runs the daemon; the systemd unit does this, you do not.
     Serve {
         #[arg(long, default_value = ferrum_core::DATA_DIR)]
         data_dir: String,
     },
+    /// Prepares the host: packages, nginx, the panel's certificate and the first passkey.
     Setup {
         #[arg(long, default_value = ferrum_core::DATA_DIR)]
         data_dir: String,
@@ -41,10 +45,12 @@ pub enum Command {
         #[arg(long)]
         staging: bool,
     },
+    /// Passkeys for the panel; `enroll` prints a single-use link.
     Passkey {
         #[command(subcommand)]
         command: PasskeyCommand,
     },
+    /// API tokens for the CLI and for agents over MCP; `create` prints one once.
     Token {
         #[command(subcommand)]
         command: TokenCommand,
