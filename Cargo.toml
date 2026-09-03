@@ -3,7 +3,7 @@ resolver = "3"
 members = ["crates/ferrum", "crates/ferrum-core", "crates/ferrum-platform"]
 
 [workspace.package]
-version = "0.0.1"
+version = "0.0.2"
 edition = "2024"
 license = "AGPL-3.0-only"
 repository = "https://github.com/irixsoft/ferrum"
