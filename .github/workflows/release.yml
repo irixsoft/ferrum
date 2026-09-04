@@ -11,7 +11,20 @@ env:
   SQLX_OFFLINE: "true"
 
 jobs:
+  guard:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - name: The tag names the version the tree declares
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          manifest=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "ferrum") | .version')
+          panel=$(jq -r .version web/package.json)
+          echo "tag=$tag Cargo.toml=$manifest web/package.json=$panel"
+          [ "$tag" = "$manifest" ] && [ "$tag" = "$panel" ]
+
   panel:
+    needs: guard
     runs-on: ubuntu-24.04
     defaults:
       run:

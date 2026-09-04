@@ -9,7 +9,10 @@ fn version_prints_semver_build_id_and_commit() {
     let out = Command::new(bin()).arg("version").output().unwrap();
     assert!(out.status.success());
     let text = String::from_utf8(out.stdout).unwrap();
-    assert!(text.starts_with("ferrum 0.0.2"), "got: {text}");
+    assert!(
+        text.starts_with(&format!("ferrum {} ", env!("CARGO_PKG_VERSION"))),
+        "got: {text}"
+    );
     assert!(text.contains("build "), "got: {text}");
     assert!(text.contains("commit "), "got: {text}");
 }

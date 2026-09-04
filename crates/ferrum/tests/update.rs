@@ -181,7 +181,13 @@ async fn nothing_newer_is_a_conflict_and_a_newer_release_is_installed_in_the_bac
     assert_eq!(checked.json["available"], false, "{}", checked.json);
     let nothing = h.post_with_cookie("/api/update", "", &cookie).await;
     assert_eq!(nothing.status, StatusCode::CONFLICT, "{}", nothing.json);
-    assert_eq!(nothing.json["error"], "Ferrum 0.0.1 is the latest release.");
+    assert_eq!(
+        nothing.json["error"],
+        format!(
+            "Ferrum {} is the latest release.",
+            env!("CARGO_PKG_VERSION")
+        )
+    );
 
     stage(
         &github,
