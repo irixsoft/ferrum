@@ -191,7 +191,11 @@ export function usePostgres() {
 }
 
 export function useDatabases() {
-  return useQuery({ queryKey: keys.databases, queryFn: () => request<Database[]>("/databases") });
+  return useQuery({
+    queryKey: keys.databases,
+    queryFn: () => request<Database[]>("/databases"),
+    refetchInterval: (query) => (query.state.data?.some((d) => d.restore.running) ? 1500 : false),
+  });
 }
 
 export function useRedisInstances() {
@@ -355,6 +359,45 @@ export function useCreateDatabase() {
 export function useDeleteDatabase() {
   return useInvalidating([keys.databases, keys.apps], (name: string) =>
     request<void>(`/databases/${name}`, body({ name }, "DELETE")),
+  );
+}
+
+/** Only XMLHttpRequest reports upload progress, so this one call does not go through fetch. */
+export function restoreDatabase(
+  name: string,
+  file: File,
+  onProgress?: (fraction: number) => void,
+): Promise<Database> {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", `/api/databases/${name}/restore`);
+    xhr.setRequestHeader("content-type", "application/octet-stream");
+    xhr.upload.onprogress = (e) => {
+      if (e.lengthComputable) onProgress?.(e.loaded / e.total);
+    };
+    xhr.onerror = () => reject(new ApiError(0, "Could not reach the server."));
+    xhr.onload = () => {
+      let body: unknown = null;
+      try {
+        body = JSON.parse(xhr.responseText);
+      } catch {
+        body = null;
+      }
+      if (xhr.status >= 200 && xhr.status < 300) return resolve(body as Database);
+      const error = (body as { error?: unknown } | null)?.error;
+      reject(
+        new ApiError(xhr.status, typeof error === "string" ? error : `${xhr.status} ${xhr.statusText}`),
+      );
+    };
+    xhr.send(file);
+  });
+}
+
+export function useRestoreDatabase() {
+  return useInvalidating(
+    [keys.databases, keys.apps],
+    (input: { name: string; file: File; onProgress?: (fraction: number) => void }) =>
+      restoreDatabase(input.name, input.file, input.onProgress),
   );
 }
 

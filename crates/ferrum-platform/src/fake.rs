@@ -472,6 +472,13 @@ impl Platform for FakePlatform {
         ))
     }
 
+    fn postgres_restore_sql(&self, database: &str, from: &Path) -> Result<(), PlatformError> {
+        self.record(format!(
+            "postgres_restore_sql {database} {}",
+            from.to_string_lossy()
+        ))
+    }
+
     fn git_clone(
         &self,
         url: &str,

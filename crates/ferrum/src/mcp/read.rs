@@ -4,7 +4,7 @@ use crate::routes::{apps, databases, deploys, host, logs, nginx};
 use ferrum_core::deploy::{self, log};
 use ferrum_core::logs::{DEFAULT_LINES, MAX_LINES};
 use ferrum_core::metrics::HOST;
-use ferrum_core::{certs, postgres, security};
+use ferrum_core::{certs, security};
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::{schemars, tool, tool_router};
 use serde::Deserialize;
@@ -201,11 +201,7 @@ impl Ferrum {
         annotations(read_only_hint = true, idempotent_hint = true, open_world_hint = false)
     )]
     async fn list_databases(&self) -> ToolResult {
-        finish(
-            postgres::list(&self.state.db, self.state.platform.as_ref())
-                .await
-                .map_err(ApiError::from),
-        )
+        finish(databases::listed(&self.state).await)
     }
 
     #[tool(

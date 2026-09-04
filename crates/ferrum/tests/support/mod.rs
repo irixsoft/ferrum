@@ -508,6 +508,19 @@ impl Harness {
         .await
     }
 
+    pub async fn post_bytes_with_cookie(&self, uri: &str, body: &[u8], cookie: &str) -> Res {
+        self.send(
+            Request::builder()
+                .method("POST")
+                .uri(uri)
+                .header(header::CONTENT_TYPE, "application/octet-stream")
+                .header(header::COOKIE, format!("ferrum_session={cookie}"))
+                .body(Body::from(body.to_vec()))
+                .unwrap(),
+        )
+        .await
+    }
+
     pub async fn delete_with_bearer(&self, uri: &str, token: &str) -> Res {
         self.send(
             Request::builder()

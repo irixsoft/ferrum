@@ -284,5 +284,183 @@ async fn a_read_only_token_sees_databases_and_changes_nothing() {
         .post_with_bearer("/api/postgres/install", "", &token)
         .await;
     assert_eq!(install.status, StatusCode::FORBIDDEN);
+    let restore = h
+        .post_with_bearer("/api/databases/ledger_prod/restore", "PGDMP", &token)
+        .await;
+    assert_eq!(restore.status, StatusCode::FORBIDDEN);
     assert!(h.platform.sql().is_empty());
+}
+
+async fn wait_for_restore(h: &Harness, cookie: &str) -> serde_json::Value {
+    for _ in 0..200 {
+        let res = h
+            .get_with_cookie("/api/databases/ledger_prod", cookie)
+            .await;
+        if res.json["restore"]["running"] == false {
+            return res.json;
+        }
+        tokio::task::yield_now().await;
+    }
+    panic!("the restore never finished");
+}
+
+async fn with_database() -> (Harness, String) {
+    let (h, cookie) = signed_in().await;
+    h.platform.set_postgres_major(MAJOR);
+    h.post_with_cookie("/api/databases", r#"{"name":"ledger_prod"}"#, &cookie)
+        .await;
+    (h, cookie)
+}
+
+#[tokio::test]
+async fn a_custom_dump_replaces_the_database_and_the_upload_is_removed() {
+    let (h, cookie) = with_database().await;
+    let res = h
+        .post_bytes_with_cookie(
+            "/api/databases/ledger_prod/restore",
+            b"PGDMP\x01\x0e\x00 the rest of the archive",
+            &cookie,
+        )
+        .await;
+    assert_eq!(res.status, StatusCode::ACCEPTED, "{}", res.json);
+    assert_eq!(res.json["restore"]["running"], true, "{}", res.json);
+    let done = wait_for_restore(&h, &cookie).await;
+    assert_eq!(done["restore"]["error"], serde_json::Value::Null, "{done}");
+
+    let recreated = h.platform.sql().into_iter().any(|s| {
+        s.contains("DROP DATABASE IF EXISTS \"ledger_prod\" WITH (FORCE)")
+            && s.contains("CREATE DATABASE \"ledger_prod\" OWNER \"ledger_prod\"")
+    });
+    assert!(recreated, "{:?}", h.platform.sql());
+    let staged = h.data_dir().join("restores").join("ledger_prod.dump");
+    assert_eq!(
+        h.platform.calls_matching("postgres_restore ledger_prod "),
+        vec![format!("postgres_restore ledger_prod {}", staged.display())]
+    );
+    assert!(
+        h.platform
+            .calls_matching("chown_tree ")
+            .iter()
+            .any(|c| c.contains("restores") && c.contains("postgres")),
+        "postgres must be able to read the upload: {:?}",
+        h.platform.calls_matching("chown_tree ")
+    );
+    assert!(
+        !staged.exists(),
+        "the upload is removed once the restore ends"
+    );
+    let listed = h.get_with_cookie("/api/databases", &cookie).await;
+    assert_eq!(listed.json[0]["restore"]["running"], false);
+}
+
+#[tokio::test]
+async fn a_plain_sql_dump_goes_through_psql_not_pg_restore() {
+    let (h, cookie) = with_database().await;
+    let res = h
+        .post_bytes_with_cookie(
+            "/api/databases/ledger_prod/restore",
+            b"--\n-- PostgreSQL database dump\n--\nCREATE TABLE t (id int);\n",
+            &cookie,
+        )
+        .await;
+    assert_eq!(res.status, StatusCode::ACCEPTED, "{}", res.json);
+    let done = wait_for_restore(&h, &cookie).await;
+    assert_eq!(done["restore"]["error"], serde_json::Value::Null, "{done}");
+    assert_eq!(
+        h.platform
+            .calls_matching("postgres_restore_sql ledger_prod ")
+            .len(),
+        1
+    );
+    assert!(
+        h.platform
+            .calls_matching("postgres_restore ledger_prod ")
+            .is_empty()
+    );
+}
+
+#[tokio::test]
+async fn a_gzipped_dump_is_refused_before_postgres_is_touched() {
+    let (h, cookie) = with_database().await;
+    let before = h.platform.sql().len();
+    let res = h
+        .post_bytes_with_cookie(
+            "/api/databases/ledger_prod/restore",
+            &[0x1f, 0x8b, 0x08, 0x00, 0x00, 0x00, 0x00],
+            &cookie,
+        )
+        .await;
+    assert_eq!(res.status, StatusCode::BAD_REQUEST, "{}", res.json);
+    assert!(
+        res.json["error"].as_str().unwrap().contains("gunzip"),
+        "{}",
+        res.json
+    );
+    assert_eq!(h.platform.sql().len(), before);
+    assert!(
+        !h.data_dir()
+            .join("restores")
+            .join("ledger_prod.dump")
+            .exists()
+    );
+    assert!(h.platform.calls_matching("postgres_restore").is_empty());
+}
+
+#[tokio::test]
+async fn an_upload_that_does_not_fit_on_the_disk_is_refused_and_removed() {
+    let (h, cookie) = with_database().await;
+    h.platform.set_disk_free(1024);
+    let before = h.platform.sql().len();
+    let res = h
+        .post_bytes_with_cookie("/api/databases/ledger_prod/restore", &[b'x'; 4096], &cookie)
+        .await;
+    assert_eq!(res.status, StatusCode::INSUFFICIENT_STORAGE, "{}", res.json);
+    assert!(
+        res.json["error"].as_str().unwrap().contains("does not fit"),
+        "{}",
+        res.json
+    );
+    assert_eq!(h.platform.sql().len(), before);
+    assert!(
+        !h.data_dir()
+            .join("restores")
+            .join("ledger_prod.dump")
+            .exists()
+    );
+}
+
+#[tokio::test]
+async fn a_restore_that_fails_on_the_host_is_reported_on_the_database() {
+    let (h, cookie) = with_database().await;
+    h.platform.fail_next("postgres_restore ledger_prod");
+    let res = h
+        .post_bytes_with_cookie("/api/databases/ledger_prod/restore", b"PGDMP\x01", &cookie)
+        .await;
+    assert_eq!(res.status, StatusCode::ACCEPTED, "{}", res.json);
+    let done = wait_for_restore(&h, &cookie).await;
+    let error = done["restore"]["error"].as_str().unwrap_or_default();
+    assert!(error.contains("scripted failure"), "{done}");
+    assert!(
+        !h.data_dir()
+            .join("restores")
+            .join("ledger_prod.dump")
+            .exists()
+    );
+    let listed = h.get_with_cookie("/api/databases", &cookie).await;
+    assert_eq!(listed.json[0]["restore"]["error"], error);
+}
+
+#[tokio::test]
+async fn restoring_needs_postgres_and_a_database_that_exists() {
+    let (h, cookie) = signed_in().await;
+    let early = h
+        .post_bytes_with_cookie("/api/databases/ledger_prod/restore", b"PGDMP", &cookie)
+        .await;
+    assert_eq!(early.status, StatusCode::CONFLICT, "{}", early.json);
+    h.platform.set_postgres_major(MAJOR);
+    let missing = h
+        .post_bytes_with_cookie("/api/databases/ghost/restore", b"PGDMP", &cookie)
+        .await;
+    assert_eq!(missing.status, StatusCode::NOT_FOUND, "{}", missing.json);
+    assert!(!h.data_dir().join("restores").exists());
 }

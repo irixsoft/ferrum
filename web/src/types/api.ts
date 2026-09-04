@@ -264,6 +264,12 @@ export interface Database {
   extensions: string[];
   linked_apps: string[];
   created_at: string;
+  restore: RestoreStatus;
+}
+
+export interface RestoreStatus {
+  running: boolean;
+  error: string | null;
 }
 
 export interface NewDatabase {

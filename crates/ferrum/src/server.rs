@@ -11,6 +11,7 @@ use ferrum_core::runtime::toolchain::Store;
 use ferrum_core::state::State;
 use ferrum_core::update::{self, Updater};
 use ferrum_platform::{Platform, Ubuntu};
+use std::collections::HashMap;
 use std::net::IpAddr;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -79,6 +80,7 @@ pub struct AppState {
     pub mirrors: Mirrors,
     pub codename: String,
     pub postgres_install: Arc<Mutex<Install>>,
+    pub restores: Arc<Mutex<HashMap<String, Install>>>,
     pub deployer: Deployer,
     pub certs: Issuance,
     pub hostname: Option<String>,
@@ -119,6 +121,7 @@ impl AppState {
             mirrors: deps.mirrors,
             codename: deps.codename,
             postgres_install: Arc::default(),
+            restores: Arc::default(),
             deployer: Deployer::start(ctx),
             certs: Issuance::new(deps.directory, deps.lookup, deps.public_ip),
             hostname: deps.hostname,

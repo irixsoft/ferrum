@@ -171,6 +171,8 @@ pub trait Platform: Send + Sync {
     fn postgres_major_installed(&self) -> Option<u32>;
     fn postgres_dump(&self, database: &str, to: &Path) -> Result<(), PlatformError>;
     fn postgres_restore(&self, database: &str, from: &Path) -> Result<(), PlatformError>;
+    /// A plain-SQL dump, which `pg_restore` cannot read, loaded through psql in one transaction.
+    fn postgres_restore_sql(&self, database: &str, from: &Path) -> Result<(), PlatformError>;
     fn git_clone(
         &self,
         url: &str,

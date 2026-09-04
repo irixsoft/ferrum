@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { Link } from "@tanstack/react-router";
 import { Plus } from "lucide-react";
 import {
@@ -10,7 +10,9 @@ import {
   useEnableExtension,
   usePostgres,
   useRedisInstances,
+  useRestoreDatabase,
 } from "@/lib/api";
+import { GZIP_REFUSED, describeDump, sniffFile, type DumpFormat } from "@/lib/dump";
 import { PageTitle } from "@/components/PageTitle";
 import { Card, CardBody, CardFoot, CardHeader } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
@@ -136,11 +138,22 @@ function CreateDatabase({
 }) {
   const { data: apps = [] } = useApps();
   const create = useCreateDatabase();
+  const restore = useRestoreDatabase();
+  const picker = useRef<HTMLInputElement>(null);
   const [name, setName] = useState("");
   const [limit, setLimit] = useState(20);
   const [picked, setPicked] = useState<string[]>([]);
   const [appSlug, setAppSlug] = useState("");
+  const [dump, setDump] = useState<File | null>(null);
+  const [format, setFormat] = useState<DumpFormat | null>(null);
+  const [progress, setProgress] = useState<number | null>(null);
   const valid = DATABASE_NAME.test(name);
+  const busy = create.isPending || restore.isPending;
+
+  const pick = async (file: File | null) => {
+    setDump(file);
+    setFormat(file ? await sniffFile(file) : null);
+  };
 
   const submit = async () => {
     await create.mutateAsync({
@@ -149,6 +162,14 @@ function CreateDatabase({
       extensions: picked,
       app_slug: appSlug || undefined,
     });
+    if (dump) {
+      setProgress(0);
+      try {
+        await restore.mutateAsync({ name, file: dump, onProgress: setProgress });
+      } finally {
+        setProgress(null);
+      }
+    }
     onDone();
   };
 
@@ -216,17 +237,52 @@ function CreateDatabase({
               })}
             </div>
           </div>
+          <div className="grid gap-1.5">
+            <span className="text-[13px] text-ink-3">Restore a dump into it</span>
+            <input
+              ref={picker}
+              type="file"
+              hidden
+              onChange={(e) => pick(e.target.files?.[0] ?? null)}
+            />
+            <div className="flex items-center gap-2 flex-wrap">
+              <Button size="sm" variant="ghost" onClick={() => picker.current?.click()}>
+                {dump ? "Choose another" : "Choose a file"}
+              </Button>
+              {dump && format ? (
+                <span className="text-[12.5px] text-ink-4 font-mono">
+                  {dump.name} · {bytes(dump.size)} · {describeDump(format)}
+                </span>
+              ) : (
+                <span className="text-[12.5px] text-ink-4">Optional. pg_dump custom format or plain SQL.</span>
+              )}
+            </div>
+            {format === "gzip" ? <span className="text-[12px] text-fail">{GZIP_REFUSED}</span> : null}
+          </div>
         </div>
-        {create.error ? <p className="text-[12.5px] text-fail">{message(create.error)}</p> : null}
+        {progress !== null ? (
+          <div className="grid gap-1.5">
+            <Meter value={progress * 100} tone="run" />
+            <span className="text-[12.5px] text-ink-4">Uploading {dump?.name}… {Math.round(progress * 100)}%</span>
+          </div>
+        ) : null}
+        {create.error || restore.error ? (
+          <p className="text-[12.5px] text-fail">{message(create.error ?? restore.error)}</p>
+        ) : null}
       </CardBody>
       <CardFoot>
         <span>Created with psql over the local socket. Nothing listens beyond 127.0.0.1.</span>
         <span className="flex gap-2">
-          <Button size="sm" variant="ghost" onClick={onDone}>
+          <Button size="sm" variant="ghost" onClick={onDone} disabled={busy}>
             Cancel
           </Button>
-          <Button size="sm" variant="primary" disabled={!valid || create.isPending} onClick={submit}>
-            Create
+          <Button
+            size="sm"
+            variant="primary"
+            disabled={!valid || busy || format === "gzip"}
+            onClick={submit}
+          >
+            {progress !== null ? "Uploading…" : dump ? "Create and restore" : "Create"}
           </Button>
         </span>
       </CardFoot>
@@ -244,6 +300,7 @@ function DatabaseCard({
   tunnel: string;
 }) {
   const [confirm, setConfirm] = useState<string | null>(null);
+  const [restoring, setRestoring] = useState(false);
   const remove = useDeleteDatabase();
   const enable = useEnableExtension();
   const active = db.connections_active;
@@ -257,15 +314,25 @@ function DatabaseCard({
         hint={`Role ${db.role} · ${db.size_bytes === null ? "size unknown" : bytes(db.size_bytes)}`}
         action={
           confirm === null ? (
-            <Button
-              size="sm"
-              variant="ghost"
-              disabled={db.linked_apps.length > 0}
-              title={db.linked_apps.length ? `Linked to ${db.linked_apps.join(", ")}; unlink first` : undefined}
-              onClick={() => setConfirm("")}
-            >
-              Delete
-            </Button>
+            <>
+              <Button
+                size="sm"
+                variant="ghost"
+                disabled={restoring || db.restore.running}
+                onClick={() => setRestoring(true)}
+              >
+                Restore
+              </Button>
+              <Button
+                size="sm"
+                variant="ghost"
+                disabled={db.linked_apps.length > 0}
+                title={db.linked_apps.length ? `Linked to ${db.linked_apps.join(", ")}; unlink first` : undefined}
+                onClick={() => setConfirm("")}
+              >
+                Delete
+              </Button>
+            </>
           ) : (
             <>
               <input
@@ -340,6 +407,12 @@ function DatabaseCard({
         {remove.error || enable.error ? (
           <p className="text-[12.5px] text-fail mt-3">{message(remove.error ?? enable.error)}</p>
         ) : null}
+        {db.restore.running ? (
+          <p className="text-[12.5px] text-ink-3 mt-3">Restoring the dump… everything in {db.name} is being replaced.</p>
+        ) : db.restore.error ? (
+          <p className="text-[12.5px] text-fail mt-3">The last restore failed: {db.restore.error}</p>
+        ) : null}
+        {restoring ? <RestoreDump db={db} onClose={() => setRestoring(false)} /> : null}
       </CardBody>
       <CardFoot>
         <span>
@@ -347,5 +420,84 @@ function DatabaseCard({
         </span>
       </CardFoot>
     </Card>
+  );
+}
+
+function RestoreDump({ db, onClose }: { db: Database; onClose: () => void }) {
+  const restore = useRestoreDatabase();
+  const picker = useRef<HTMLInputElement>(null);
+  const [file, setFile] = useState<File | null>(null);
+  const [format, setFormat] = useState<DumpFormat | null>(null);
+  const [typed, setTyped] = useState("");
+  const [progress, setProgress] = useState<number | null>(null);
+
+  const pick = async (picked: File | null) => {
+    setFile(picked);
+    setFormat(picked ? await sniffFile(picked) : null);
+    setTyped("");
+  };
+
+  const start = async () => {
+    if (!file) return;
+    setProgress(0);
+    try {
+      await restore.mutateAsync({ name: db.name, file, onProgress: setProgress });
+      onClose();
+    } finally {
+      setProgress(null);
+    }
+  };
+
+  return (
+    <div className="mt-4 pt-4 border-t border-line grid gap-3">
+      <input ref={picker} type="file" hidden onChange={(e) => pick(e.target.files?.[0] ?? null)} />
+      <div className="flex items-center gap-2 flex-wrap">
+        <Button size="sm" variant="ghost" disabled={progress !== null} onClick={() => picker.current?.click()}>
+          {file ? "Choose another" : "Choose a dump"}
+        </Button>
+        {file && format ? (
+          <span className="text-[12.5px] text-ink-4 font-mono">
+            {file.name} · {bytes(file.size)} · {describeDump(format)}
+          </span>
+        ) : (
+          <span className="text-[12.5px] text-ink-4">
+            pg_dump custom format or plain SQL, from any PostgreSQL host.
+          </span>
+        )}
+      </div>
+      {format === "gzip" ? <p className="text-[12.5px] text-fail">{GZIP_REFUSED}</p> : null}
+      {file && format && format !== "gzip" ? (
+        <div className="flex items-center gap-2 flex-wrap">
+          <span className="text-[12.5px] text-ink-3">Type {db.name} to replace everything in it.</span>
+          <input
+            value={typed}
+            onChange={(e) => setTyped(e.target.value)}
+            placeholder={db.name}
+            disabled={progress !== null}
+            className={`${INPUT} w-44 font-mono text-[13px]`}
+          />
+        </div>
+      ) : null}
+      {progress !== null ? (
+        <div className="grid gap-1.5">
+          <Meter value={progress * 100} tone="run" />
+          <span className="text-[12.5px] text-ink-4">Uploading… {Math.round(progress * 100)}%</span>
+        </div>
+      ) : null}
+      {restore.error ? <p className="text-[12.5px] text-fail">{message(restore.error)}</p> : null}
+      <div className="flex gap-2 justify-end">
+        <Button size="sm" variant="ghost" disabled={progress !== null} onClick={onClose}>
+          Cancel
+        </Button>
+        <Button
+          size="sm"
+          variant="danger"
+          disabled={!file || format === "gzip" || typed !== db.name || restore.isPending}
+          onClick={start}
+        >
+          Replace contents
+        </Button>
+      </div>
+    </div>
   );
 }

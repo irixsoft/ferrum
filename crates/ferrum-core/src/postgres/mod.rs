@@ -1,4 +1,5 @@
 pub mod install;
+pub mod restore;
 pub mod sql;
 pub mod tune;
 

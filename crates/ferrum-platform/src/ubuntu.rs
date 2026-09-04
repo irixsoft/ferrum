@@ -677,6 +677,27 @@ impl Platform for Ubuntu {
         .map(|_| ())
     }
 
+    fn postgres_restore_sql(&self, database: &str, from: &Path) -> Result<(), PlatformError> {
+        let from = from.to_string_lossy();
+        exec::run(&[
+            "runuser",
+            "-u",
+            PG_USER,
+            "--",
+            "psql",
+            "-X",
+            "-q",
+            "-1",
+            "-v",
+            "ON_ERROR_STOP=1",
+            "-d",
+            database,
+            "-f",
+            &from,
+        ])
+        .map(|_| ())
+    }
+
     fn git_clone(
         &self,
         url: &str,
