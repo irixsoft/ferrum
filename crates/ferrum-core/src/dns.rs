@@ -1,7 +1,8 @@
 use hickory_resolver::Resolver;
 use hickory_resolver::config::{CLOUDFLARE, GOOGLE, ResolverConfig};
 use hickory_resolver::net::runtime::TokioRuntimeProvider;
-use hickory_resolver::net::{DnsError, NetError};
+use hickory_resolver::net::{DnsError, NetError, NoRecords};
+use hickory_resolver::proto::op::ResponseCode;
 use std::net::IpAddr;
 use std::time::Duration;
 
@@ -96,6 +97,17 @@ pub fn describe(v: &Verdict, host: &str) -> String {
     }
 }
 
+/// A SERVFAIL arrives as NoRecordsFound too; only NXDOMAIN and NODATA mean the record is absent.
+fn is_negative(err: &NetError) -> bool {
+    matches!(
+        err,
+        NetError::Dns(DnsError::NoRecordsFound(NoRecords {
+            response_code: ResponseCode::NXDomain | ResponseCode::NoError,
+            ..
+        }))
+    )
+}
+
 pub async fn resolve_a(host: &str) -> Result<Vec<IpAddr>, DnsLookupError> {
     let mut config = ResolverConfig::udp_and_tcp(&CLOUDFLARE);
     for ns in GOOGLE.udp_and_tcp() {
@@ -110,7 +122,7 @@ pub async fn resolve_a(host: &str) -> Result<Vec<IpAddr>, DnsLookupError> {
 
     match resolver.lookup_ip(format!("{host}.")).await {
         Ok(lookup) => Ok(lookup.iter().filter(IpAddr::is_ipv4).collect()),
-        Err(NetError::Dns(DnsError::NoRecordsFound(_))) => Ok(Vec::new()),
+        Err(source) if is_negative(&source) => Ok(Vec::new()),
         Err(source) => Err(DnsLookupError::Resolve {
             host: host.to_string(),
             source: Box::new(source),
@@ -210,6 +222,22 @@ mod tests {
     fn no_record_message_does_not_claim_a_mismatch() {
         let msg = describe(&Verdict::NoRecord, "panel.example.com");
         assert!(msg.contains("no A record"), "{msg}");
+    }
+
+    fn no_records(code: ResponseCode) -> NetError {
+        NetError::Dns(DnsError::NoRecordsFound(NoRecords::new(
+            hickory_resolver::proto::op::Query::default(),
+            code,
+        )))
+    }
+
+    #[test]
+    fn an_absent_record_is_an_empty_answer_but_a_servfail_is_an_error() {
+        assert!(is_negative(&no_records(ResponseCode::NXDomain)));
+        assert!(is_negative(&no_records(ResponseCode::NoError)));
+        assert!(!is_negative(&no_records(ResponseCode::ServFail)));
+        assert!(!is_negative(&no_records(ResponseCode::Refused)));
+        assert!(!is_negative(&NetError::Timeout));
     }
 
     #[tokio::test]

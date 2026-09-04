@@ -223,11 +223,7 @@ async fn try_issue(
         .await?
         .context("no contact email is set for certificates")?;
     let issued = match Issuer::new(state, issuance.directory.clone(), &email).await {
-        Ok(issuer) => {
-            issuer
-                .issue(domain, expected, &acme::cert_dir(domain))
-                .await
-        }
+        Ok(issuer) => issuer.issue(domain, &acme::cert_dir(domain)).await,
         Err(e) => Err(e),
     };
     match issued {
@@ -408,7 +404,10 @@ pub(crate) mod tests {
         assert!(waiting);
         match status(&state, &p, "ledger.example.com").await.unwrap() {
             CertStatus::Failed { detail, retry_at } => {
-                assert!(!detail.is_empty());
+                assert!(
+                    detail.starts_with("acme:"),
+                    "the failure must come from the directory, not a second DNS lookup: {detail}"
+                );
                 assert!(retry_at.ends_with('Z'), "{retry_at}");
             }
             other => panic!("{other:?}"),

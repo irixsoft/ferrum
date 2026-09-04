@@ -86,8 +86,12 @@ pub async fn run(opts: SetupOpts) -> anyhow::Result<()> {
             Directory::LetsEncrypt
         };
         acme::set_directory(&state, opts.staging).await?;
-        let issuer = Issuer::new(&state, directory, &email).await?;
-        let cert = issuer.issue(&hostname, public_ip, &cert_dir).await?;
+        let cert = async {
+            let issuer = Issuer::new(&state, directory, &email).await?;
+            issuer.issue(&hostname, &cert_dir).await
+        }
+        .await
+        .with_context(|| format!("requesting a certificate for {hostname}"))?;
         setup::advance(&state, Stage::CertIssued).await?;
         println!(
             "  Certificate issued, valid until {}.",

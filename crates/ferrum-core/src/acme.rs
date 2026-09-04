@@ -1,11 +1,9 @@
-use crate::dns::{self, Verdict};
 use crate::state::State;
 use crate::{ACME_WEBROOT, CERTS_DIR};
 use instant_acme::{
     Account, AccountCredentials, ChallengeType, Identifier, LetsEncrypt, NewAccount, NewOrder,
     OrderStatus, RetryPolicy,
 };
-use std::net::IpAddr;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -17,10 +15,6 @@ const RENEW_AT_DAYS: i64 = 30;
 
 #[derive(Debug, thiserror::Error)]
 pub enum AcmeError {
-    #[error("{0}")]
-    DnsNotReady(String),
-    #[error("dns: {0}")]
-    Dns(#[from] dns::DnsLookupError),
     #[error("acme: {0}")]
     Acme(#[from] instant_acme::Error),
     #[error("io: {0}")]
@@ -106,32 +100,6 @@ pub fn not_after_of(pem: &str) -> Result<OffsetDateTime, AcmeError> {
     Ok(cert.validity().not_after.to_datetime())
 }
 
-#[derive(Debug, Clone)]
-pub struct Backoff {
-    attempt: u32,
-    max_attempts: u32,
-}
-
-impl Default for Backoff {
-    fn default() -> Self {
-        Self {
-            attempt: 0,
-            max_attempts: 5,
-        }
-    }
-}
-
-impl Backoff {
-    pub fn next_delay(&mut self) -> Option<Duration> {
-        if self.attempt >= self.max_attempts {
-            return None;
-        }
-        let secs = 30u64 << self.attempt;
-        self.attempt += 1;
-        Some(Duration::from_secs(secs))
-    }
-}
-
 pub struct Issuer {
     account: Account,
     webroot: PathBuf,
@@ -189,17 +157,8 @@ impl Issuer {
         self
     }
 
-    pub async fn issue(
-        &self,
-        host: &str,
-        expected: IpAddr,
-        dir: &Path,
-    ) -> Result<Certificate, AcmeError> {
-        let verdict = dns::verify(host, expected).await?;
-        if verdict != Verdict::Match {
-            return Err(AcmeError::DnsNotReady(dns::describe(&verdict, host)));
-        }
-
+    /// The caller must confirm the host resolves here first; this goes straight to the directory.
+    pub async fn issue(&self, host: &str, dir: &Path) -> Result<Certificate, AcmeError> {
         let identifiers = [Identifier::Dns(host.to_string())];
         let mut order = self.account.new_order(&NewOrder::new(&identifiers)).await?;
 
@@ -289,21 +248,6 @@ mod tests {
         assert!(!renew_due(now + TimeDuration::days(45), now));
         assert!(renew_due(now + TimeDuration::days(29), now));
         assert!(renew_due(now - TimeDuration::days(1), now));
-    }
-
-    #[test]
-    fn backoff_grows_and_then_gives_up() {
-        let mut b = Backoff::default();
-        let first = b.next_delay().unwrap();
-        let second = b.next_delay().unwrap();
-        assert!(second > first);
-        for _ in 0..10 {
-            b.next_delay();
-        }
-        assert!(
-            b.next_delay().is_none(),
-            "backoff must terminate, never loop"
-        );
     }
 
     #[test]

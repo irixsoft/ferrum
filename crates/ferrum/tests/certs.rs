@@ -46,13 +46,12 @@ async fn a_resolved_domain_is_tried_and_a_failure_backs_off_until_retried() {
     let cert = wait_for_kind(&h, "ledger", &cookie, "failed").await;
     assert_eq!(cert["domain"], "resolved.example.com");
     assert!(cert["status"]["retry_at"].as_str().unwrap().ends_with('Z'));
-    assert!(!cert["status"]["detail"].as_str().unwrap().is_empty());
+    let detail = cert["status"]["detail"].as_str().unwrap();
     assert!(
-        !cert["status"]["detail"]
-            .as_str()
-            .unwrap()
-            .contains(PUBLIC_IP)
+        detail.starts_with("acme:"),
+        "a resolved domain fails at the directory, never at a second DNS lookup: {detail}"
     );
+    assert!(!detail.contains(PUBLIC_IP));
 
     let retry = h
         .post_with_cookie("/api/apps/ledger/certificates", "", &cookie)

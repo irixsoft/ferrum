@@ -1,6 +1,5 @@
 use ferrum_core::acme::{Directory, Issuer, not_after_of, renew_due};
 use ferrum_core::state::State;
-use std::net::IpAddr;
 use std::path::{Path, PathBuf};
 use time::OffsetDateTime;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -74,9 +73,8 @@ async fn issues_against_pebble() {
         .expect("register an account with pebble")
         .with_webroot(webroot.clone());
 
-    let loopback: IpAddr = "127.0.0.1".parse().unwrap();
     let cert = issuer
-        .issue(HOST, loopback, &certs)
+        .issue(HOST, &certs)
         .await
         .expect("issue a certificate");
 
@@ -97,26 +95,4 @@ async fn issues_against_pebble() {
     assert_eq!(not_after_of(&chain).unwrap(), cert.not_after);
 
     assert_eq!(std::fs::read_dir(&webroot).unwrap().count(), 0);
-}
-
-#[tokio::test]
-#[ignore]
-async fn a_wrong_dns_record_never_reaches_the_directory() {
-    let dir = tempfile::tempdir().unwrap();
-    let state = State::open(&dir.path().join("state")).await.unwrap();
-
-    let issuer = Issuer::new(&state, pebble(), "ferrum@example.com")
-        .await
-        .unwrap()
-        .with_webroot(dir.path().join("webroot"));
-
-    let elsewhere: IpAddr = "203.0.113.10".parse().unwrap();
-    let err = issuer
-        .issue(HOST, elsewhere, &dir.path().join("certs"))
-        .await
-        .unwrap_err()
-        .to_string();
-
-    assert!(err.contains(HOST), "{err}");
-    assert!(err.contains("203.0.113.10"), "{err}");
 }
