@@ -124,6 +124,7 @@ pub struct NewApp {
     pub packages: Vec<String>,
     pub domains: Vec<String>,
     pub env: Vec<env::EnvVar>,
+    pub env_hints: Vec<env::EnvHint>,
 }
 
 impl Default for NewApp {
@@ -148,6 +149,7 @@ impl Default for NewApp {
             packages: Vec::new(),
             domains: Vec::new(),
             env: Vec::new(),
+            env_hints: Vec::new(),
         }
     }
 }
@@ -318,6 +320,9 @@ pub fn validate(new: &NewApp) -> Result<(), AppError> {
     for var in &new.env {
         env::valid_key(&var.key)?;
     }
+    for hint in &new.env_hints {
+        env::valid_key(&hint.key)?;
+    }
     if !(64..=65_536).contains(&new.memory_mb) {
         return Err(invalid("Memory must be between 64 MB and 64 GB."));
     }
@@ -384,6 +389,7 @@ pub async fn create(state: &State, new: NewApp) -> anyhow::Result<App> {
     for var in &new.env {
         env::set_in(&mut tx, &state.key, &id, &var.key, &var.value).await?;
     }
+    env::replace_hints(&mut tx, &id, &new.env_hints).await?;
     tx.commit().await?;
 
     by_slug(state, &new.slug)
@@ -431,6 +437,7 @@ pub async fn update(state: &State, slug: &str, changes: AppChanges) -> anyhow::R
         packages: changes.packages.unwrap_or(current.packages),
         domains: changes.domains.unwrap_or(current.domains),
         env: Vec::new(),
+        env_hints: Vec::new(),
     };
     validate(&merged)?;
 
@@ -824,7 +831,66 @@ pub(crate) mod tests {
             .fetch_one(&state.pool)
             .await
             .unwrap();
-        assert_eq!((ports, vars, domains), (0, 0, 0));
+        let hints: i64 = sqlx::query_scalar("SELECT count(*) FROM app_env_hints")
+            .fetch_one(&state.pool)
+            .await
+            .unwrap();
+        assert_eq!((ports, vars, domains, hints), (0, 0, 0, 0));
+    }
+
+    #[tokio::test]
+    async fn env_hints_are_stored_at_creation_and_listed_behind_the_set_keys() {
+        let (_d, state) = state().await;
+        let mut wanted = new_app("ledger", &[("/", "main", false)]);
+        wanted.env_hints = vec![
+            env::EnvHint {
+                key: "SMTP_HOST".into(),
+                source: "from .env.example".into(),
+                optional: true,
+                suggest_app_url: false,
+            },
+            env::EnvHint {
+                key: "STRIPE_KEY".into(),
+                source: "from src/env.ts".into(),
+                optional: false,
+                suggest_app_url: false,
+            },
+        ];
+        let app = create(&state, wanted).await.unwrap();
+        env::set(&state, &app.id, "STRIPE_KEY", "sk").await.unwrap();
+        env::add_hint(
+            &state,
+            &app.id,
+            "STRIPE_KEY",
+            "referenced in src/pay.ts",
+            false,
+        )
+        .await
+        .unwrap();
+        env::add_hint(
+            &state,
+            &app.id,
+            "MAIL_FROM",
+            "referenced in src/mail.ts",
+            false,
+        )
+        .await
+        .unwrap();
+
+        let entries = env::entries(&state, &app.id).await.unwrap();
+        let shape: Vec<(&str, bool, Option<&str>, bool)> = entries
+            .iter()
+            .map(|e| (e.key.as_str(), e.set, e.source.as_deref(), e.optional))
+            .collect();
+        assert_eq!(
+            shape,
+            vec![
+                ("STRIPE_KEY", true, Some("from src/env.ts"), false),
+                ("SMTP_HOST", false, Some("from .env.example"), true),
+                ("MAIL_FROM", false, Some("referenced in src/mail.ts"), false),
+            ],
+            "a creation-time source is kept over a deploy-time one"
+        );
     }
 
     #[tokio::test]

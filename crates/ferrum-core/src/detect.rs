@@ -1,12 +1,15 @@
+pub mod env_hints;
+
 use crate::github::Api;
-use crate::runtime::{self, Detection, RuntimeKind};
+use crate::runtime::{self, Detection, RuntimeKind, node};
 use crate::state::State;
+use env_hints::EnvHint;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 pub const TOO_LARGE: &str = "The repository tree is too large to inspect. Set the root directory to the application's folder, or fill in the settings by hand.";
 
-const WANTED: [&str; 8] = [
+const WANTED: [&str; 17] = [
     "package.json",
     ".nvmrc",
     ".node-version",
@@ -15,9 +18,31 @@ const WANTED: [&str; 8] = [
     "Aptfile",
     "ferrum.toml",
     "README.md",
+    ".env.example",
+    ".env.sample",
+    ".env.template",
+    ".env.local.example",
+    "src/env.ts",
+    "src/lib/env.ts",
+    "env.ts",
+    "env.mjs",
+    "src/config/env.ts",
 ];
-const WANTED_GLOBS: [&str; 1] = ["*.csproj"];
+const WANTED_GLOBS: [&str; 2] = ["*.csproj", "ecosystem.config.*"];
 const MAX_PROJECT_FILES: usize = 10;
+
+const POSTGRES_CLIENTS: [&str; 7] = [
+    "pg",
+    "postgres",
+    "pg-promise",
+    "@vercel/postgres",
+    "@neondatabase/serverless",
+    "@payloadcms/db-postgres",
+    "drizzle-orm",
+];
+const REDIS_CLIENTS: [&str; 4] = ["ioredis", "redis", "bullmq", "connect-redis"];
+const POSTGRES_KEYS: [&str; 2] = ["DATABASE_URL", "POSTGRES_URL"];
+const REDIS_KEYS: [&str; 1] = ["REDIS_URL"];
 
 #[derive(Debug, Clone, Default)]
 pub struct RepoTree {
@@ -120,12 +145,21 @@ pub struct FerrumToml {
     pub packages: Vec<String>,
 }
 
+/// Why the repository looks like it needs a database, if it does.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+pub struct Wants {
+    pub postgres: Option<String>,
+    pub redis: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct Detected {
     pub candidates: Vec<Detection>,
     pub ferrum_toml: Option<FerrumToml>,
     pub aptfile: Vec<String>,
     pub aptfile_rejected: Vec<String>,
+    pub wants: Wants,
+    pub env_hints: Vec<EnvHint>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -188,6 +222,37 @@ pub fn detect(tree: &RepoTree) -> Detected {
             .and_then(|t| toml::from_str(t).ok()),
         aptfile,
         aptfile_rejected,
+        wants: wants(tree),
+        env_hints: env_hints::hints(tree),
+    }
+}
+
+pub fn wants(tree: &RepoTree) -> Wants {
+    let package = tree.json("package.json");
+    let from_package = |clients: &[&str]| {
+        package
+            .as_ref()
+            .and_then(|p| node::depends_on(p, clients))
+            .map(|dep| format!("{dep} in dependencies"))
+    };
+    let from_env = |keys: &[&str]| {
+        env_hints::DOTENV_FILES.iter().find_map(|file| {
+            let named = env_hints::dotenv_keys(tree.read(file)?);
+            let key = keys.iter().find(|k| named.iter().any(|n| n == *k))?;
+            Some(format!("{file} names {key}"))
+        })
+    };
+    let from_csproj = || {
+        tree.matching("*.csproj")
+            .into_iter()
+            .find(|p| tree.read(p).is_some_and(|c| c.contains("Npgsql")))
+            .map(|p| format!("Npgsql in {p}"))
+    };
+    Wants {
+        postgres: from_package(&POSTGRES_CLIENTS)
+            .or_else(|| from_env(&POSTGRES_KEYS))
+            .or_else(from_csproj),
+        redis: from_package(&REDIS_CLIENTS).or_else(|| from_env(&REDIS_KEYS)),
     }
 }
 
@@ -270,8 +335,55 @@ mod tests {
             ("next.config.js", ""),
             ("README.md", ""),
             ("src/index.ts", ""),
+            (".env.example", ""),
+            ("src/env.ts", ""),
+            ("ecosystem.config.cjs", ""),
+            ("src/lib/env.test.ts", ""),
         ]);
-        assert_eq!(tree.wanted(), vec!["package.json"]);
+        assert_eq!(
+            tree.wanted(),
+            vec![
+                "package.json",
+                ".env.example",
+                "src/env.ts",
+                "ecosystem.config.cjs"
+            ]
+        );
+    }
+
+    #[test]
+    fn a_database_is_wanted_from_the_dependencies_the_env_example_or_the_csproj() {
+        let deps = RepoTree::from_files(&[(
+            "package.json",
+            r#"{"dependencies":{"drizzle-orm":"1","ioredis":"5"}}"#,
+        )]);
+        assert_eq!(
+            wants(&deps),
+            Wants {
+                postgres: Some("drizzle-orm in dependencies".into()),
+                redis: Some("ioredis in dependencies".into()),
+            }
+        );
+        let env = RepoTree::from_files(&[
+            ("package.json", "{}"),
+            (".env.example", "DATABASE_URL=\nREDIS_URL=\n"),
+        ]);
+        assert_eq!(
+            wants(&env),
+            Wants {
+                postgres: Some(".env.example names DATABASE_URL".into()),
+                redis: Some(".env.example names REDIS_URL".into()),
+            }
+        );
+        let dotnet = RepoTree::from_files(&[(
+            "Api/Api.csproj",
+            r#"<PackageReference Include="Npgsql.EntityFrameworkCore.PostgreSQL" />"#,
+        )]);
+        assert_eq!(
+            wants(&dotnet).postgres.as_deref(),
+            Some("Npgsql in Api/Api.csproj")
+        );
+        assert_eq!(wants(&RepoTree::default()), Wants::default());
     }
 
     #[test]

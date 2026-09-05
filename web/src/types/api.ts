@@ -144,8 +144,16 @@ export interface App {
   updated_at: string;
 }
 
+/** A key the app has set, or one the repository hinted at that nothing has set yet. */
+export interface EnvEntry {
+  key: string;
+  set: boolean;
+  source: string | null;
+  optional: boolean;
+}
+
 export interface AppDetail extends App {
-  env: Array<{ key: string }>;
+  env: EnvEntry[];
   deployed: boolean;
   current_release: Release | null;
   certificates: DomainCert[];
@@ -174,6 +182,13 @@ export interface EnvVar {
   value: string;
 }
 
+export interface EnvHint {
+  key: string;
+  source: string;
+  optional: boolean;
+  suggest_app_url: boolean;
+}
+
 /** A row without a value keeps the value already stored; values are never read back. */
 export interface EnvChange {
   key: string;
@@ -200,9 +215,10 @@ export interface NewApp {
   packages: string[];
   domains: string[];
   env: EnvVar[];
+  env_hints: EnvHint[];
 }
 
-export type AppChanges = Partial<Omit<NewApp, "slug" | "repository" | "env">>;
+export type AppChanges = Partial<Omit<NewApp, "slug" | "repository" | "env" | "env_hints">>;
 
 export interface Detection {
   kind: Runtime;
@@ -228,11 +244,18 @@ export interface FerrumToml {
   packages: string[];
 }
 
+export interface Wants {
+  postgres: string | null;
+  redis: string | null;
+}
+
 export interface Detected {
   candidates: Detection[];
   ferrum_toml: FerrumToml | null;
   aptfile: string[];
   aptfile_rejected: string[];
+  wants: Wants;
+  env_hints: EnvHint[];
 }
 
 export interface InstalledToolchain {

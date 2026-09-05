@@ -48,6 +48,83 @@ async fn detection_reads_the_tree_and_the_files_it_needs_and_nothing_else() {
 }
 
 #[tokio::test]
+async fn detection_reads_the_env_example_and_schema_and_says_what_the_app_wants() {
+    let (h, cookie, github) = signed_in_and_connected().await;
+    github.serve_repo(
+        "irixsoft/ledger",
+        &[
+            (
+                "package.json",
+                r#"{"scripts":{"build":"next build","start":"next start","db:migrate":"drizzle-kit migrate"},"dependencies":{"drizzle-orm":"1","ioredis":"5"}}"#,
+            ),
+            ("bun.lock", ""),
+            (
+                ".env.example",
+                "DATABASE_URL=\nNEXT_PUBLIC_APP_URL=http://localhost:3000\nSMTP_HOST=\n",
+            ),
+            ("src/env.ts", "SMTP_HOST: z.string().optional(),\nSTRIPE_KEY: z.string(),\n"),
+        ],
+    );
+    let res = h
+        .post_with_cookie(
+            "/api/apps/detect",
+            r#"{"repository":"irixsoft/ledger","ref":"main"}"#,
+            &cookie,
+        )
+        .await;
+    assert_eq!(res.status, StatusCode::OK, "{}", res.json);
+    assert_eq!(
+        res.json["candidates"][0]["commands"]["migrate"],
+        "bun run db:migrate"
+    );
+    assert_eq!(res.json["wants"]["postgres"], "drizzle-orm in dependencies");
+    assert_eq!(res.json["wants"]["redis"], "ioredis in dependencies");
+    let hints = res.json["env_hints"].as_array().unwrap();
+    let keys: Vec<&str> = hints.iter().map(|h| h["key"].as_str().unwrap()).collect();
+    assert_eq!(keys, vec!["NEXT_PUBLIC_APP_URL", "SMTP_HOST", "STRIPE_KEY"]);
+    assert_eq!(hints[0]["suggest_app_url"], true);
+    assert_eq!(hints[1]["optional"], true);
+    assert_eq!(hints[2]["source"], "from src/env.ts");
+    let mut fetched = github.contents_fetched();
+    fetched.sort();
+    assert_eq!(fetched, vec![".env.example", "package.json", "src/env.ts"]);
+}
+
+#[tokio::test]
+async fn env_hints_travel_with_the_app_and_show_as_unset_keys() {
+    let (h, cookie, _github) = signed_in_and_connected().await;
+    h.pretend_toolchain(RuntimeKind::Node, "22.11.0").await;
+    let json = new_app_json("ledger").replace(
+        "\"domains\"",
+        r#""env":[{"key":"STRIPE_KEY","value":"sk"}],"env_hints":[{"key":"STRIPE_KEY","source":"from src/env.ts"},{"key":"SMTP_HOST","source":"from .env.example","optional":true}],"domains""#,
+    );
+    let res = h.post_with_cookie("/api/apps", &json, &cookie).await;
+    assert_eq!(res.status, StatusCode::CREATED, "{}", res.json);
+
+    let got = h.get_with_cookie("/api/apps/ledger", &cookie).await;
+    assert_eq!(
+        got.json["env"],
+        serde_json::json!([
+            { "key": "STRIPE_KEY", "set": true, "source": "from src/env.ts", "optional": false },
+            { "key": "SMTP_HOST", "set": false, "source": "from .env.example", "optional": true },
+        ])
+    );
+    let env = h.env_file("ledger");
+    assert!(env.contains("STRIPE_KEY=sk\n"));
+    assert!(
+        !env.contains("SMTP_HOST"),
+        "an unset hint is not written: {env}"
+    );
+
+    let bad = new_app_json("other").replace(
+        "\"domains\"",
+        r#""env_hints":[{"key":"1BAD","source":"x"}],"domains""#,
+    );
+    let res = h.post_with_cookie("/api/apps", &bad, &cookie).await;
+    assert_eq!(res.status, StatusCode::BAD_REQUEST, "{}", res.json);
+}
+
+#[tokio::test]
 async fn a_root_directory_scopes_detection_to_a_subfolder() {
     let (h, cookie, github) = signed_in_and_connected().await;
     github.serve_repo(

@@ -141,7 +141,7 @@ export function AppDetailPage({ slug }: { slug: string }) {
         tabs={[
           { value: "overview", label: "Overview" },
           { value: "configuration", label: "Configuration" },
-          { value: "environment", label: "Environment", count: app.env.length },
+          { value: "environment", label: "Environment", count: app.env.filter((e) => e.set).length },
           { value: "deploys", label: "Deploys", count: deploys.length || undefined },
           { value: "logs", label: "Logs" },
           { value: "nginx", label: "nginx" },
@@ -152,9 +152,9 @@ export function AppDetailPage({ slug }: { slug: string }) {
       {tab === "configuration" && <Configuration key={app.updated_at} app={app} />}
       {tab === "environment" && (
         <EnvironmentPanel
-          key={[...app.env.map((e) => e.key), ...app.managed].join(",")}
+          key={[...app.env.map((e) => `${e.key}${e.set ? "=" : ""}`), ...app.managed].join(",")}
           slug={app.slug}
-          keys={app.env.map((e) => e.key)}
+          entries={app.env}
           managed={app.managed}
         />
       )}

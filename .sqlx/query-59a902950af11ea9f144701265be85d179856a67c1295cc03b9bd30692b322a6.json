@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT OR IGNORE INTO app_env_hints (app_id, key, source, optional) VALUES (?, ?, ?, ?)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 4
+    },
+    "nullable": []
+  },
+  "hash": "59a902950af11ea9f144701265be85d179856a67c1295cc03b9bd30692b322a6"
+}

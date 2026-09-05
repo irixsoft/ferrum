@@ -125,6 +125,58 @@ pub fn scripts(package: &serde_json::Value) -> (bool, bool) {
     (scripts["build"].is_string(), scripts["start"].is_string())
 }
 
+const MIGRATE_SCRIPTS: [&str; 3] = ["db:migrate", "migrate", "migrate:deploy"];
+const MIGRATE_COMMANDS: [&str; 5] = [
+    "drizzle-kit migrate",
+    "prisma migrate deploy",
+    "knex migrate:latest",
+    "payload migrate",
+    "typeorm migration:run",
+];
+const DB_CLIENTS: [&str; 10] = [
+    "pg",
+    "postgres",
+    "drizzle-orm",
+    "@prisma/client",
+    "prisma",
+    "knex",
+    "mysql2",
+    "better-sqlite3",
+    "typeorm",
+    "@payloadcms/db-postgres",
+];
+
+/// The first of `names` found under dependencies or devDependencies.
+pub fn depends_on(package: &serde_json::Value, names: &[&str]) -> Option<String> {
+    ["dependencies", "devDependencies"]
+        .iter()
+        .filter_map(|section| package[section].as_object())
+        .find_map(|deps| names.iter().find(|n| deps.contains_key(**n)))
+        .map(|n| n.to_string())
+}
+
+/// A migrate script is only proposed when a database client is a dependency; a bare
+/// `migrate` script in a library repository is not one.
+pub fn migrate_script(package: &serde_json::Value) -> Option<(String, String)> {
+    let scripts = package["scripts"].as_object()?;
+    depends_on(package, &DB_CLIENTS)?;
+    let name = MIGRATE_SCRIPTS
+        .iter()
+        .find(|n| scripts.contains_key(**n))
+        .map(|n| n.to_string())
+        .or_else(|| {
+            scripts
+                .iter()
+                .find(|(_, v)| {
+                    v.as_str()
+                        .is_some_and(|s| MIGRATE_COMMANDS.iter().any(|c| s.contains(c)))
+                })
+                .map(|(k, _)| k.clone())
+        })?;
+    let why = format!("found migrate script {name}");
+    Some((name, why))
+}
+
 pub fn framework(tree: &RepoTree) -> Option<String> {
     FRAMEWORK_CONFIGS
         .iter()
@@ -168,6 +220,10 @@ impl Runtime for Node {
         } else {
             package["main"].as_str().map(|main| format!("node {main}"))
         };
+        let migrate = migrate_script(&package).map(|(name, why)| {
+            reasons.push(why);
+            pm.run(&name)
+        });
 
         Some(Detection {
             kind: RuntimeKind::Node,
@@ -179,7 +235,7 @@ impl Runtime for Node {
                 install: Some(pm.install(locked).to_string()),
                 build: has_build.then(|| pm.run("build")),
                 start,
-                migrate: None,
+                migrate,
             },
             output_dir: None,
             health: Health::default(),
@@ -318,6 +374,40 @@ mod tests {
             Node.detect(&tree).unwrap().version.as_deref(),
             Some("22.11.0")
         );
+    }
+
+    #[test]
+    fn a_migrate_script_is_proposed_only_alongside_a_database_client() {
+        let drizzle = RepoTree::from_files(&[
+            (
+                "package.json",
+                r#"{"scripts":{"start":"next start","db:migrate":"drizzle-kit migrate"},"dependencies":{"drizzle-orm":"1"}}"#,
+            ),
+            ("bun.lock", ""),
+        ]);
+        let d = Node.detect(&drizzle).unwrap();
+        assert_eq!(d.commands.migrate.as_deref(), Some("bun run db:migrate"));
+        assert!(
+            d.reasons
+                .iter()
+                .any(|r| r == "found migrate script db:migrate"),
+            "{:?}",
+            d.reasons
+        );
+
+        let by_value = serde_json::json!({
+            "scripts": {"start": "node .", "release": "prisma migrate deploy && node ."},
+            "devDependencies": {"prisma": "6"}
+        });
+        assert_eq!(
+            migrate_script(&by_value).map(|(n, _)| n).as_deref(),
+            Some("release")
+        );
+
+        let library = serde_json::json!({"scripts": {"migrate": "node scripts/migrate.js"}});
+        assert!(migrate_script(&library).is_none());
+        let tree = RepoTree::from_files(&[("package.json", "{}")]);
+        assert!(Node.detect(&tree).unwrap().commands.migrate.is_none());
     }
 
     #[test]

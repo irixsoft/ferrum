@@ -119,6 +119,10 @@ impl Runtime for Bun {
         } else {
             package["main"].as_str().map(|main| format!("bun {main}"))
         };
+        let migrate = node::migrate_script(&package).map(|(name, why)| {
+            reasons.push(why);
+            pm.run(&name)
+        });
 
         Some(Detection {
             kind: RuntimeKind::Bun,
@@ -130,7 +134,7 @@ impl Runtime for Bun {
                 install: Some(pm.install(true).to_string()),
                 build: has_build.then(|| pm.run("build")),
                 start,
-                migrate: None,
+                migrate,
             },
             output_dir: None,
             health: Health::default(),
@@ -207,6 +211,22 @@ mod tests {
         assert_eq!(d.version.as_deref(), Some("1.2.3"));
         assert_eq!(d.commands.start.as_deref(), Some("bun run start"));
         assert!(d.commands.build.is_none());
+        assert!(d.commands.migrate.is_none());
+    }
+
+    #[test]
+    fn a_bun_app_with_a_migrate_script_runs_it_through_bun() {
+        let tree = RepoTree::from_files(&[
+            (
+                "package.json",
+                r#"{"scripts":{"start":"bun src/index.ts","db:migrate":"bun run src/db/migrate.ts"},"dependencies":{"postgres":"3"}}"#,
+            ),
+            ("bun.lock", ""),
+        ]);
+        assert_eq!(
+            Bun.detect(&tree).unwrap().commands.migrate.as_deref(),
+            Some("bun run db:migrate")
+        );
     }
 
     #[test]

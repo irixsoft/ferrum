@@ -186,11 +186,7 @@ async fn show(
 
 /// Everything the panel's app page reads: env *keys*, never values.
 pub(crate) async fn detail(app: &AppState, found: &App) -> anyhow::Result<serde_json::Value> {
-    let keys: Vec<serde_json::Value> = env::keys(&app.db, &found.id)
-        .await?
-        .into_iter()
-        .map(|key| serde_json::json!({ "key": key }))
-        .collect();
+    let entries = env::entries(&app.db, &found.id).await?;
     let databases = postgres::names_for(&app.db, &found.id).await?;
     let instance = redis::for_app(&app.db, &found.id).await?;
     let managed = env::managed_for(&app.db, found).await?.keys();
@@ -218,7 +214,7 @@ pub(crate) async fn detail(app: &AppState, found: &App) -> anyhow::Result<serde_
     value["memory_bytes"] = resources.map(|s| s.memory_current).into();
     value["memory_peak_bytes"] = resources.map(|s| s.memory_peak).into();
     value["cpu_pct"] = cpu_pct.into();
-    value["env"] = serde_json::Value::Array(keys);
+    value["env"] = serde_json::to_value(entries)?;
     value["deployed"] = serde_json::Value::Bool(current.is_some());
     value["current_release"] = serde_json::to_value(current)?;
     value["status"] = serde_json::Value::String(status.into());

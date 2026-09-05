@@ -177,6 +177,7 @@ export function toNewApp(d: Draft, repository: string): NewApp {
     slug: d.slug.trim(),
     repository,
     env: [],
+    env_hints: [],
     ...changes,
     output_dir: d.runtime === "static" ? d.output_dir.trim() : null,
   } as NewApp;
@@ -187,15 +188,26 @@ export function ConfigForm({
   onChange,
   sources = {},
   creating,
+  onToolchainChange,
 }: {
   draft: Draft;
   onChange: (d: Draft) => void;
   sources?: Sources;
   creating: boolean;
+  /** Called instead of `onChange` when the toolchain changes, with the version cleared. */
+  onToolchainChange?: (d: Draft) => void;
 }) {
   const set = <K extends keyof Draft>(field: K, value: Draft[K]) =>
     onChange({ ...draft, [field]: value });
   const isStatic = draft.runtime === "static";
+  const pick = (runtime: Runtime, toolchain: Toolchain) => {
+    const next = { ...draft, runtime, toolchain };
+    if (toolchain !== draft.toolchain && onToolchainChange) {
+      onToolchainChange({ ...next, runtime_version: "" });
+    } else {
+      onChange(next);
+    }
+  };
 
   return (
     <div className="grid gap-4">
@@ -260,11 +272,7 @@ export function ConfigForm({
               value={draft.runtime}
               onChange={(e) => {
                 const runtime = e.target.value as Runtime;
-                onChange({
-                  ...draft,
-                  runtime,
-                  toolchain: runtime === "static" ? draft.toolchain : (runtime as Toolchain),
-                });
+                pick(runtime, runtime === "static" ? draft.toolchain : (runtime as Toolchain));
               }}
               className={INPUT}
             >
@@ -279,7 +287,7 @@ export function ConfigForm({
             <Field label="Built with">
               <select
                 value={draft.toolchain}
-                onChange={(e) => set("toolchain", e.target.value as Toolchain)}
+                onChange={(e) => pick(draft.runtime, e.target.value as Toolchain)}
                 className={INPUT}
               >
                 {(["node", "bun", "dotnet"] as Toolchain[]).map((r) => (

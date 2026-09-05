@@ -1,4 +1,5 @@
 use super::{App, AppError, Route};
+pub use crate::detect::env_hints::EnvHint;
 use crate::secrets::{self, Key};
 use crate::state::State;
 use crate::{postgres, redis};
@@ -163,6 +164,108 @@ pub async fn keys(state: &State, app_id: &str) -> anyhow::Result<Vec<String>> {
         .into_iter()
         .map(|(k, _)| k)
         .collect())
+}
+
+/// What the panel shows per key: hints come from the repository, values never leave the server.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct Entry {
+    pub key: String,
+    pub set: bool,
+    pub source: Option<String>,
+    pub optional: bool,
+}
+
+pub async fn hints(state: &State, app_id: &str) -> anyhow::Result<Vec<EnvHint>> {
+    let rows = sqlx::query!(
+        r#"SELECT key AS "key!", source AS "source!", optional AS "optional!: bool"
+           FROM app_env_hints WHERE app_id = ? ORDER BY rowid"#,
+        app_id
+    )
+    .fetch_all(&state.pool)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .map(|r| EnvHint {
+            key: r.key,
+            source: r.source,
+            optional: r.optional,
+            suggest_app_url: false,
+        })
+        .collect())
+}
+
+pub async fn replace_hints(
+    tx: &mut Transaction<'_, Sqlite>,
+    app_id: &str,
+    hints: &[EnvHint],
+) -> anyhow::Result<()> {
+    sqlx::query!("DELETE FROM app_env_hints WHERE app_id = ?", app_id)
+        .execute(&mut **tx)
+        .await?;
+    for hint in hints {
+        valid_key(&hint.key)?;
+        sqlx::query!(
+            "INSERT INTO app_env_hints (app_id, key, source, optional) VALUES (?, ?, ?, ?)",
+            app_id,
+            hint.key,
+            hint.source,
+            hint.optional
+        )
+        .execute(&mut **tx)
+        .await?;
+    }
+    Ok(())
+}
+
+/// Adds a hint for a key that has none yet; a creation-time source is kept over a later one.
+pub async fn add_hint(
+    state: &State,
+    app_id: &str,
+    key: &str,
+    source: &str,
+    optional: bool,
+) -> anyhow::Result<()> {
+    valid_key(key)?;
+    sqlx::query!(
+        "INSERT OR IGNORE INTO app_env_hints (app_id, key, source, optional) VALUES (?, ?, ?, ?)",
+        app_id,
+        key,
+        source,
+        optional
+    )
+    .execute(&state.pool)
+    .await?;
+    Ok(())
+}
+
+/// Stored keys first, then the hinted keys nothing has set yet.
+pub async fn entries(state: &State, app_id: &str) -> anyhow::Result<Vec<Entry>> {
+    let stored = keys(state, app_id).await?;
+    let hints = hints(state, app_id).await?;
+    let mut entries: Vec<Entry> = stored
+        .iter()
+        .map(|key| {
+            let hint = hints.iter().find(|h| &h.key == key);
+            Entry {
+                key: key.clone(),
+                set: true,
+                source: hint.map(|h| h.source.clone()),
+                optional: hint.is_some_and(|h| h.optional),
+            }
+        })
+        .collect();
+    entries.extend(
+        hints
+            .into_iter()
+            .filter(|h| !stored.contains(&h.key))
+            .map(|h| Entry {
+                key: h.key,
+                set: false,
+                source: Some(h.source),
+                optional: h.optional,
+            }),
+    );
+    Ok(entries)
 }
 
 /// Everything the env file carries, in its order. A managed key wins over a user variable of

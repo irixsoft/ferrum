@@ -1,14 +1,17 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Link, useNavigate } from "@tanstack/react-router";
-import { GitBranch, Lock, Search } from "lucide-react";
+import { GitBranch, Lock, Plus, Search } from "lucide-react";
 import {
   ApiError,
   installRuntime,
   resolveVersion,
   useCreateApp,
+  useCreateDatabase,
   useDetect,
   useGithub,
   useGithubRepos,
+  usePostgres,
+  useRequestRedis,
   useRuntimes,
 } from "@/lib/api";
 import { PageTitle } from "@/components/PageTitle";
@@ -19,13 +22,15 @@ import { Badge } from "@/components/ui/Badge";
 import { Code } from "@/components/ui/Code";
 import { Segmented } from "@/components/ui/Segmented";
 import { ConfigForm, draftFromDetection, toNewApp, type Draft, type Sources } from "./ConfigForm";
+import { EnvRows, HINTS_NOTE, blankRow, rowsFromHints, type EnvRow } from "./EnvironmentPanel";
 import { ago, bytes } from "@/lib/utils";
-import type { Detected, GithubRepo, Progress, Tracking } from "@/types/api";
+import type { App, Detected, GithubRepo, Progress, Tracking } from "@/types/api";
 
 type Step = { kind: "pick" } | { kind: "detecting" } | { kind: "review"; detected: Detected };
 
 const INPUT =
   "w-full h-9 px-3 bg-inset border border-line-strong rounded-control text-sm text-ink placeholder:text-ink-4";
+const REDIS_DEFAULT_MB = 64;
 
 export function NewAppPage() {
   const { data: github, isLoading } = useGithub();
@@ -37,6 +42,7 @@ export function NewAppPage() {
   const [draft, setDraft] = useState<Draft | null>(null);
   const [sources, setSources] = useState<Sources>({});
   const [candidate, setCandidate] = useState(0);
+  const [envRows, setEnvRows] = useState<EnvRow[]>([]);
   const detect = useDetect();
 
   const pick = (r: GithubRepo) => {
@@ -53,10 +59,24 @@ export function NewAppPage() {
       const built = draftFromDetection(repo.full_name, gitRef, tracking, root, detected, best);
       setCandidate(0);
       setSources(built.sources);
+      setEnvRows(rowsFromHints(detected.env_hints));
       setDraft(await withResolvedVersion(built.draft));
       setStep({ kind: "review", detected });
     } catch {
       setStep({ kind: "pick" });
+    }
+  };
+
+  const changeToolchain = async (d: Draft) => {
+    setSources(({ runtime_version: _dropped, ...rest }) => rest);
+    setDraft(d);
+    try {
+      const version = await resolveVersion(d.toolchain, null);
+      setDraft((current) =>
+        current && current.toolchain === d.toolchain ? { ...current, runtime_version: version } : current,
+      );
+    } catch {
+      /* the field stays empty for the user to fill in */
     }
   };
 
@@ -143,7 +163,10 @@ export function NewAppPage() {
           onCandidate={chooseCandidate}
           draft={draft}
           setDraft={setDraft}
+          onToolchainChange={changeToolchain}
           sources={sources}
+          envRows={envRows}
+          setEnvRows={setEnvRows}
           onBack={() => setStep({ kind: "pick" })}
         />
       ) : null}
@@ -293,6 +316,10 @@ function Picker({
   );
 }
 
+function databaseName(slug: string) {
+  return `${slug.trim().replace(/-/g, "_")}_prod`;
+}
+
 function Review({
   repo,
   detected,
@@ -300,7 +327,10 @@ function Review({
   onCandidate,
   draft,
   setDraft,
+  onToolchainChange,
   sources,
+  envRows,
+  setEnvRows,
   onBack,
 }: {
   repo: GithubRepo;
@@ -309,32 +339,77 @@ function Review({
   onCandidate: (i: number) => void;
   draft: Draft;
   setDraft: (d: Draft) => void;
+  onToolchainChange: (d: Draft) => void;
   sources: Sources;
+  envRows: EnvRow[];
+  setEnvRows: React.Dispatch<React.SetStateAction<EnvRow[]>>;
   onBack: () => void;
 }) {
   const navigate = useNavigate();
   const runtimes = useRuntimes();
+  const postgres = usePostgres();
   const create = useCreateApp();
+  const createDatabase = useCreateDatabase();
+  const requestRedis = useRequestRedis(draft.slug.trim());
+  const [wantPostgres, setWantPostgres] = useState(detected.wants.postgres !== null);
+  const [wantRedis, setWantRedis] = useState(detected.wants.redis !== null);
   const [progress, setProgress] = useState<Progress | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [created, setCreated] = useState<App | null>(null);
   const [busy, setBusy] = useState(false);
 
   const installed = runtimes.data?.installed.some(
     (t) => t.kind === draft.toolchain && t.version === draft.runtime_version,
   );
+  const postgresReady = postgres.data?.installed === true;
+  const dbName = databaseName(draft.slug);
+
+  const primary = draft.domains[0]?.trim() ?? "";
+  const lastSuggestion = useRef("");
+  useEffect(() => {
+    const suggestion = primary ? `https://${primary}` : "";
+    const previous = lastSuggestion.current;
+    lastSuggestion.current = suggestion;
+    setEnvRows((rows) =>
+      rows.map((r) =>
+        r.suggestAppUrl && (r.value === "" || r.value === previous) ? { ...r, value: suggestion } : r,
+      ),
+    );
+  }, [primary, setEnvRows]);
 
   const submit = async () => {
     setBusy(true);
     setError(null);
+    let app: App | null = null;
     try {
       if (!installed) {
         await installRuntime(draft.toolchain, draft.runtime_version, setProgress);
         await runtimes.refetch();
       }
-      const created = await create.mutateAsync(toNewApp(draft, repo.full_name));
-      navigate({ to: "/apps/$slug", params: { slug: created.slug } });
+      const rows = envRows.filter((r) => r.key.trim());
+      app = await create.mutateAsync({
+        ...toNewApp(draft, repo.full_name),
+        env: rows.filter((r) => r.value).map((r) => ({ key: r.key.trim(), value: r.value ?? "" })),
+        env_hints: rows
+          .filter((r) => r.source !== null)
+          .map((r) => ({
+            key: r.key.trim(),
+            source: r.source ?? "",
+            optional: r.optional,
+            suggest_app_url: r.suggestAppUrl,
+          })),
+      });
+      setCreated(app);
+      if (wantPostgres && postgresReady) {
+        await createDatabase.mutateAsync({ name: dbName, app_slug: app.slug });
+      }
+      if (wantRedis) {
+        await requestRedis.mutateAsync(REDIS_DEFAULT_MB);
+      }
+      navigate({ to: "/apps/$slug", params: { slug: app.slug } });
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      const message = e instanceof Error ? e.message : String(e);
+      setError(app ? `${app.name} was created, but the data step failed: ${message}` : message);
       setProgress(null);
     } finally {
       setBusy(false);
@@ -390,7 +465,68 @@ function Review({
         </Card>
       )}
 
-      <ConfigForm draft={draft} onChange={setDraft} sources={sources} creating />
+      <ConfigForm
+        draft={draft}
+        onChange={setDraft}
+        onToolchainChange={onToolchainChange}
+        sources={sources}
+        creating
+      />
+
+      <Card>
+        <CardHeader
+          title="Environment"
+          hint="Set the values now or later from the app's Environment tab"
+          action={
+            <Button size="sm" variant="ghost" onClick={() => setEnvRows([...envRows, blankRow()])}>
+              <Plus size={14} />
+              Add
+            </Button>
+          }
+        />
+        <CardBody className="grid gap-2">
+          <EnvRows rows={envRows} onChange={setEnvRows} />
+          {envRows.some((r) => r.source !== null) ? (
+            <p className="text-[12.5px] text-ink-4 mt-1">{HINTS_NOTE}</p>
+          ) : null}
+        </CardBody>
+      </Card>
+
+      <Card>
+        <CardHeader title="Data" hint="Created right after the app, linked and injected as DATABASE_URL and REDIS_URL" />
+        <CardBody className="grid gap-3">
+          <label className="flex items-start gap-2 text-[13px] text-ink-2">
+            <input
+              type="checkbox"
+              className="mt-1"
+              checked={wantPostgres && postgresReady}
+              disabled={!postgresReady}
+              onChange={(e) => setWantPostgres(e.target.checked)}
+            />
+            <span>
+              Create and link <Code>{dbName}</Code>
+              {detected.wants.postgres ? <span className="text-ink-4"> · {detected.wants.postgres}</span> : null}
+              {postgres.data && !postgresReady ? (
+                <span className="block text-[12.5px] text-ink-4">
+                  PostgreSQL is not installed yet. Enable it on the Databases page first.
+                </span>
+              ) : null}
+            </span>
+          </label>
+          <label className="flex items-start gap-2 text-[13px] text-ink-2">
+            <input
+              type="checkbox"
+              className="mt-1"
+              checked={wantRedis}
+              onChange={(e) => setWantRedis(e.target.checked)}
+            />
+            <span>
+              Create a Redis instance ({REDIS_DEFAULT_MB} MB)
+              {detected.wants.redis ? <span className="text-ink-4"> · {detected.wants.redis}</span> : null}
+            </span>
+          </label>
+        </CardBody>
+      </Card>
 
       <Card>
         <CardBody className="pt-5 grid gap-3">
@@ -403,9 +539,19 @@ function Review({
           {progress ? <ProgressLine progress={progress} /> : null}
           {error ? <p className="text-[12.5px] text-fail">{error}</p> : null}
           <div className="flex items-center gap-3">
-            <Button variant="primary" size="lg" onClick={submit} disabled={busy}>
-              {busy ? "Working…" : "Create"}
-            </Button>
+            {created ? (
+              <Button
+                variant="primary"
+                size="lg"
+                onClick={() => navigate({ to: "/apps/$slug", params: { slug: created.slug } })}
+              >
+                Open {created.name}
+              </Button>
+            ) : (
+              <Button variant="primary" size="lg" onClick={submit} disabled={busy}>
+                {busy ? "Working…" : "Create"}
+              </Button>
+            )}
             <span className="text-[12.5px] text-ink-4">
               Creates the system user, the unit and the nginx site. Nothing is deployed yet.
             </span>
