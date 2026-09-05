@@ -21,9 +21,11 @@ pub fn user_name(slug: &str) -> String {
 pub async fn provision(state: &State, platform: &dyn Platform, app: &App) -> anyhow::Result<()> {
     let dir = app_dir(&app.slug);
     let user = user_name(&app.slug);
-    platform
-        .create_system_user(&user, &dir)
-        .with_context(|| format!("creating the system user {user}"))?;
+    if !platform.user_exists(&user) {
+        platform
+            .create_system_user(&user, &dir)
+            .with_context(|| format!("creating the system user {user}"))?;
+    }
 
     for (sub, mode) in [
         ("", 0o755),
@@ -284,8 +286,8 @@ mod tests {
         provision(&state, &platform, &app).await.unwrap();
         assert_eq!(
             platform.calls_matching("create_system_user").len(),
-            2,
-            "useradd is called and tolerates 'exists'"
+            1,
+            "an existing user is not created again"
         );
         assert_eq!(
             platform
