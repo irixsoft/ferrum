@@ -243,14 +243,6 @@ function Overview({ app }: { app: AppDetail }) {
               </ul>
             )}
           </CardBody>
-          {app.routes.some((r) => r.websocket) ? (
-            <CardFoot>
-              <span>
-                <Code>proxy_read_timeout</Code> is raised on WebSocket routes so idle connections
-                are not closed after 60 seconds.
-              </span>
-            </CardFoot>
-          ) : null}
         </Card>
 
         <DataCard app={app} />

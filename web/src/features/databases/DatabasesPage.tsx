@@ -270,8 +270,7 @@ function CreateDatabase({
           <p className="text-[12.5px] text-fail">{message(create.error ?? restore.error)}</p>
         ) : null}
       </CardBody>
-      <CardFoot>
-        <span>Created with psql over the local socket. Nothing listens beyond 127.0.0.1.</span>
+      <CardFoot className="justify-end">
         <span className="flex gap-2">
           <Button size="sm" variant="ghost" onClick={onDone} disabled={busy}>
             Cancel

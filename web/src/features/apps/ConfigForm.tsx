@@ -427,8 +427,7 @@ export function ConfigForm({
         </CardBody>
         <CardFoot className="flex-col items-start gap-1">
           <span>
-            Package names are validated against <Code>^[a-z0-9][a-z0-9+._-]*$</Code> and passed as
-            argv, never interpolated into a shell string.
+            Package names must match <Code>^[a-z0-9][a-z0-9+._-]*$</Code>.
           </span>
           <span>
             Packages are system-wide and shared by every application on the box, so two

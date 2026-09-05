@@ -58,8 +58,7 @@ export function NginxPanel({ slug }: { slug: string }) {
         </CardBody>
         <CardFoot>
           <span>
-            Checked with <Code>nginx -t</Code> before any reload. A failing edit is rejected with the
-            error, rather than taking every site on the box down.
+            Checked with <Code>nginx -t</Code> before any reload.
           </span>
           <Button
             size="sm"

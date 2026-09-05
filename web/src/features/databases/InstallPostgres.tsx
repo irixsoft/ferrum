@@ -12,9 +12,7 @@ export function InstallPostgres({ compact = false }: { compact?: boolean }) {
     <div className={compact ? "flex items-center gap-3 flex-wrap" : "grid gap-3"}>
       {compact ? null : (
         <p className="text-[13.5px] text-ink-2 leading-relaxed">
-          PostgreSQL is not installed. Ferrum installs the newest major from the PostgreSQL apt
-          repository, tunes it for this box's memory, binds it to loopback and pins the major so
-          a repository moving on never becomes a surprise upgrade.
+          Installs the newest major from the PostgreSQL apt repository, bound to loopback and pinned.
         </p>
       )}
       <div className="flex items-center gap-3 flex-wrap">

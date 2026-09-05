@@ -16,7 +16,7 @@ import type { JobStatus, Security } from "@/types/api";
 import { PageTitle } from "@/components/PageTitle";
 import { EnableButton, enableFailure } from "@/components/EnableButton";
 import { ChartKey, MetricChart, type Band } from "@/components/MetricChart";
-import { Card, CardBody, CardFoot, CardHeader } from "@/components/ui/Card";
+import { Card, CardBody, CardHeader } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
 import { Badge } from "@/components/ui/Badge";
 import { Code } from "@/components/ui/Code";
@@ -94,12 +94,6 @@ export function SystemPage() {
               <Gauge label="Swap" value={swap} detail={`${host.swap_used_mb} / ${host.swap_total_mb} MB`} />
               <Gauge label="Disk" value={disk} detail={`${host.disk_used_gb} / ${host.disk_total_gb} GB`} />
             </CardBody>
-            <CardFoot>
-              <span>
-                Builds run with a hard memory cap, so a runaway build is stopped as itself rather
-                than the kernel picking a victim. The cap is under Settings.
-              </span>
-            </CardFoot>
           </Card>
         </div>
 
@@ -246,7 +240,7 @@ function Bans({ bans, job }: { bans: Security["bans"]; job: JobStatus }) {
         {!bans.installed ? (
           <p className="text-[13px] text-ink-2 leading-relaxed">
             Jails for sshd and the three nginx patterns, banning for an hour after five failures in
-            ten minutes. Your own addresses can be allowlisted once it runs.
+            ten minutes.
           </p>
         ) : bans.banned.length === 0 ? (
           <p className="text-[13px] text-ink-4">Nothing is banned right now.</p>

@@ -322,10 +322,7 @@ function Tokens() {
           </ul>
         </CardBody>
         <CardFoot>
-          <span>
-            A read-only token sees only the read tools over MCP. The write tools are absent from
-            its tool list, so an agent never proposes an action it cannot take.
-          </span>
+          <span>A read-only token sees only the read tools over MCP.</span>
         </CardFoot>
       </Card>
       <ConnectAgent token={secret} />
@@ -387,12 +384,6 @@ function Connections({ onTokens }: { onTokens: () => void }) {
             under API tokens.
           </p>
         </CardBody>
-        <CardFoot>
-          <span>
-            Deleting apps or databases, user management and firewall changes are never exposed over
-            MCP. Those stay behind type-the-name confirmations here.
-          </span>
-        </CardFoot>
       </Card>
     </div>
   );
@@ -445,10 +436,7 @@ function Builds() {
         </div>
       </CardBody>
       <CardFoot>
-        <span>
-          A Next.js build peaks around 1.5 to 2.5 GB. If a build is stopped for memory, raise the
-          limit here rather than fighting the kernel.
-        </span>
+        <span>A Next.js build peaks around 1.5 to 2.5 GB.</span>
       </CardFoot>
     </Card>
   );

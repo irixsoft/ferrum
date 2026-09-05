@@ -74,14 +74,13 @@ export function DashboardPage() {
               <CardBody>
                 <DeployLadder deploy={deploy} />
               </CardBody>
-              <CardFoot>
-                <span>Builds run one at a time so live apps keep their memory.</span>
-                {deploy.state === "Queued" ? (
+              {deploy.state === "Queued" ? (
+                <CardFoot className="justify-end">
                   <Button size="sm" variant="danger" disabled={cancel.isPending} onClick={() => cancel.mutate(deploy.id)}>
                     Cancel
                   </Button>
-                ) : null}
-              </CardFoot>
+                </CardFoot>
+              ) : null}
             </Card>
           ) : (
             <Card>
@@ -156,12 +155,6 @@ export function DashboardPage() {
                 ))}
               </ul>
             </CardBody>
-            <CardFoot>
-              <span>
-                Ferrum installs these from their own upstream repositories, so security
-                patches arrive without waiting for a Ferrum release.
-              </span>
-            </CardFoot>
           </Card>
         </div>
 

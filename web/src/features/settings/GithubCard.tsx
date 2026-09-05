@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { Github } from "lucide-react";
 import { ApiError, useConnectGithub, useDisconnectGithub, useGithub, useGithubRepos } from "@/lib/api";
-import { Card, CardBody, CardFoot, CardHeader } from "@/components/ui/Card";
+import { Card, CardBody, CardHeader } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
 import { Row } from "@/components/ui/Row";
 import { ago } from "@/lib/utils";
@@ -51,12 +51,6 @@ export function GithubCard() {
           </div>
         )}
       </CardBody>
-      <CardFoot>
-        <span>
-          Installation tokens expire hourly and refresh themselves. No long-lived personal access
-          token is stored.
-        </span>
-      </CardFoot>
     </Card>
   );
 }
