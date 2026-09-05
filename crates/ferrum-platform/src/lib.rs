@@ -112,6 +112,7 @@ pub enum ServiceAction {
     Enable,
     EnableNow,
     Disable,
+    DisableNow,
     Mask,
     DaemonReload,
 }
@@ -127,6 +128,7 @@ impl ServiceAction {
             Self::Enable => "enable",
             Self::EnableNow => "enable-now",
             Self::Disable => "disable",
+            Self::DisableNow => "disable-now",
             Self::Mask => "mask",
             Self::DaemonReload => "daemon-reload",
         }
@@ -146,6 +148,7 @@ pub trait Platform: Send + Sync {
     fn make_dirs(&self, path: &Path, mode: u32) -> Result<(), PlatformError>;
     fn remove_tree(&self, path: &Path) -> Result<(), PlatformError>;
     fn chown_tree(&self, path: &Path, user: &str) -> Result<(), PlatformError>;
+    fn user_exists(&self, name: &str) -> bool;
     fn create_system_user(&self, name: &str, home: &Path) -> Result<(), PlatformError>;
     fn remove_system_user(&self, name: &str) -> Result<(), PlatformError>;
     fn extract_tar_gz(
@@ -221,6 +224,8 @@ pub trait Platform: Send + Sync {
     fn ufw_enable(&self) -> Result<(), PlatformError>;
     fn iptables_restore(&self, rules: &str) -> Result<(), PlatformError>;
     fn iptables_flush(&self) -> Result<(), PlatformError>;
+    fn ip6tables_restore(&self, rules: &str) -> Result<(), PlatformError>;
+    fn ip6tables_flush(&self) -> Result<(), PlatformError>;
     fn fail2ban_jails(&self) -> Result<Vec<String>, PlatformError>;
     fn fail2ban_bans(&self, jail: &str) -> Result<Vec<Ban>, PlatformError>;
     fn fail2ban_unban(&self, jail: &str, ip: &str) -> Result<(), PlatformError>;

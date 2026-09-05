@@ -21,6 +21,7 @@ struct Inner {
     links: HashMap<String, String>,
     fail_next: Option<String>,
     active: Vec<String>,
+    users: HashSet<String>,
     cpu_flags: Vec<String>,
     memory_kb: u64,
     swap_kb: u64,
@@ -392,15 +393,23 @@ impl Platform for FakePlatform {
         self.record(format!("chown_tree {} {user}", path.to_string_lossy()))
     }
 
+    fn user_exists(&self, name: &str) -> bool {
+        self.inner.lock().unwrap().users.contains(name)
+    }
+
     fn create_system_user(&self, name: &str, home: &Path) -> Result<(), PlatformError> {
         self.record(format!(
             "create_system_user {name} {}",
             home.to_string_lossy()
-        ))
+        ))?;
+        self.inner.lock().unwrap().users.insert(name.to_string());
+        Ok(())
     }
 
     fn remove_system_user(&self, name: &str) -> Result<(), PlatformError> {
-        self.record(format!("remove_system_user {name}"))
+        self.record(format!("remove_system_user {name}"))?;
+        self.inner.lock().unwrap().users.remove(name);
+        Ok(())
     }
 
     fn extract_tar_gz(
@@ -751,6 +760,14 @@ impl Platform for FakePlatform {
         self.record("iptables_flush".into())
     }
 
+    fn ip6tables_restore(&self, rules: &str) -> Result<(), PlatformError> {
+        self.record(format!("ip6tables_restore {} lines", rules.lines().count()))
+    }
+
+    fn ip6tables_flush(&self) -> Result<(), PlatformError> {
+        self.record("ip6tables_flush".into())
+    }
+
     fn fail2ban_jails(&self) -> Result<Vec<String>, PlatformError> {
         self.record("fail2ban_jails".into())?;
         Ok(self.inner.lock().unwrap().jails.clone())
@@ -1079,10 +1096,22 @@ mod tests {
         assert!(p.calls().contains(&"ufw_apply 2222/tcp 80/tcp".to_string()));
         p.iptables_restore("*filter\nCOMMIT\n").unwrap();
         p.iptables_flush().unwrap();
+        p.ip6tables_restore("*filter\nCOMMIT\n").unwrap();
+        p.ip6tables_flush().unwrap();
         assert_eq!(
             p.calls_matching("iptables_"),
             vec!["iptables_restore 2 lines", "iptables_flush"]
         );
+        assert_eq!(
+            p.calls_matching("ip6tables_"),
+            vec!["ip6tables_restore 2 lines", "ip6tables_flush"]
+        );
+        assert!(!p.user_exists("ferrum-ledger"));
+        p.create_system_user("ferrum-ledger", Path::new("/var/lib/ferrum/apps/ledger"))
+            .unwrap();
+        assert!(p.user_exists("ferrum-ledger"));
+        p.remove_system_user("ferrum-ledger").unwrap();
+        assert!(!p.user_exists("ferrum-ledger"));
 
         assert!(p.fail2ban_jails().unwrap().is_empty());
         p.set_jails(&["sshd", "nginx-botsearch"]);

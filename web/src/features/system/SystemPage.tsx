@@ -174,7 +174,8 @@ function Firewall({ firewall, job }: { firewall: Security["firewall"]; job: JobS
         {firewall.persisted ? (
           <p className="text-[12.5px] text-ink-4 mt-3 leading-relaxed">
             This host keeps its own rules in <Code>/etc/iptables/rules.v4</Code>; SSH, 80 and 443 are
-            open there too.
+            open there too. Once the firewall is enabled, the image's rule restore is switched off
+            so ufw is the only owner at boot.
           </p>
         ) : null}
         {failure(job, enable) ? <p className="text-[12.5px] text-fail mt-3">{failure(job, enable)}</p> : null}

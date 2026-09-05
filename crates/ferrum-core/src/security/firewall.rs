@@ -1,6 +1,6 @@
 use super::{Firewall, SecurityError, persisted};
-use ferrum_platform::ubuntu::RULES_V4;
-use ferrum_platform::{Platform, Sshd};
+use ferrum_platform::ubuntu::{NETFILTER_PERSISTENT_UNIT, RULES_V4};
+use ferrum_platform::{Platform, ServiceAction, Sshd};
 use std::path::Path;
 
 pub fn rules_for(ssh_port: u16) -> [String; 3] {
@@ -29,10 +29,14 @@ pub fn enable(platform: &dyn Platform) -> anyhow::Result<()> {
     let rules = rules_for(sshd.port);
     let allow: Vec<&str> = rules.iter().map(String::as_str).collect();
     platform.ufw_apply(&allow)?;
-    if persisted {
+    if persisted.any() {
         platform.iptables_flush()?;
+        platform.ip6tables_flush()?;
     }
     platform.ufw_enable()?;
+    if persisted.any() {
+        platform.service(ServiceAction::DisableNow, NETFILTER_PERSISTENT_UNIT)?;
+    }
     Ok(())
 }
 
@@ -40,6 +44,7 @@ pub fn enable(platform: &dyn Platform) -> anyhow::Result<()> {
 mod tests {
     use super::*;
     use ferrum_platform::FakePlatform;
+    use ferrum_platform::ubuntu::RULES_V6;
 
     fn position(calls: &[String], needle: &str) -> usize {
         calls
@@ -72,6 +77,8 @@ mod tests {
                 .any(|c| c.contains("22/tcp ") && !c.contains("2222/tcp"))
         );
         assert!(p.calls_matching("iptables_").is_empty(), "{calls:#?}");
+        assert!(p.calls_matching("ip6tables_").is_empty(), "{calls:#?}");
+        assert!(p.calls_matching("service disable").is_empty(), "{calls:#?}");
 
         let after = status(&p, p.sshd_effective().unwrap()).unwrap();
         assert!(after.enabled);
@@ -90,31 +97,57 @@ mod tests {
     #[test]
     fn a_host_with_its_own_rules_gets_them_opened_and_flushed_before_ufw_takes_over() {
         let p = FakePlatform::new();
-        p.write_file(
-            Path::new(RULES_V4),
-            "*filter\n-A INPUT -p tcp --dport 22 -j ACCEPT\n-A INPUT -j REJECT\nCOMMIT\n",
-            0o644,
-        )
-        .unwrap();
+        let own = "*filter\n-A INPUT -p tcp --dport 22 -j ACCEPT\n-A INPUT -j REJECT\nCOMMIT\n";
+        p.write_file(Path::new(RULES_V4), own, 0o644).unwrap();
+        p.write_file(Path::new(RULES_V6), own, 0o644).unwrap();
         assert!(status(&p, p.sshd_effective().unwrap()).unwrap().persisted);
         enable(&p).unwrap();
         let calls = p.calls();
         let read = position(&calls, "sshd_effective");
         let wrote = position(&calls, &format!("write_file {RULES_V4}"));
         let restored = position(&calls, "iptables_restore");
+        let restored6 = position(&calls, "ip6tables_restore");
         let install = position(&calls, "install_packages ufw");
         let apply = position(&calls, "ufw_apply 22/tcp 80/tcp 443/tcp");
         let flush = position(&calls, "iptables_flush");
+        let flush6 = position(&calls, "ip6tables_flush");
         let up = position(&calls, "ufw_enable");
+        let off = position(&calls, "service disable-now netfilter-persistent");
         assert!(
-            read < wrote && wrote < restored && restored < install && install < apply,
+            read < wrote && wrote < restored && restored < restored6 && restored6 < install,
             "{calls:#?}"
         );
-        assert!(apply < flush && flush < up, "{calls:#?}");
         assert!(
-            p.written(RULES_V4)
-                .unwrap()
-                .contains("--dports 80,443 -j ACCEPT\n-A INPUT -j REJECT")
+            install < apply && apply < flush && flush < flush6,
+            "{calls:#?}"
+        );
+        assert!(flush6 < up && up < off, "{calls:#?}");
+        for path in [RULES_V4, RULES_V6] {
+            assert!(
+                p.written(path)
+                    .unwrap()
+                    .contains("--dports 80,443 -j ACCEPT\n-A INPUT -j REJECT")
+            );
+        }
+    }
+
+    #[test]
+    fn a_v6_only_ruleset_still_hands_boot_to_ufw() {
+        let p = FakePlatform::new();
+        p.write_file(
+            Path::new(RULES_V6),
+            "*filter\n-A INPUT -p tcp --dport 22 -j ACCEPT\n-A INPUT -j REJECT\nCOMMIT\n",
+            0o644,
+        )
+        .unwrap();
+        enable(&p).unwrap();
+        assert!(p.calls_matching("iptables_restore").is_empty());
+        assert_eq!(p.calls_matching("ip6tables_restore").len(), 1);
+        assert_eq!(p.calls_matching("iptables_flush").len(), 1);
+        assert_eq!(
+            p.calls_matching("service disable-now netfilter-persistent")
+                .len(),
+            1
         );
     }
 

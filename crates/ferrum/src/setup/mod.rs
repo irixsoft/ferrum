@@ -131,8 +131,14 @@ fn install_platform(
     if !already_installed {
         nginx::install(platform, codename)?;
     }
-    if security::persisted::ensure_open(platform, &[80, 443])? {
-        println!("  Opened 80 and 443 in this host's own iptables rules.");
+    let opened = security::persisted::ensure_open(platform, &[80, 443])?;
+    match (opened.v4, opened.v6) {
+        (true, true) => {
+            println!("  Opened 80 and 443 in this host's own iptables rules, IPv4 and IPv6.")
+        }
+        (true, false) => println!("  Opened 80 and 443 in this host's own iptables rules."),
+        (false, true) => println!("  Opened 80 and 443 in this host's own ip6tables rules."),
+        (false, false) => {}
     }
     Ok(())
 }
@@ -292,7 +298,7 @@ async fn wait_for_health() -> anyhow::Result<()> {
 mod tests {
     use super::*;
     use ferrum_platform::FakePlatform;
-    use ferrum_platform::ubuntu::RULES_V4;
+    use ferrum_platform::ubuntu::{RULES_V4, RULES_V6};
     use std::path::Path;
 
     #[test]
@@ -301,13 +307,11 @@ mod tests {
         install_platform(&p, "noble", None, false).unwrap();
         assert!(p.calls_matching("install_packages nginx").len() == 1);
         assert!(p.calls_matching("iptables_").is_empty());
+        assert!(p.calls_matching("ip6tables_").is_empty());
 
-        p.write_file(
-            Path::new(RULES_V4),
-            "*filter\n-A INPUT -p tcp --dport 22 -j ACCEPT\n-A INPUT -j REJECT\nCOMMIT\n",
-            0o644,
-        )
-        .unwrap();
+        let own = "*filter\n-A INPUT -p tcp --dport 22 -j ACCEPT\n-A INPUT -j REJECT\nCOMMIT\n";
+        p.write_file(Path::new(RULES_V4), own, 0o644).unwrap();
+        p.write_file(Path::new(RULES_V6), own, 0o644).unwrap();
         install_platform(&p, "noble", None, true).unwrap();
         let calls = p.calls();
         assert_eq!(
@@ -318,10 +322,17 @@ mod tests {
             1
         );
         assert_eq!(p.calls_matching("iptables_restore").len(), 1);
+        assert_eq!(p.calls_matching("ip6tables_restore").len(), 1);
+        for path in [RULES_V4, RULES_V6] {
+            assert!(
+                p.written(path)
+                    .unwrap()
+                    .contains("--dports 80,443 -j ACCEPT\n-A INPUT -j REJECT")
+            );
+        }
         assert!(
-            p.written(RULES_V4)
-                .unwrap()
-                .contains("--dports 80,443 -j ACCEPT\n-A INPUT -j REJECT")
+            p.calls_matching("service disable").is_empty(),
+            "setup leaves the unit alone"
         );
     }
 }

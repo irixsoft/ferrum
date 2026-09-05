@@ -36,6 +36,8 @@ pub const RUN_SSHD: &str = "/run/sshd";
 pub const APT_AUTO_UPGRADES: &str = "/etc/apt/apt.conf.d/20auto-upgrades";
 /// What `netfilter-persistent` restores at boot on images that ship it, Oracle's among them.
 pub const RULES_V4: &str = "/etc/iptables/rules.v4";
+pub const RULES_V6: &str = "/etc/iptables/rules.v6";
+pub const NETFILTER_PERSISTENT_UNIT: &str = "netfilter-persistent";
 pub const ROOT_AUTHORIZED_KEYS: &str = "/root/.ssh/authorized_keys";
 const HOME_DIR: &str = "/home";
 const AUTHORIZED_KEYS: &str = ".ssh/authorized_keys";
@@ -59,7 +61,6 @@ const TAIL_BLOCK: usize = 64 * 1024;
 const ICU_BY_CODENAME: [(&str, &str); 2] = [("jammy", "libicu70"), ("noble", "libicu74")];
 const ICU_FALLBACK: &str = "libicu-dev";
 
-const USERADD_EXISTS: i32 = 9;
 const USERDEL_MISSING: i32 = 6;
 
 const APT_ENV: [(&str, &str); 2] = [
@@ -511,6 +512,7 @@ impl Platform for Ubuntu {
         let argv = match action {
             ServiceAction::DaemonReload => vec!["systemctl", "daemon-reload"],
             ServiceAction::EnableNow => vec!["systemctl", "enable", "--now", unit],
+            ServiceAction::DisableNow => vec!["systemctl", "disable", "--now", unit],
             other => vec!["systemctl", other.as_str(), unit],
         };
         exec::run(&argv).map(|_| ())
@@ -555,22 +557,24 @@ impl Platform for Ubuntu {
         exec::run(&["chown", "-R", &owner, &path.to_string_lossy()]).map(|_| ())
     }
 
+    fn user_exists(&self, name: &str) -> bool {
+        exec::status(&["getent", "passwd", name])
+    }
+
     fn create_system_user(&self, name: &str, home: &Path) -> Result<(), PlatformError> {
         let home = home.to_string_lossy();
-        tolerate(
-            exec::run(&[
-                "useradd",
-                "--system",
-                "--home-dir",
-                &home,
-                "--no-create-home",
-                "--shell",
-                NOLOGIN,
-                "--user-group",
-                name,
-            ]),
-            USERADD_EXISTS,
-        )
+        exec::run(&[
+            "useradd",
+            "--system",
+            "--home-dir",
+            &home,
+            "--no-create-home",
+            "--shell",
+            NOLOGIN,
+            "--user-group",
+            name,
+        ])
+        .map(|_| ())
     }
 
     fn remove_system_user(&self, name: &str) -> Result<(), PlatformError> {
@@ -1015,6 +1019,15 @@ impl Platform for Ubuntu {
         exec::run(&["iptables", "-X"]).map(|_| ())
     }
 
+    fn ip6tables_restore(&self, rules: &str) -> Result<(), PlatformError> {
+        exec::run_with_stdin(&["ip6tables-restore"], rules).map(|_| ())
+    }
+
+    fn ip6tables_flush(&self) -> Result<(), PlatformError> {
+        exec::run(&["ip6tables", "-F"])?;
+        exec::run(&["ip6tables", "-X"]).map(|_| ())
+    }
+
     fn fail2ban_jails(&self) -> Result<Vec<String>, PlatformError> {
         let out = exec::run(&["fail2ban-client", "status"])?;
         Ok(parse_fail2ban_jails(&out))
@@ -1236,19 +1249,19 @@ mod tests {
     }
 
     #[test]
-    fn an_existing_user_is_not_an_error_but_other_failures_are() {
-        let exists = Err(PlatformError::Command {
-            cmd: "useradd".into(),
-            code: USERADD_EXISTS,
-            stderr: "already exists".into(),
+    fn a_missing_user_on_userdel_is_not_an_error_but_other_failures_are() {
+        let missing = Err(PlatformError::Command {
+            cmd: "userdel".into(),
+            code: USERDEL_MISSING,
+            stderr: "does not exist".into(),
         });
-        assert!(tolerate(exists, USERADD_EXISTS).is_ok());
+        assert!(tolerate(missing, USERDEL_MISSING).is_ok());
         let syntax = Err(PlatformError::Command {
-            cmd: "useradd".into(),
+            cmd: "userdel".into(),
             code: 2,
             stderr: "invalid".into(),
         });
-        assert!(tolerate(syntax, USERADD_EXISTS).is_err());
+        assert!(tolerate(syntax, USERDEL_MISSING).is_err());
     }
 
     #[test]
