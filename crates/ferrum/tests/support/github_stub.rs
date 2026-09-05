@@ -68,6 +68,7 @@ impl StubGithub {
             .route("/repos/oven-sh/bun/releases/latest", get(bun_latest))
             .route("/repos/{owner}/{repo}/commits/{*git_ref}", get(commit))
             .route("/repos/{owner}/{repo}/releases/latest", get(latest_release))
+            .route("/repos/{owner}/{repo}/tags", get(tags))
             .with_state(counters.clone());
 
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -303,6 +304,23 @@ async fn commit(
         },
         "author": { "login": "saeed" }
     })))
+}
+
+pub const TAGS: [&str; 3] = ["v1.9.0", "v1.10.0", "v1.4.0"];
+
+/// GitHub's order is neither by date nor by version; the daemon sorts.
+async fn tags(Path((_owner, repo)): Path<(String, String)>) -> Json<Value> {
+    if repo == "untagged" {
+        return Json(json!([]));
+    }
+    let listed: Vec<Value> = TAGS
+        .iter()
+        .map(|name| {
+            let sha = format!("{:0<40}", name.replace(['v', '.'], ""));
+            json!({ "name": name, "commit": { "sha": sha }, "zipball_url": "", "tarball_url": "" })
+        })
+        .collect();
+    Json(Value::Array(listed))
 }
 
 async fn latest_release(State(c): State<Counters>) -> Json<Value> {

@@ -4,7 +4,7 @@ use axum::http::StatusCode;
 use ferrum_core::github::webhook;
 use ferrum_platform::Exit;
 use serde_json::Value;
-use support::github_stub::{HEAD_MESSAGE, HEAD_SHA, LATEST_TAG};
+use support::github_stub::{HEAD_MESSAGE, HEAD_SHA};
 use support::{
     Harness, StubHealth, WEBHOOK_SECRET, push_payload, signed_in, signed_in_and_connected,
     static_app_json,
@@ -160,17 +160,16 @@ async fn an_app_says_it_has_never_gone_live_until_a_deploy_does() {
 }
 
 #[tokio::test]
-async fn release_tracking_deploys_the_latest_release_tag() {
+async fn a_manual_deploy_builds_the_apps_tag_or_the_ref_named() {
     let (h, cookie, _github) = signed_in_and_connected().await;
-    let json =
-        static_app_json("docs").replace("\"tracking\":\"branch\"", "\"tracking\":\"releases\"");
-    assert!(json.contains("releases"));
+    let json = static_app_json("docs").replace("\"git_ref\":\"main\"", "\"git_ref\":\"v1.4.0\"");
+    assert!(json.contains("v1.4.0"));
     h.create_app_from(&json, &cookie).await;
     let res = h
         .post_with_cookie("/api/apps/docs/deploys", "{}", &cookie)
         .await;
     assert_eq!(res.status, StatusCode::ACCEPTED, "{}", res.json);
-    assert_eq!(res.json["git_ref"], LATEST_TAG);
+    assert_eq!(res.json["git_ref"], "v1.4.0");
     assert!(res.json["commit_sha"].as_str().unwrap().starts_with("140"));
     let id = res.json["id"].as_str().unwrap();
     assert_eq!(h.wait_for_deploy(id, &cookie).await["outcome"], "Live");
@@ -194,27 +193,55 @@ async fn release_tracking_deploys_the_latest_release_tag() {
 }
 
 #[tokio::test]
-async fn a_verified_push_on_the_tracked_branch_enqueues_a_deploy() {
+async fn a_pushed_tag_deploys_and_a_branch_push_or_a_deleted_tag_does_not() {
     let (h, cookie, _github) = signed_in_and_connected().await;
     h.create_app_from(&static_app_json("ledger"), &cookie).await;
-    let body = push_payload("irixsoft/ledger", "refs/heads/main", "a3f9c2d4e81b06f5c9a2");
+    let body = push_payload(
+        "irixsoft/ledger",
+        "refs/tags/v2.0.0",
+        "a3f9c2d4e81b06f5c9a2",
+    );
     let sig = webhook::sign(WEBHOOK_SECRET, &body);
     let res = h.webhook("push", "d-1", &sig, &body).await;
     assert_eq!(res.status, StatusCode::NO_CONTENT);
     let deploys = h.get_with_cookie("/api/apps/ledger/deploys", &cookie).await;
     assert_eq!(deploys.json[0]["trigger"], "webhook");
-    assert_eq!(deploys.json[0]["commit_sha"], "a3f9c2d4e81b06f5c9a2");
+    assert_eq!(deploys.json[0]["git_ref"], "v2.0.0");
     let id = deploys.json[0]["id"].as_str().unwrap();
     assert_eq!(h.wait_for_deploy(id, &cookie).await["outcome"], "Live");
+    assert!(
+        h.platform
+            .calls()
+            .iter()
+            .any(|c| c.starts_with("git_clone https://github.com/irixsoft/ledger.git v2.0.0 ")),
+        "the tag is cloned and resolved, not the pushed object: {:#?}",
+        h.platform.calls()
+    );
+    assert_eq!(
+        h.get_with_cookie("/api/apps/ledger", &cookie).await.json["git_ref"],
+        "v2.0.0",
+        "the pushed tag becomes the app's tag"
+    );
 
-    let other = push_payload("irixsoft/ledger", "refs/heads/dev", "ffff");
-    h.webhook(
-        "push",
-        "d-2",
-        &webhook::sign(WEBHOOK_SECRET, &other),
-        &other,
-    )
-    .await;
+    for (delivery, git_ref, sha) in [
+        ("d-2", "refs/heads/main", "ffff"),
+        (
+            "d-3",
+            "refs/tags/v2.0.0",
+            "0000000000000000000000000000000000000000",
+        ),
+    ] {
+        let other = push_payload("irixsoft/ledger", git_ref, sha);
+        let res = h
+            .webhook(
+                "push",
+                delivery,
+                &webhook::sign(WEBHOOK_SECRET, &other),
+                &other,
+            )
+            .await;
+        assert_eq!(res.status, StatusCode::NO_CONTENT);
+    }
     let again = h.webhook("push", "d-1", &sig, &body).await;
     assert_eq!(
         again.status,
@@ -229,7 +256,7 @@ async fn a_verified_push_on_the_tracked_branch_enqueues_a_deploy() {
             .unwrap()
             .len(),
         1,
-        "neither the other branch nor the redelivery deploys"
+        "neither the branch, the deleted tag nor the redelivery deploys"
     );
 }
 

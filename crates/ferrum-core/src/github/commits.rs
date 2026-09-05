@@ -1,5 +1,5 @@
 use super::Api;
-use crate::apps::{App, Tracking};
+use crate::apps::App;
 use crate::state::State;
 use anyhow::Context;
 use serde::Deserialize;
@@ -33,11 +33,6 @@ struct Signature {
 #[derive(Deserialize)]
 struct Login {
     login: String,
-}
-
-#[derive(Deserialize)]
-struct LatestRelease {
-    tag_name: String,
 }
 
 pub async fn commit(
@@ -75,30 +70,12 @@ pub async fn commit(
     })
 }
 
-pub async fn latest_release(api: &Api, state: &State, repository: &str) -> anyhow::Result<String> {
-    let found: LatestRelease = api
-        .installed(state)
-        .await?
-        .get(format!("/repos/{repository}/releases/latest"), None::<&()>)
-        .await
-        .with_context(|| format!("{repository} has no published release yet"))?;
-    Ok(found.tag_name)
-}
-
-/// What a deploy of the app would build right now: the tracked branch's tip, or the latest
-/// release's tag. An explicit ref overrides both once.
+/// What a deploy of the app would build right now: its tag, or an explicit ref once.
 pub async fn head_of(
     api: &Api,
     state: &State,
     app: &App,
     git_ref: Option<&str>,
 ) -> anyhow::Result<Head> {
-    let git_ref = match git_ref {
-        Some(explicit) => explicit.to_string(),
-        None if app.tracking == Tracking::Releases => {
-            latest_release(api, state, &app.repository).await?
-        }
-        None => app.git_ref.clone(),
-    };
-    commit(api, state, &app.repository, &git_ref).await
+    commit(api, state, &app.repository, git_ref.unwrap_or(&app.git_ref)).await
 }

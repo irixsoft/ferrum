@@ -1,5 +1,5 @@
 import { Link } from "@tanstack/react-router";
-import { ArrowUpRight, GitBranch, Tag } from "lucide-react";
+import { ArrowUpRight, Tag } from "lucide-react";
 import type { App } from "@/types/api";
 import { RuntimeMark } from "./RuntimeMark";
 import { StatusPill } from "./StatusPill";
@@ -26,7 +26,7 @@ export function AppCard({ app }: { app: App }) {
       <div className="mt-4 flex items-center gap-3 flex-wrap">
         <RuntimeMark runtime={app.runtime} version={app.runtime_version} />
         <span className="inline-flex items-center gap-1 text-[12.5px] text-ink-4 font-mono">
-          {app.tracking === "releases" ? <Tag size={11} /> : <GitBranch size={11} />}
+          <Tag size={11} />
           {app.git_ref}
         </span>
       </div>

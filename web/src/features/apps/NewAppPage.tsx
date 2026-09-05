@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { Link, useNavigate } from "@tanstack/react-router";
-import { GitBranch, Lock, Plus, Search } from "lucide-react";
+import { Lock, Plus, Search, Tag } from "lucide-react";
 import {
   ApiError,
   installRuntime,
@@ -10,6 +10,7 @@ import {
   useDetect,
   useGithub,
   useGithubRepos,
+  useGithubTags,
   usePostgres,
   useRequestRedis,
   useRuntimes,
@@ -20,11 +21,10 @@ import { Card, CardBody, CardFoot, CardHeader } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
 import { Badge } from "@/components/ui/Badge";
 import { Code } from "@/components/ui/Code";
-import { Segmented } from "@/components/ui/Segmented";
 import { ConfigForm, draftFromDetection, toNewApp, type Draft, type Sources } from "./ConfigForm";
 import { EnvRows, HINTS_NOTE, blankRow, rowsFromHints, type EnvRow } from "./EnvironmentPanel";
 import { ago, bytes } from "@/lib/utils";
-import type { App, Detected, GithubRepo, Progress, Tracking } from "@/types/api";
+import type { App, Detected, GithubRepo, Progress } from "@/types/api";
 
 type Step = { kind: "pick" } | { kind: "detecting" } | { kind: "review"; detected: Detected };
 
@@ -37,7 +37,6 @@ export function NewAppPage() {
   const [step, setStep] = useState<Step>({ kind: "pick" });
   const [repo, setRepo] = useState<GithubRepo | null>(null);
   const [gitRef, setGitRef] = useState("");
-  const [tracking, setTracking] = useState<Tracking>("releases");
   const [root, setRoot] = useState("");
   const [draft, setDraft] = useState<Draft | null>(null);
   const [sources, setSources] = useState<Sources>({});
@@ -47,7 +46,7 @@ export function NewAppPage() {
 
   const pick = (r: GithubRepo) => {
     setRepo(r);
-    setGitRef(r.default_branch);
+    setGitRef("");
   };
 
   const inspect = async () => {
@@ -56,7 +55,7 @@ export function NewAppPage() {
     try {
       const detected = await detect.mutateAsync({ repository: repo.full_name, ref: gitRef, root });
       const best = detected.candidates[0] ?? null;
-      const built = draftFromDetection(repo.full_name, gitRef, tracking, root, detected, best);
+      const built = draftFromDetection(repo.full_name, gitRef, root, detected, best);
       setCandidate(0);
       setSources(built.sources);
       setEnvRows(rowsFromHints(detected.env_hints));
@@ -85,7 +84,6 @@ export function NewAppPage() {
     const built = draftFromDetection(
       repo.full_name,
       gitRef,
-      tracking,
       root,
       step.detected,
       step.detected.candidates[index] ?? null,
@@ -139,8 +137,6 @@ export function NewAppPage() {
           onPick={pick}
           gitRef={gitRef}
           setGitRef={setGitRef}
-          tracking={tracking}
-          setTracking={setTracking}
           root={root}
           setRoot={setRoot}
           onInspect={inspect}
@@ -188,8 +184,6 @@ function Picker({
   onPick,
   gitRef,
   setGitRef,
-  tracking,
-  setTracking,
   root,
   setRoot,
   onInspect,
@@ -199,15 +193,21 @@ function Picker({
   onPick: (r: GithubRepo) => void;
   gitRef: string;
   setGitRef: (v: string) => void;
-  tracking: Tracking;
-  setTracking: (v: Tracking) => void;
   root: string;
   setRoot: (v: string) => void;
   onInspect: () => void;
   error: string | null;
 }) {
   const repos = useGithubRepos();
+  const tags = useGithubTags(repo?.full_name ?? null);
   const [query, setQuery] = useState("");
+  const tagNames = (tags.data ?? []).map((t) => t.name);
+  const untagged = tags.data !== undefined && tagNames.length === 0;
+  const refOptions = untagged && repo ? [repo.default_branch] : tagNames;
+  const newest = refOptions[0] ?? "";
+  useEffect(() => {
+    if (repo && tags.data) setGitRef(newest);
+  }, [repo, tags.data, newest, setGitRef]);
   const matching = (repos.data ?? []).filter((r) =>
     r.full_name.toLowerCase().includes(query.trim().toLowerCase()),
   );
@@ -268,29 +268,26 @@ function Picker({
         <CardHeader title="What to deploy" />
         <CardBody className="grid gap-4">
           <div>
-            <label className="block text-[13px] text-ink-3 mb-1.5">Branch or tag</label>
+            <label className="block text-[13px] text-ink-3 mb-1.5">Tag</label>
             <div className="relative">
-              <GitBranch size={13} className="absolute left-3 top-1/2 -translate-y-1/2 text-ink-4" />
-              <input
+              <Tag size={13} className="absolute left-3 top-1/2 -translate-y-1/2 text-ink-4" />
+              <select
                 value={gitRef}
                 onChange={(e) => setGitRef(e.target.value)}
-                disabled={!repo}
+                disabled={!repo || refOptions.length === 0}
                 className={`${INPUT} pl-8 font-mono text-[13px]`}
-              />
+              >
+                {refOptions.map((name) => (
+                  <option key={name} value={name}>
+                    {name}
+                  </option>
+                ))}
+              </select>
             </div>
-          </div>
-          <div>
-            <label className="block text-[13px] text-ink-3 mb-1.5">Deploy on</label>
-            <Segmented
-              value={tracking}
-              onChange={setTracking}
-              options={[
-                { value: "releases", label: "Releases" },
-                { value: "branch", label: "Every push" },
-              ]}
-            />
             <p className="text-[12px] text-ink-4 mt-1.5">
-              Releases by default: a push to main should not take production down with it.
+              {untagged
+                ? "No tags yet. The default branch is inspected; the first tag you push deploys."
+                : "Every tag you push deploys. A push to a branch does not."}
             </p>
           </div>
           <div>
@@ -467,6 +464,7 @@ function Review({
 
       <ConfigForm
         draft={draft}
+        repository={repo.full_name}
         onChange={setDraft}
         onToolchainChange={onToolchainChange}
         sources={sources}

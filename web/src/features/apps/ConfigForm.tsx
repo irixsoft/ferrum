@@ -4,25 +4,14 @@ import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import { Card, CardBody, CardFoot, CardHeader } from "@/components/ui/Card";
 import { Code } from "@/components/ui/Code";
-import { Segmented } from "@/components/ui/Segmented";
 import { runtimeLabel } from "@/components/RuntimeMark";
-import type {
-  App,
-  AppChanges,
-  Detection,
-  Detected,
-  NewApp,
-  RouteInput,
-  Runtime,
-  Toolchain,
-  Tracking,
-} from "@/types/api";
+import { useGithubTags } from "@/lib/api";
+import type { App, AppChanges, Detection, Detected, NewApp, RouteInput, Runtime, Toolchain } from "@/types/api";
 
 export interface Draft {
   slug: string;
   name: string;
   git_ref: string;
-  tracking: Tracking;
   root: string;
   runtime: Runtime;
   toolchain: Toolchain;
@@ -59,7 +48,6 @@ export const slugify = (name: string) =>
 export function draftFromDetection(
   repository: string,
   gitRef: string,
-  tracking: Tracking,
   root: string,
   detected: Detected,
   candidate: Detection | null,
@@ -94,7 +82,6 @@ export function draftFromDetection(
     slug: slugify(name),
     name,
     git_ref: gitRef,
-    tracking,
     root,
     runtime,
     toolchain,
@@ -122,7 +109,6 @@ export function draftFromApp(app: App): Draft {
     slug: app.slug,
     name: app.name,
     git_ref: app.git_ref,
-    tracking: app.tracking,
     root: app.root,
     runtime: app.runtime,
     toolchain: app.toolchain,
@@ -149,7 +135,6 @@ export function toChanges(d: Draft): AppChanges {
   return {
     name: d.name.trim(),
     git_ref: d.git_ref.trim(),
-    tracking: d.tracking,
     root: d.root.trim(),
     runtime: d.runtime,
     toolchain: d.toolchain,
@@ -185,12 +170,14 @@ export function toNewApp(d: Draft, repository: string): NewApp {
 
 export function ConfigForm({
   draft,
+  repository,
   onChange,
   sources = {},
   creating,
   onToolchainChange,
 }: {
   draft: Draft;
+  repository: string;
   onChange: (d: Draft) => void;
   sources?: Sources;
   creating: boolean;
@@ -200,6 +187,9 @@ export function ConfigForm({
   const set = <K extends keyof Draft>(field: K, value: Draft[K]) =>
     onChange({ ...draft, [field]: value });
   const isStatic = draft.runtime === "static";
+  const tags = useGithubTags(repository);
+  const tagNames = (tags.data ?? []).map((t) => t.name);
+  const refOptions = tagNames.includes(draft.git_ref) ? tagNames : [draft.git_ref, ...tagNames];
   const pick = (runtime: Runtime, toolchain: Toolchain) => {
     const next = { ...draft, runtime, toolchain };
     if (toolchain !== draft.toolchain && onToolchainChange) {
@@ -235,23 +225,14 @@ export function ConfigForm({
               className={MONO}
             />
           </Field>
-          <Field label="Branch or tag" source={sources.git_ref}>
-            <input value={draft.git_ref} onChange={(e) => set("git_ref", e.target.value)} className={MONO} />
-          </Field>
-          <Field label="Deploy on">
-            <Segmented
-              value={draft.tracking}
-              onChange={(v) => set("tracking", v)}
-              options={[
-                { value: "releases", label: "Releases" },
-                { value: "branch", label: "Every push" },
-              ]}
-            />
-            <p className="text-[12px] text-ink-4 mt-1.5">
-              {draft.tracking === "releases"
-                ? "A published release deploys. Pushes to the branch do not."
-                : "Every push to the branch deploys. Fine for a staging box."}
-            </p>
+          <Field label="Tag" source={sources.git_ref} hint="Every tag you push deploys and becomes the tag here">
+            <select value={draft.git_ref} onChange={(e) => set("git_ref", e.target.value)} className={MONO}>
+              {refOptions.map((name) => (
+                <option key={name} value={name}>
+                  {name}
+                </option>
+              ))}
+            </select>
           </Field>
           <Field label="Root directory" hint="Leave empty for the repository root">
             <input

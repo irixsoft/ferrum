@@ -21,7 +21,7 @@ pub fn manifest(hostname: &str) -> serde_json::Value {
         "public": false,
         "request_oauth_on_install": false,
         "default_permissions": { "contents": "read", "metadata": "read" },
-        "default_events": ["push", "release"],
+        "default_events": ["push"],
     })
 }
 
@@ -129,7 +129,11 @@ mod tests {
     fn the_app_is_private_and_read_only() {
         let m = manifest(HOST);
         assert_eq!(m["public"], false);
-        assert_eq!(m["default_events"], serde_json::json!(["push", "release"]));
+        assert_eq!(
+            m["default_events"],
+            serde_json::json!(["push"]),
+            "a tag arrives as a push; the release event is redundant"
+        );
         assert!(
             m["default_permissions"]
                 .as_object()

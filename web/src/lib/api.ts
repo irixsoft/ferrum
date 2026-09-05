@@ -17,6 +17,7 @@ import type {
   GithubHandoff,
   GithubRepo,
   GithubStatus,
+  GithubTag,
   HostStatus,
   LogLine,
   LogSource,
@@ -272,6 +273,14 @@ export function useTokens() {
 
 export function useGithub() {
   return useQuery({ queryKey: keys.github, queryFn: () => request<GithubStatus>("/github/status") });
+}
+
+export function useGithubTags(repository: string | null) {
+  return useQuery({
+    queryKey: ["github", "tags", repository] as const,
+    queryFn: () => request<GithubTag[]>(`/github/repos/${repository}/tags`),
+    enabled: repository !== null,
+  });
 }
 
 export function useGithubRepos() {

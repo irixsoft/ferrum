@@ -55,7 +55,7 @@ export function AppsPage() {
               <tr className="border-b border-line text-[12px] text-ink-3">
                 <th className="font-medium px-5 py-2.5">App</th>
                 <th className="font-medium px-3 py-2.5">Runtime</th>
-                <th className="font-medium px-3 py-2.5">Tracking</th>
+                <th className="font-medium px-3 py-2.5">Tag</th>
                 <th className="font-medium px-3 py-2.5">Limits</th>
                 <th className="font-medium px-3 py-2.5">Created</th>
                 <th className="font-medium px-5 py-2.5 text-right">Status</th>

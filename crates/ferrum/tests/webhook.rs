@@ -26,7 +26,7 @@ async fn a_correctly_signed_delivery_is_accepted_and_recorded() {
 }
 
 #[tokio::test]
-async fn a_release_is_recorded_with_its_tag() {
+async fn a_release_from_an_older_app_registration_is_acknowledged_and_ignored() {
     let h = connected().await;
     let body = release_payload("irixsoft/ledger", "v1.2.0");
 
@@ -36,9 +36,10 @@ async fn a_release_is_recorded_with_its_tag() {
             .status,
         StatusCode::NO_CONTENT
     );
-    let rows = h.deliveries().await;
-    assert_eq!(rows[0].event, "release");
-    assert_eq!(rows[0].git_ref.as_deref(), Some("v1.2.0"));
+    assert!(
+        h.deliveries().await.is_empty(),
+        "the tag's own push is what deploys"
+    );
 }
 
 #[tokio::test]

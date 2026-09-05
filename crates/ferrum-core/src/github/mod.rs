@@ -1,6 +1,7 @@
 pub mod commits;
 pub mod contents;
 pub mod manifest;
+pub mod refs;
 pub mod repos;
 pub mod token;
 pub mod webhook;

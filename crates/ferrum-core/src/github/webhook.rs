@@ -9,16 +9,15 @@ pub const EVENT_HEADER: &str = "x-github-event";
 pub const DELIVERY_HEADER: &str = "x-github-delivery";
 const PREFIX: &str = "sha256=";
 
+const TAG_PREFIX: &str = "refs/tags/";
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Event {
     Push {
         repository: String,
         git_ref: String,
         commit_sha: String,
-    },
-    Release {
-        repository: String,
-        tag: String,
+        deleted: bool,
     },
     Ping,
     Other(String),
@@ -28,7 +27,6 @@ impl Event {
     pub fn name(&self) -> &str {
         match self {
             Event::Push { .. } => "push",
-            Event::Release { .. } => "release",
             Event::Ping => "ping",
             Event::Other(name) => name,
         }
@@ -36,8 +34,18 @@ impl Event {
 
     pub fn repository(&self) -> &str {
         match self {
-            Event::Push { repository, .. } | Event::Release { repository, .. } => repository,
+            Event::Push { repository, .. } => repository,
             _ => "",
+        }
+    }
+
+    /// The tag a push created or moved; a branch push or a tag deletion is `None`.
+    pub fn pushed_tag(&self) -> Option<&str> {
+        match self {
+            Event::Push {
+                git_ref, deleted, ..
+            } if !deleted => git_ref.strip_prefix(TAG_PREFIX),
+            _ => None,
         }
     }
 }
@@ -91,35 +99,20 @@ struct PushPayload {
     #[serde(rename = "ref")]
     git_ref: String,
     after: String,
-}
-
-#[derive(Deserialize)]
-struct ReleasePayload {
-    repository: Repository,
-    release: ReleaseTag,
-}
-
-#[derive(Deserialize)]
-struct ReleaseTag {
-    tag_name: String,
+    #[serde(default)]
+    deleted: bool,
 }
 
 pub fn parse(event: &str, body: &[u8]) -> anyhow::Result<Event> {
     match event {
         "push" => {
             let p: PushPayload = serde_json::from_slice(body).context("reading a push delivery")?;
+            let deleted = p.deleted || p.after.chars().all(|c| c == '0');
             Ok(Event::Push {
                 repository: p.repository.full_name,
                 git_ref: p.git_ref,
                 commit_sha: p.after,
-            })
-        }
-        "release" => {
-            let p: ReleasePayload =
-                serde_json::from_slice(body).context("reading a release delivery")?;
-            Ok(Event::Release {
-                repository: p.repository.full_name,
-                tag: p.release.tag_name,
+                deleted,
             })
         }
         "ping" => Ok(Event::Ping),
@@ -141,7 +134,6 @@ pub async fn record(
             commit_sha,
             ..
         } => (Some(git_ref.as_str()), Some(commit_sha.as_str())),
-        Event::Release { tag, .. } => (Some(tag.as_str()), None),
         _ => (None, None),
     };
 
@@ -215,35 +207,39 @@ mod tests {
     }
 
     #[test]
-    fn a_push_carries_the_branch_and_the_commit() {
+    fn a_push_carries_the_ref_and_the_commit_and_says_whether_it_is_a_tag() {
         let body = br#"{"ref":"refs/heads/main","after":"abc123",
                         "repository":{"full_name":"irixsoft/ledger"}}"#;
+        let branch = parse("push", body).unwrap();
         assert_eq!(
-            parse("push", body).unwrap(),
+            branch,
             Event::Push {
                 repository: "irixsoft/ledger".into(),
                 git_ref: "refs/heads/main".into(),
                 commit_sha: "abc123".into(),
+                deleted: false,
             }
         );
-    }
+        assert_eq!(branch.pushed_tag(), None);
 
-    #[test]
-    fn a_release_carries_the_tag() {
-        let body = br#"{"release":{"tag_name":"v1.2.0"},
+        let body = br#"{"ref":"refs/tags/v1.2.0","after":"abc123","deleted":false,
                         "repository":{"full_name":"irixsoft/ledger"}}"#;
-        assert_eq!(
-            parse("release", body).unwrap(),
-            Event::Release {
-                repository: "irixsoft/ledger".into(),
-                tag: "v1.2.0".into(),
-            }
-        );
+        assert_eq!(parse("push", body).unwrap().pushed_tag(), Some("v1.2.0"));
+
+        let body =
+            br#"{"ref":"refs/tags/v1.2.0","after":"0000000000000000000000000000000000000000",
+                        "deleted":true,"repository":{"full_name":"irixsoft/ledger"}}"#;
+        assert_eq!(parse("push", body).unwrap().pushed_tag(), None);
     }
 
     #[test]
-    fn a_ping_and_an_unknown_event_do_not_fail() {
+    fn a_ping_a_release_and_an_unknown_event_do_not_fail() {
         assert_eq!(parse("ping", br#"{"zen":"x"}"#).unwrap(), Event::Ping);
+        assert_eq!(
+            parse("release", br#"{"release":{"tag_name":"v1"}}"#).unwrap(),
+            Event::Other("release".into()),
+            "an App registered before tags-only still sends release events"
+        );
         assert_eq!(
             parse("issues", b"{}").unwrap(),
             Event::Other("issues".into())

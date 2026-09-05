@@ -22,7 +22,7 @@ async fn the_manifest_names_this_host_and_asks_for_read_only_access() {
     );
     assert_eq!(m["default_permissions"]["contents"], "read");
     assert_eq!(m["public"], false);
-    assert_eq!(m["default_events"], serde_json::json!(["push", "release"]));
+    assert_eq!(m["default_events"], serde_json::json!(["push"]));
     assert!(
         m["default_permissions"]
             .as_object()
@@ -307,6 +307,30 @@ async fn repositories_come_back_for_the_installation_only() {
         2,
         "a listing that stops at page one hides repositories with no error"
     );
+}
+
+#[tokio::test]
+async fn tags_come_back_newest_first_and_an_untagged_repository_is_empty() {
+    let (h, cookie, _github) = signed_in_and_connected().await;
+    let res = h
+        .get_with_cookie("/api/github/repos/irixsoft/ledger/tags", &cookie)
+        .await;
+    assert_eq!(res.status, StatusCode::OK, "{}", res.json);
+    let names: Vec<&str> = res
+        .json
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(names, vec!["v1.10.0", "v1.9.0", "v1.4.0"]);
+    assert_eq!(res.json[0]["sha"].as_str().unwrap().len(), 40);
+
+    let none = h
+        .get_with_cookie("/api/github/repos/irixsoft/untagged/tags", &cookie)
+        .await;
+    assert_eq!(none.status, StatusCode::OK);
+    assert_eq!(none.json, serde_json::json!([]));
 }
 
 #[tokio::test]

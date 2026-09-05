@@ -2,7 +2,7 @@ use super::log::Log;
 use super::releases::Release;
 use super::run::{Ctx, run};
 use super::{Commit, Deploy, DeployState, Trigger, abandon_unfinished, by_id, create, queued_for};
-use crate::apps::{self, App, Tracking};
+use crate::apps::{self, App};
 use crate::github::webhook::Event;
 use crate::state::State;
 use tokio::sync::mpsc;
@@ -111,29 +111,17 @@ impl Deployer {
             .ok_or_else(|| anyhow::anyhow!("the rollback vanished as it was queued"))
     }
 
-    /// Every app tracking what the delivery describes gets a deploy.
+    /// A pushed tag deploys every app on that repository and becomes their tag. The commit is
+    /// left for the clone to resolve: an annotated tag's `after` is the tag object, not a commit.
     pub async fn react(&self, state: &State, event: &Event) -> anyhow::Result<Vec<Deploy>> {
         let mut queued = Vec::new();
         for app in apps::by_repository(state, event.repository()).await? {
-            if !matches(&app, event) {
+            let Some(tag) = matches(&app, event) else {
                 continue;
-            }
-            let (git_ref, commit) = match event {
-                Event::Push { commit_sha, .. } => (
-                    app.git_ref.clone(),
-                    Commit {
-                        sha: Some(commit_sha.clone()),
-                        ..Commit::default()
-                    },
-                ),
-                Event::Release { tag, .. } => {
-                    apps::set_git_ref(state, &app.id, tag).await?;
-                    (tag.clone(), Commit::default())
-                }
-                _ => continue,
             };
+            apps::set_git_ref(state, &app.id, tag).await?;
             queued.push(
-                self.enqueue(&app, Trigger::Webhook, &git_ref, &commit)
+                self.enqueue(&app, Trigger::Webhook, tag, &Commit::default())
                     .await?,
             );
         }
@@ -141,22 +129,10 @@ impl Deployer {
     }
 }
 
-pub fn matches(app: &App, event: &Event) -> bool {
-    match event {
-        Event::Push {
-            repository,
-            git_ref,
-            ..
-        } => {
-            repository == &app.repository
-                && app.tracking == Tracking::Branch
-                && git_ref == &format!("refs/heads/{}", app.git_ref)
-        }
-        Event::Release { repository, .. } => {
-            repository == &app.repository && app.tracking == Tracking::Releases
-        }
-        _ => false,
-    }
+pub fn matches<'e>(app: &App, event: &'e Event) -> Option<&'e str> {
+    (event.repository() == app.repository)
+        .then(|| event.pushed_tag())
+        .flatten()
 }
 
 #[cfg(test)]
@@ -172,40 +148,32 @@ mod tests {
     use std::time::Duration;
 
     #[test]
-    fn a_push_matches_the_tracked_branch_and_a_release_matches_release_tracking() {
-        let branch = app("ledger");
-        let push = |repository: &str, git_ref: &str| Event::Push {
+    fn only_a_tag_pushed_to_the_apps_repository_matches() {
+        let ledger = app("ledger");
+        let push = |repository: &str, git_ref: &str, deleted: bool| Event::Push {
             repository: repository.into(),
             git_ref: git_ref.into(),
             commit_sha: "a".into(),
+            deleted,
         };
-        let release = |repository: &str, tag: &str| Event::Release {
-            repository: repository.into(),
-            tag: tag.into(),
-        };
-        assert!(matches(
-            &branch,
-            &push("irixsoft/ledger", "refs/heads/main")
-        ));
-        assert!(!matches(
-            &branch,
-            &push("irixsoft/ledger", "refs/heads/dev")
-        ));
-        assert!(!matches(
-            &branch,
-            &push("irixsoft/ledger", "refs/tags/main")
-        ));
-        assert!(!matches(&branch, &release("irixsoft/ledger", "v1")));
-        assert!(!matches(&branch, &push("someone/else", "refs/heads/main")));
-        let mut releases = app("ledger");
-        releases.tracking = Tracking::Releases;
-        releases.git_ref = "v0.9".into();
-        assert!(matches(&releases, &release("irixsoft/ledger", "v1.0")));
-        assert!(!matches(
-            &releases,
-            &push("irixsoft/ledger", "refs/heads/main")
-        ));
-        assert!(!matches(&branch, &Event::Ping));
+        assert_eq!(
+            matches(&ledger, &push("irixsoft/ledger", "refs/tags/v1.0", false)),
+            Some("v1.0")
+        );
+        assert_eq!(
+            matches(&ledger, &push("irixsoft/ledger", "refs/heads/main", false)),
+            None
+        );
+        assert_eq!(
+            matches(&ledger, &push("irixsoft/ledger", "refs/tags/v1.0", true)),
+            None,
+            "a deleted tag deploys nothing"
+        );
+        assert_eq!(
+            matches(&ledger, &push("someone/else", "refs/tags/v1.0", false)),
+            None
+        );
+        assert_eq!(matches(&ledger, &Event::Ping), None);
     }
 
     async fn ctx(state: &State, platform: &Arc<FakePlatform>) -> Ctx {
@@ -339,40 +307,36 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_release_delivery_moves_the_tracked_ref_to_the_tag() {
+    async fn a_pushed_tag_becomes_the_apps_tag_and_a_branch_push_does_nothing() {
         let (_d, state) = state().await;
         let platform = Arc::new(FakePlatform::new());
         let mut new = new_app("ledger", &[("/", "main", false)]);
-        new.tracking = Tracking::Releases;
         new.git_ref = "v0.9".into();
         let app = apps::create(&state, new).await.unwrap();
         let deployer = Deployer::start(ctx(&state, &platform).await);
+        let push = |git_ref: &str| Event::Push {
+            repository: "irixsoft/ledger".into(),
+            git_ref: git_ref.into(),
+            commit_sha: "a".into(),
+            deleted: false,
+        };
         let queued = deployer
-            .react(
-                &state,
-                &Event::Release {
-                    repository: "irixsoft/ledger".into(),
-                    tag: "v1.0".into(),
-                },
-            )
+            .react(&state, &push("refs/tags/v1.0"))
             .await
             .unwrap();
         assert_eq!(queued.len(), 1);
         assert_eq!(queued[0].git_ref, "v1.0");
         assert_eq!(queued[0].trigger, Trigger::Webhook);
         assert_eq!(
+            queued[0].commit_sha, None,
+            "the clone resolves the tag, an annotated tag's sha is not a commit"
+        );
+        assert_eq!(
             apps::by_id(&state, &app.id).await.unwrap().unwrap().git_ref,
             "v1.0"
         );
         let none = deployer
-            .react(
-                &state,
-                &Event::Push {
-                    repository: "irixsoft/ledger".into(),
-                    git_ref: "refs/heads/main".into(),
-                    commit_sha: "a".into(),
-                },
-            )
+            .react(&state, &push("refs/heads/main"))
             .await
             .unwrap();
         assert!(none.is_empty());

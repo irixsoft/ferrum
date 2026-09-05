@@ -110,7 +110,7 @@ export function AppDetailPage({ slug }: { slug: string }) {
               size="md"
               variant="primary"
               disabled={active !== undefined || trigger.isPending}
-              title={app.tracking === "releases" ? "Deploys the latest release" : `Deploys the tip of ${app.git_ref}`}
+              title={`Deploys ${app.git_ref}`}
               onClick={() => {
                 trigger.mutate(undefined);
                 setTab("deploys");
@@ -179,7 +179,7 @@ function Overview({ app }: { app: AppDetail }) {
               <Row label="Repository">
                 <span className="font-mono text-[13px]">{app.repository}</span>
               </Row>
-              <Row label={app.tracking === "releases" ? "Releases from" : "Every push to"}>
+              <Row label="Tag">
                 <span className="font-mono text-[13px]">{app.git_ref}</span>
               </Row>
               {app.root ? (
@@ -442,7 +442,7 @@ function Configuration({ app }: { app: AppDetail }) {
 
   return (
     <div className="grid gap-4">
-      <ConfigForm draft={draft} onChange={setDraft} creating={false} />
+      <ConfigForm draft={draft} repository={app.repository} onChange={setDraft} creating={false} />
       <Card>
         <CardBody className="pt-5 flex items-center gap-3 flex-wrap">
           <Button variant="primary" onClick={() => update.mutate(toChanges(draft))} disabled={update.isPending}>

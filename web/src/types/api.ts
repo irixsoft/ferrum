@@ -1,6 +1,5 @@
 export type Runtime = "node" | "bun" | "dotnet" | "static";
 export type Toolchain = Exclude<Runtime, "static">;
-export type Tracking = "branch" | "releases";
 export type PackageManager = "npm" | "pnpm" | "yarn" | "bun";
 
 export type AppStatus = "new" | "live" | "building" | "failed" | "stopped" | "maintenance";
@@ -122,7 +121,6 @@ export interface App {
   name: string;
   repository: string;
   git_ref: string;
-  tracking: Tracking;
   root: string;
   runtime: Runtime;
   toolchain: Toolchain;
@@ -200,7 +198,6 @@ export interface NewApp {
   name: string;
   repository: string;
   git_ref: string;
-  tracking: Tracking;
   root: string;
   runtime: Runtime;
   toolchain: Toolchain;
@@ -504,4 +501,9 @@ export interface GithubRepo {
   private: boolean;
   default_branch: string;
   pushed_at: string | null;
+}
+
+export interface GithubTag {
+  name: string;
+  sha: string;
 }

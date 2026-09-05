@@ -28,14 +28,6 @@ pub enum AppError {
     NoProcess,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, sqlx::Type)]
-#[serde(rename_all = "lowercase")]
-#[sqlx(rename_all = "lowercase")]
-pub enum Tracking {
-    Branch,
-    Releases,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Route {
     pub path: String,
@@ -68,8 +60,8 @@ pub struct App {
     pub slug: String,
     pub name: String,
     pub repository: String,
+    /// The tag to deploy: the last one pushed, or the one picked at creation.
     pub git_ref: String,
-    pub tracking: Tracking,
     pub root: String,
     pub runtime: RuntimeKind,
     pub toolchain: RuntimeKind,
@@ -109,7 +101,6 @@ pub struct NewApp {
     pub name: String,
     pub repository: String,
     pub git_ref: String,
-    pub tracking: Tracking,
     pub root: String,
     pub runtime: RuntimeKind,
     pub toolchain: RuntimeKind,
@@ -134,7 +125,6 @@ impl Default for NewApp {
             name: String::new(),
             repository: String::new(),
             git_ref: String::new(),
-            tracking: Tracking::Releases,
             root: String::new(),
             runtime: RuntimeKind::Node,
             toolchain: RuntimeKind::Node,
@@ -159,7 +149,6 @@ impl Default for NewApp {
 pub struct AppChanges {
     pub name: Option<String>,
     pub git_ref: Option<String>,
-    pub tracking: Option<Tracking>,
     pub root: Option<String>,
     pub runtime: Option<RuntimeKind>,
     pub toolchain: Option<RuntimeKind>,
@@ -233,7 +222,7 @@ pub fn validate(new: &NewApp) -> Result<(), AppError> {
         return Err(invalid("The repository must be named owner/repo."));
     }
     if new.git_ref.trim().is_empty() || new.git_ref.contains("..") || new.git_ref.contains(' ') {
-        return Err(invalid("Choose a branch or tag to deploy."));
+        return Err(invalid("Choose a tag to deploy."));
     }
     if new.root.starts_with('/') || new.root.contains("..") {
         return Err(invalid("The root directory is relative to the repository."));
@@ -352,13 +341,12 @@ pub async fn create(state: &State, new: NewApp) -> anyhow::Result<App> {
         "INSERT INTO apps (id, slug, name, repository, git_ref, tracking, root, runtime, toolchain,
                            runtime_version, install_cmd, build_cmd, start_cmd, migrate_cmd, output_dir,
                            health_path, startup_budget_secs, memory_mb, cpu_percent, pause_for_migrations)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+         VALUES (?, ?, ?, ?, ?, 'releases', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         id,
         new.slug,
         new.name,
         new.repository,
         new.git_ref,
-        new.tracking,
         new.root,
         new.runtime,
         new.toolchain,
@@ -416,7 +404,6 @@ pub async fn update(state: &State, slug: &str, changes: AppChanges) -> anyhow::R
         name: changes.name.unwrap_or(current.name),
         repository: current.repository,
         git_ref: changes.git_ref.unwrap_or(current.git_ref),
-        tracking: changes.tracking.unwrap_or(current.tracking),
         root: changes.root.unwrap_or(current.root),
         runtime: changes.runtime.unwrap_or(current.runtime),
         toolchain: changes.toolchain.unwrap_or(current.toolchain),
@@ -446,7 +433,7 @@ pub async fn update(state: &State, slug: &str, changes: AppChanges) -> anyhow::R
     let memory = merged.memory_mb as i64;
     let cpu = merged.cpu_percent as i64;
     sqlx::query!(
-        "UPDATE apps SET name = ?, git_ref = ?, tracking = ?, root = ?, runtime = ?, toolchain = ?,
+        "UPDATE apps SET name = ?, git_ref = ?, root = ?, runtime = ?, toolchain = ?,
                          runtime_version = ?, install_cmd = ?, build_cmd = ?, start_cmd = ?,
                          migrate_cmd = ?, output_dir = ?, health_path = ?, startup_budget_secs = ?,
                          memory_mb = ?, cpu_percent = ?, pause_for_migrations = ?,
@@ -454,7 +441,6 @@ pub async fn update(state: &State, slug: &str, changes: AppChanges) -> anyhow::R
          WHERE id = ?",
         merged.name,
         merged.git_ref,
-        merged.tracking,
         merged.root,
         merged.runtime,
         merged.toolchain,
@@ -586,7 +572,7 @@ fn is_unique_violation(e: &sqlx::Error) -> bool {
 pub async fn list(state: &State) -> anyhow::Result<Vec<App>> {
     let rows = sqlx::query!(
         r#"SELECT id AS "id!", slug AS "slug!", name AS "name!", repository AS "repository!",
-                  git_ref AS "git_ref!", tracking AS "tracking!: Tracking", root AS "root!",
+                  git_ref AS "git_ref!", root AS "root!",
                   runtime AS "runtime!: RuntimeKind", toolchain AS "toolchain!: RuntimeKind",
                   runtime_version AS "runtime_version!", install_cmd, build_cmd, start_cmd, migrate_cmd,
                   output_dir, health_path AS "health_path!", startup_budget_secs AS "startup_budget_secs!",
@@ -609,7 +595,6 @@ pub async fn list(state: &State) -> anyhow::Result<Vec<App>> {
             name: r.name,
             repository: r.repository,
             git_ref: r.git_ref,
-            tracking: r.tracking,
             root: r.root,
             runtime: r.runtime,
             toolchain: r.toolchain,
@@ -708,7 +693,6 @@ pub(crate) mod tests {
             name: slug.into(),
             repository: "irixsoft/ledger".into(),
             git_ref: "main".into(),
-            tracking: Tracking::Branch,
             runtime_version: "22.11.0".into(),
             commands: Commands {
                 install: Some("bun install --frozen-lockfile".into()),
@@ -745,7 +729,6 @@ pub(crate) mod tests {
             name: slug.into(),
             repository: "irixsoft/ledger".into(),
             git_ref: "main".into(),
-            tracking: Tracking::Branch,
             root: String::new(),
             runtime: RuntimeKind::Node,
             toolchain: RuntimeKind::Node,

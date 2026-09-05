@@ -1,7 +1,7 @@
 use crate::auth::Caller;
 use crate::routes::error::{ApiError, ApiResult};
 use crate::server::AppState;
-use axum::extract::{Query, State as Extract};
+use axum::extract::{Path, Query, State as Extract};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Redirect, Response};
 use axum::{Json, Router, routing::get};
@@ -29,6 +29,7 @@ pub fn router() -> Router<AppState> {
         .route("/api/github/connect", axum::routing::post(connect))
         .route("/api/github/status", get(status))
         .route("/api/github/repos", get(repos))
+        .route("/api/github/repos/{owner}/{repo}/tags", get(tags))
         .route("/api/github", axum::routing::delete(remove))
 }
 
@@ -114,6 +115,18 @@ async fn repos(
     _: Caller,
 ) -> ApiResult<Json<Vec<github::repos::Repo>>> {
     app.github.repos(&app.db).await.map(Json).map_err(reachable)
+}
+
+async fn tags(
+    Extract(app): Extract<AppState>,
+    _: Caller,
+    Path((owner, repo)): Path<(String, String)>,
+) -> ApiResult<Json<Vec<github::refs::Tag>>> {
+    app.github
+        .tags(&app.db, &format!("{owner}/{repo}"))
+        .await
+        .map(Json)
+        .map_err(reachable)
 }
 
 /// "Not connected" and "not installed" are the user's to fix, so they must survive as a sentence
