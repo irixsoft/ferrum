@@ -157,9 +157,15 @@ pub fn run_streaming(
         let _ = child.kill();
     }
     let status = child.wait()?;
-    if stopped {
-        drop(rx);
-        return Ok(Exit::of(status));
+    if timed_out || stopped {
+        for (stream, line) in rx.try_iter() {
+            on_line(stream, &line);
+        }
+        return Ok(if timed_out {
+            Exit::TimedOut
+        } else {
+            Exit::of(status)
+        });
     }
     for handle in readers {
         let _ = handle.join();
@@ -167,11 +173,7 @@ pub fn run_streaming(
     for (stream, line) in rx.iter() {
         on_line(stream, &line);
     }
-    Ok(if timed_out {
-        Exit::TimedOut
-    } else {
-        Exit::of(status)
-    })
+    Ok(Exit::of(status))
 }
 
 fn reader(
@@ -249,13 +251,21 @@ mod tests {
     #[test]
     fn a_command_past_its_deadline_is_killed_and_reported_as_timed_out() {
         let started = Instant::now();
+        let mut seen = Vec::new();
         let exit = run_streaming(
-            &spawn(&["sh", "-c", "sleep 30"], Some(Duration::from_millis(200))),
-            &mut |_, _| {},
+            &spawn(
+                &["sh", "-c", "echo started; sleep 30; true"],
+                Some(Duration::from_millis(200)),
+            ),
+            &mut |_, l| seen.push(l.to_string()),
         )
         .unwrap();
         assert_eq!(exit, Exit::TimedOut);
-        assert!(started.elapsed() < Duration::from_secs(5));
+        assert_eq!(seen, vec!["started"]);
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "the orphaned sleep still holds the pipe; the reader must not be joined"
+        );
     }
 
     #[test]
