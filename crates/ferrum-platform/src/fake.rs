@@ -53,7 +53,7 @@ pub struct FakePlatform {
     inner: Mutex<Inner>,
 }
 
-/// Holds a scripted command until `open` is called, so a test can watch the queue behind it.
+/// Holds a matching call until `open` is called, so a test can watch what waits behind it.
 pub struct Gate(Latch);
 
 impl Gate {
@@ -298,8 +298,25 @@ impl FakePlatform {
                 stderr: "scripted failure".into(),
             });
         }
+        let gate = inner
+            .gates
+            .iter()
+            .find(|(needle, _)| call.contains(needle.as_str()))
+            .map(|(_, gate)| gate.clone());
         inner.calls.push(call);
+        drop(inner);
+        if let Some(gate) = gate {
+            wait_for(&gate);
+        }
         Ok(())
+    }
+}
+
+fn wait_for(gate: &Latch) {
+    let (opened, wake) = &**gate;
+    let mut open = opened.lock().unwrap();
+    while !*open {
+        open = wake.wait(open).unwrap();
     }
 }
 
@@ -551,11 +568,7 @@ impl Platform for FakePlatform {
             (script, gate)
         };
         if let Some(gate) = gate {
-            let (opened, wake) = &*gate;
-            let mut open = opened.lock().unwrap();
-            while !*open {
-                open = wake.wait(open).unwrap();
-            }
+            wait_for(&gate);
         }
         let (lines, exit) = script.unwrap_or((Vec::new(), Exit::Code(0)));
         for line in &lines {
@@ -977,6 +990,21 @@ mod tests {
         assert!(!worker.is_finished(), "the command must wait for the gate");
         gate.open();
         assert_eq!(worker.join().unwrap().unwrap(), Exit::Code(0));
+    }
+
+    #[test]
+    fn a_gate_holds_any_recorded_call_until_it_is_opened() {
+        let p = Arc::new(FakePlatform::new());
+        let gate = p.gate("install_packages ufw");
+        let worker = {
+            let p = p.clone();
+            std::thread::spawn(move || p.install_packages(&["ufw"]))
+        };
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        assert!(!worker.is_finished(), "the call must wait for the gate");
+        assert_eq!(p.calls_matching("install_packages").len(), 1);
+        gate.open();
+        worker.join().unwrap().unwrap();
     }
 
     #[test]

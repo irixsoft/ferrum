@@ -224,9 +224,9 @@ async fn restore_upload(
     if app.platform.postgres_major_installed().is_none() {
         return Err(ApiError::conflict(NOT_INSTALLED));
     }
-    if postgres::by_name(&app.db, &name).await?.is_none() {
-        return Err(ApiError::not_found(DbError::NotFound.to_string()));
-    }
+    let db = postgres::by_name(&app.db, &name)
+        .await?
+        .ok_or_else(|| ApiError::not_found(DbError::NotFound.to_string()))?;
     if app.restores.lock().unwrap().get(&name) == Some(&Install::Running) {
         return Err(ApiError::conflict(format!(
             "A restore of {name} is already running."
@@ -242,11 +242,16 @@ async fn restore_upload(
     let task = app.clone();
     let database = name.clone();
     tokio::spawn(async move {
-        let result =
-            restore::restore(&task.db, task.platform.as_ref(), &database, &staged, format).await;
-        drop(staged);
+        let platform = task.platform.clone();
+        let result = tokio::task::spawn_blocking(move || {
+            let result = restore::run(platform.as_ref(), &db, &staged, format);
+            drop(staged);
+            result
+        })
+        .await;
         let outcome = match result {
-            Ok(()) => Install::Idle,
+            Ok(Ok(())) => Install::Idle,
+            Ok(Err(e)) => Install::Failed(e.to_string()),
             Err(e) => Install::Failed(e.to_string()),
         };
         task.restores.lock().unwrap().insert(database, outcome);

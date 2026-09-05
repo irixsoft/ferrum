@@ -1,5 +1,4 @@
-use super::{DbError, MAINTENANCE_DB, by_name, host_error, sql};
-use crate::state::State;
+use super::{Database, DbError, MAINTENANCE_DB, host_error, sql};
 use ferrum_platform::Platform;
 use ferrum_platform::ubuntu::PG_USER;
 use std::path::{Path, PathBuf};
@@ -58,14 +57,12 @@ impl Drop for Staged {
 }
 
 /// Drops and recreates the database under its role, then loads the dump as the cluster superuser.
-pub async fn restore(
-    state: &State,
+pub fn run(
     platform: &dyn Platform,
-    database: &str,
+    db: &Database,
     staged: &Staged,
     format: Format,
 ) -> anyhow::Result<()> {
-    let db = by_name(state, database).await?.ok_or(DbError::NotFound)?;
     platform.chown_tree(&staged.dir, PG_USER)?;
     platform
         .postgres_sql(MAINTENANCE_DB, &sql::recreate_database(&db.name, &db.role))

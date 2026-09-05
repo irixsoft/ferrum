@@ -299,7 +299,7 @@ async fn wait_for_restore(h: &Harness, cookie: &str) -> serde_json::Value {
         if res.json["restore"]["running"] == false {
             return res.json;
         }
-        tokio::task::yield_now().await;
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
     }
     panic!("the restore never finished");
 }
@@ -315,6 +315,7 @@ async fn with_database() -> (Harness, String) {
 #[tokio::test]
 async fn a_custom_dump_replaces_the_database_and_the_upload_is_removed() {
     let (h, cookie) = with_database().await;
+    let gate = h.platform.gate("postgres_restore ledger_prod");
     let res = h
         .post_bytes_with_cookie(
             "/api/databases/ledger_prod/restore",
@@ -324,6 +325,11 @@ async fn a_custom_dump_replaces_the_database_and_the_upload_is_removed() {
         .await;
     assert_eq!(res.status, StatusCode::ACCEPTED, "{}", res.json);
     assert_eq!(res.json["restore"]["running"], true, "{}", res.json);
+    let again = h
+        .post_bytes_with_cookie("/api/databases/ledger_prod/restore", b"PGDMP", &cookie)
+        .await;
+    assert_eq!(again.status, StatusCode::CONFLICT, "{}", again.json);
+    gate.open();
     let done = wait_for_restore(&h, &cookie).await;
     assert_eq!(done["restore"]["error"], serde_json::Value::Null, "{done}");
 
