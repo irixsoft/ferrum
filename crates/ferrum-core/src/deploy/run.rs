@@ -285,6 +285,120 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn the_code_is_scanned_after_the_clone_and_unset_keys_become_hints() {
+        let (_d, state) = state().await;
+        let p = Arc::new(FakePlatform::new());
+        p.serve_clone(&[
+            ("src/mail.ts", "const host = process.env.SMTP_HOST;"),
+            (
+                "src/env.ts",
+                "SMTP_HOST: z.string(),\nLOG_LEVEL: z.string().optional(),\n",
+            ),
+            ("src/pay.ts", "process.env.STRIPE_KEY; process.env.NODE_ENV"),
+            ("node_modules/pg/index.js", "process.env.PGHOST"),
+        ]);
+        let health = Health::serve(200).await;
+        let app = provisioned(&state, &p, "ledger", health.port, |_| {}).await;
+        apps::env::set(&state, &app.id, "STRIPE_KEY", "sk")
+            .await
+            .unwrap();
+        let ctx = ctx(&state, &p);
+        let (outcome, d) = deploy(&ctx, &app, "a3f9c2d4e81b06f5c9a2").await;
+        assert_eq!(outcome, Outcome::Live, "{:?}", d.failure_reason);
+
+        let lines = log::lines(&state, &d.id, 0).await.unwrap();
+        let text: Vec<&str> = lines.iter().map(|l| l.text.as_str()).collect();
+        assert!(
+            text.contains(
+                &"Referenced in the code but not set: LOG_LEVEL (src/env.ts, optional), SMTP_HOST (src/env.ts)"
+            ),
+            "{text:#?}"
+        );
+        let calls = p.calls();
+        let scan = calls
+            .iter()
+            .position(|c| c.starts_with("walk_text_files /var/lib/ferrum/apps/ledger/releases/"))
+            .unwrap();
+        let install = calls
+            .iter()
+            .position(|c| c.starts_with("run_scoped") && c.contains("bun install"))
+            .unwrap();
+        assert!(scan < install, "{calls:#?}");
+
+        let entries = apps::env::entries(&state, &app.id).await.unwrap();
+        let unset: Vec<(&str, &str, bool)> = entries
+            .iter()
+            .filter(|e| !e.set)
+            .map(|e| (e.key.as_str(), e.source.as_deref().unwrap(), e.optional))
+            .collect();
+        assert_eq!(
+            unset,
+            vec![
+                ("LOG_LEVEL", "referenced in src/env.ts", true),
+                ("SMTP_HOST", "referenced in src/env.ts", false),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_build_that_fails_on_a_missing_variable_names_it() {
+        let (_d, state) = state().await;
+        let p = Arc::new(FakePlatform::new());
+        p.script_run(
+            "bun run build",
+            &[
+                "❌ Invalid environment variables: {",
+                "  NEXT_PUBLIC_APP_URL: [ 'Required' ]",
+                "}",
+                "error: script \"build\" exited with code 1",
+            ],
+            Exit::Code(1),
+        );
+        let health = Health::serve(200).await;
+        let app = provisioned(&state, &p, "ledger", health.port, |new| {
+            new.env_hints = vec![apps::env::EnvHint {
+                key: "NEXT_PUBLIC_APP_URL".into(),
+                source: "from src/env.ts".into(),
+                optional: false,
+                suggest_app_url: true,
+            }];
+        })
+        .await;
+        let ctx = ctx(&state, &p);
+        let (outcome, d) = deploy(&ctx, &app, "abc1234").await;
+        assert_eq!(outcome, Outcome::Failed);
+        assert_eq!(
+            d.failure_reason.as_deref(),
+            Some("The build failed: NEXT_PUBLIC_APP_URL (src/env.ts) is not set")
+        );
+
+        p.script_run(
+            "bun run build",
+            &["Error: SENTRY_DSN is not set"],
+            Exit::Code(1),
+        );
+        let (_, d) = deploy(&ctx, &app, "abc1235").await;
+        assert_eq!(
+            d.failure_reason.as_deref(),
+            Some("The build failed: SENTRY_DSN is not set")
+        );
+        let entries = apps::env::entries(&state, &app.id).await.unwrap();
+        let sentry = entries.iter().find(|e| e.key == "SENTRY_DSN").unwrap();
+        assert_eq!(sentry.source.as_deref(), Some("named by the failed build"));
+
+        p.script_run(
+            "bun run build",
+            &["error TS2307: Cannot find module './x'"],
+            Exit::Code(2),
+        );
+        let (_, d) = deploy(&ctx, &app, "abc1236").await;
+        assert_eq!(
+            d.failure_reason.as_deref(),
+            Some("The build exited with status 2: error TS2307: Cannot find module './x'")
+        );
+    }
+
+    #[tokio::test]
     async fn the_build_runs_as_the_app_user_with_the_env_file_the_toolchain_and_the_cache() {
         let (_d, state) = state().await;
         let p = Arc::new(FakePlatform::new());

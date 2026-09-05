@@ -429,6 +429,41 @@ fn redacted(result: Result<String, PlatformError>, url: &str) -> Result<(), Plat
     }
 }
 
+fn walk_text_files(
+    root: &Path,
+    dir: &Path,
+    on_file: &mut dyn FnMut(&str, &str),
+) -> Result<(), PlatformError> {
+    let entries = match std::fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(e.into()),
+    };
+    let mut paths: Vec<PathBuf> = entries.flatten().map(|e| e.path()).collect();
+    paths.sort();
+    for path in paths {
+        let Ok(meta) = std::fs::symlink_metadata(&path) else {
+            continue;
+        };
+        let Some(relative) = path.strip_prefix(root).ok().and_then(Path::to_str) else {
+            continue;
+        };
+        if meta.is_dir() {
+            let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+            if !crate::scan::skipped_dir(name) {
+                walk_text_files(root, &path, on_file)?;
+            }
+        } else if meta.is_file()
+            && meta.len() <= crate::scan::MAX_TEXT_BYTES
+            && crate::scan::wanted_text_file(relative)
+            && let Ok(text) = std::fs::read_to_string(&path)
+        {
+            on_file(relative, &text);
+        }
+    }
+    Ok(())
+}
+
 fn tolerate(result: Result<String, PlatformError>, exit: i32) -> Result<(), PlatformError> {
     match result {
         Ok(_) => Ok(()),
@@ -931,6 +966,14 @@ impl Platform for Ubuntu {
             .collect();
         names.sort();
         Ok(names)
+    }
+
+    fn walk_text_files(
+        &self,
+        dir: &Path,
+        on_file: &mut dyn FnMut(&str, &str),
+    ) -> Result<(), PlatformError> {
+        walk_text_files(dir, dir, on_file)
     }
 
     fn disk_free_bytes(&self, path: &Path) -> Result<u64, PlatformError> {
@@ -1597,6 +1640,41 @@ mod tests {
         assert_eq!(keys[0].comment, "ferrum test");
         assert_eq!(keys[0].kind, "ED25519");
         assert!(matches!(Ubuntu.ufw_status(), Ok(None) | Err(_)));
+    }
+
+    #[test]
+    fn the_walk_reads_source_files_and_skips_dependencies_and_binaries() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join("src/lib")).unwrap();
+        std::fs::create_dir_all(root.join("node_modules/pg")).unwrap();
+        std::fs::write(root.join("src/lib/mail.ts"), "process.env.SMTP_HOST").unwrap();
+        std::fs::write(root.join("src/a.js"), "ok").unwrap();
+        std::fs::write(root.join("node_modules/pg/index.js"), "no").unwrap();
+        std::fs::write(root.join("README.md"), "no").unwrap();
+        std::fs::write(root.join("src/big.ts"), vec![b'x'; 600 * 1024]).unwrap();
+        std::fs::write(root.join("src/bin.ts"), [0xff, 0xfe, 0x00]).unwrap();
+        let mut seen = Vec::new();
+        Ubuntu
+            .walk_text_files(root, &mut |path, text| {
+                seen.push((path.to_string(), text.to_string()))
+            })
+            .unwrap();
+        assert_eq!(
+            seen,
+            vec![
+                ("src/a.js".to_string(), "ok".to_string()),
+                (
+                    "src/lib/mail.ts".to_string(),
+                    "process.env.SMTP_HOST".to_string()
+                ),
+            ]
+        );
+        assert!(
+            Ubuntu
+                .walk_text_files(&root.join("missing"), &mut |_, _| {})
+                .is_ok()
+        );
     }
 
     #[test]

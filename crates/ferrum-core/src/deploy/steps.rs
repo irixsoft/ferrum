@@ -1,6 +1,8 @@
 use super::releases::{self, Release};
 use super::run::{CPU_WEIGHT, Ctx, DISK_MIN_BYTES, IO_WEIGHT};
-use super::{Commit, Deploy, DeployState, Outcome, Trigger, log, maintenance, short, snapshots};
+use super::{
+    Commit, Deploy, DeployState, Outcome, Trigger, env_scan, log, maintenance, short, snapshots,
+};
 use crate::apps::provision::{app_dir, user_name, write_env};
 use crate::apps::unit::unit_name;
 use crate::apps::{App, env};
@@ -16,6 +18,7 @@ use std::time::{Duration, Instant};
 
 const SYSTEM: &str = "system";
 const HEALTH_TIMEOUT: Duration = Duration::from_secs(2);
+const FAILURE_TAIL: usize = 200;
 
 pub struct Job {
     ctx: Ctx,
@@ -45,6 +48,7 @@ impl Job {
             return self.rollback().await;
         }
         self.clone_step().await?;
+        self.env_scan_step().await?;
         self.packages_step().await?;
         self.command_step(DeployState::InstallingDeps, "install")
             .await?;
@@ -252,6 +256,48 @@ impl Job {
         platform.chown_tree(&self.shared().join("cache"), &user)?;
         write_env(&self.ctx.state, platform.as_ref(), &self.app).await?;
         self.say(&format!("Checked out {}", short(&head))).await?;
+        Ok(())
+    }
+
+    /// Never fails the deploy: optional keys exist, and a scan that cannot run is one log line.
+    async fn env_scan_step(&mut self) -> anyhow::Result<()> {
+        let dir = self.release_dir.clone().expect("cloned before scanning");
+        let work = work_dir(&dir, &self.app.root);
+        let platform = self.ctx.platform.clone();
+        let walked = tokio::task::spawn_blocking(move || {
+            let mut refs = Vec::new();
+            platform
+                .walk_text_files(&work, &mut |path, text| {
+                    refs.extend(env_scan::refs_in(path, text));
+                })
+                .map(|_| refs)
+        })
+        .await?;
+        let referenced = match walked {
+            Ok(refs) => refs,
+            Err(e) => {
+                return self
+                    .say(&format!("Could not scan the code for variables: {e}"))
+                    .await;
+            }
+        };
+        let stored = env::keys(&self.ctx.state, &self.app.id).await?;
+        let managed = env::managed_for(&self.ctx.state, &self.app).await?.keys();
+        let findings = env_scan::unset(&referenced, &stored, &managed);
+        if findings.is_empty() {
+            return Ok(());
+        }
+        self.say(&env_scan::describe(&findings)).await?;
+        for f in &findings {
+            env::add_hint(
+                &self.ctx.state,
+                &self.app.id,
+                &f.key,
+                &format!("referenced in {}", f.path),
+                f.optional,
+            )
+            .await?;
+        }
         Ok(())
     }
 
@@ -555,6 +601,7 @@ impl Job {
         });
         let mut last_stderr = None;
         let mut last = None;
+        let mut tail: Vec<String> = Vec::new();
         while let Some((stream, line)) = rx.recv().await {
             let name = match stream {
                 Stream::Stdout => "stdout",
@@ -565,10 +612,39 @@ impl Job {
                 if stream == Stream::Stderr {
                     last_stderr = Some(line.clone());
                 }
+                if tail.len() == FAILURE_TAIL {
+                    tail.remove(0);
+                }
+                tail.push(line.clone());
                 last = Some(line);
             }
         }
         let exit = handle.await??;
+        if let Exit::Code(code) = exit
+            && code != 0
+        {
+            let keys = env_scan::keys_in_failure(&tail);
+            if !keys.is_empty() {
+                let hints = env::hints(&self.ctx.state, &self.app.id).await?;
+                let mut named = Vec::with_capacity(keys.len());
+                for key in keys {
+                    let file = hints
+                        .iter()
+                        .find(|h| h.key == key)
+                        .and_then(|h| hint_file(&h.source));
+                    env::add_hint(
+                        &self.ctx.state,
+                        &self.app.id,
+                        &key,
+                        &format!("named by the failed {what}"),
+                        false,
+                    )
+                    .await?;
+                    named.push((key, file));
+                }
+                bail!(env_scan::failure_sentence(what, &named));
+            }
+        }
         match exit {
             Exit::Code(0) => Ok(()),
             Exit::Killed { signal: 9 } | Exit::Code(137) => bail!(
@@ -686,6 +762,14 @@ impl Job {
     async fn skip(&self, state: DeployState, note: &str) -> anyhow::Result<()> {
         super::skip(&self.ctx.state, &self.deploy.id, state, note).await
     }
+}
+
+/// "from src/env.ts" and "referenced in src/mail.ts" both name a file; a failed build does not.
+fn hint_file(source: &str) -> Option<String> {
+    source
+        .strip_prefix("from ")
+        .or_else(|| source.strip_prefix("referenced in "))
+        .map(str::to_string)
 }
 
 pub fn work_dir(release: &Path, root: &str) -> PathBuf {

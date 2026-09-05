@@ -1,3 +1,4 @@
+pub mod env_scan;
 pub mod log;
 pub mod maintenance;
 pub mod queue;
