@@ -31,6 +31,8 @@ pub const FAIL2BAN_JAIL_LOCAL: &str = "/etc/fail2ban/jail.d/ferrum.local";
 pub const SSH_UNIT: &str = "ssh";
 /// Sorts before cloud-init's `50-cloud-init.conf`; sshd keeps the first value it reads.
 pub const SSHD_DROPIN: &str = "/etc/ssh/sshd_config.d/10-ferrum.conf";
+/// Socket-activated sshd removes its runtime directory between sessions, and `sshd -T` needs it.
+pub const RUN_SSHD: &str = "/run/sshd";
 pub const APT_AUTO_UPGRADES: &str = "/etc/apt/apt.conf.d/20auto-upgrades";
 pub const ROOT_AUTHORIZED_KEYS: &str = "/root/.ssh/authorized_keys";
 const HOME_DIR: &str = "/home";
@@ -1016,6 +1018,7 @@ impl Platform for Ubuntu {
     }
 
     fn sshd_effective(&self) -> Result<Sshd, PlatformError> {
+        let _ = self.make_dirs(Path::new(RUN_SSHD), 0o755);
         let out = exec::run(&["sshd", "-T"])?;
         Ok(parse_sshd_t(&out))
     }

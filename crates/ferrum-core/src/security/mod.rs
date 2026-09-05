@@ -7,6 +7,7 @@ use crate::state::State;
 use ferrum_platform::ubuntu::ROOT_AUTHORIZED_KEYS;
 use ferrum_platform::{Ban, FirewallRule, KeyFingerprint, Platform, Sshd};
 use serde::Serialize;
+use std::sync::Mutex;
 
 #[derive(Debug, thiserror::Error)]
 pub enum SecurityError {
@@ -60,15 +61,34 @@ pub struct Security {
     pub ssh: Ssh,
 }
 
+static LAST_SSHD_ERROR: Mutex<Option<String>> = Mutex::new(None);
+
 /// The read side tolerates a failing `sshd -T`; every write side reads it strictly.
 pub fn sshd_or_default(platform: &dyn Platform) -> Sshd {
-    platform.sshd_effective().unwrap_or_else(|e| {
-        tracing::warn!(error = %e, "reading the effective sshd config");
-        Sshd {
-            port: 22,
-            password_auth: true,
+    match platform.sshd_effective() {
+        Ok(sshd) => {
+            *LAST_SSHD_ERROR.lock().unwrap() = None;
+            sshd
         }
-    })
+        Err(e) => {
+            if changed(&mut LAST_SSHD_ERROR.lock().unwrap(), &e.to_string()) {
+                tracing::warn!(error = %e, "reading the effective sshd config");
+            }
+            Sshd {
+                port: 22,
+                password_auth: true,
+            }
+        }
+    }
+}
+
+/// The status is polled, so a failure is logged when it appears or changes, not on every poll.
+fn changed(last: &mut Option<String>, error: &str) -> bool {
+    if last.as_deref() == Some(error) {
+        return false;
+    }
+    *last = Some(error.to_string());
+    true
 }
 
 pub async fn status(state: &State, platform: &dyn Platform) -> anyhow::Result<Security> {
@@ -79,4 +99,19 @@ pub async fn status(state: &State, platform: &dyn Platform) -> anyhow::Result<Se
         updates: updates::status(platform)?,
         ssh: ssh::status(platform, sshd)?,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_probe_failure_is_reported_once_until_it_changes() {
+        let mut last = None;
+        assert!(changed(&mut last, "sshd -T exited with 255"));
+        assert!(!changed(&mut last, "sshd -T exited with 255"));
+        assert!(!changed(&mut last, "sshd -T exited with 255"));
+        assert!(changed(&mut last, "io: permission denied"));
+        assert_eq!(last.as_deref(), Some("io: permission denied"));
+    }
 }
