@@ -44,16 +44,17 @@ pub fn refs_in(path: &str, source: &str) -> Vec<Reference> {
             add(&key, optional);
         }
     }
-    for accessor in ACCESSORS {
+    let mut reads: Vec<(usize, &str)> = Vec::new();
+    for accessor in ACCESSORS.iter().chain([&DOTNET_ACCESSOR]) {
         for (at, _) in source.match_indices(accessor) {
             let rest = &source[at + accessor.len()..];
             let rest = rest.trim_start_matches(['"', '\'', '`']);
-            add(identifier(rest), false);
+            reads.push((at, identifier(rest)));
         }
     }
-    for (at, _) in source.match_indices(DOTNET_ACCESSOR) {
-        let rest = source[at + DOTNET_ACCESSOR.len()..].trim_start_matches('"');
-        add(identifier(rest), false);
+    reads.sort_by_key(|(at, _)| *at);
+    for (_, key) in reads {
+        add(key, false);
     }
     refs
 }

@@ -478,17 +478,20 @@ export interface Session {
   current: boolean;
 }
 
-export type GithubStatus =
-  | { connected: false }
-  | {
-      connected: true;
-      app_id: number;
-      app_slug: string;
-      app_name: string;
-      account: string;
-      installation_id: number | null;
-      connected_at: string;
-    };
+export interface GithubConnection {
+  app_id: number;
+  app_slug: string;
+  app_name: string;
+  account: string;
+  account_type: "user" | "organization";
+  installation_id: number | null;
+  connected_at: string;
+}
+
+export interface GithubStatus {
+  connected: boolean;
+  connections: GithubConnection[];
+}
 
 export interface GithubHandoff {
   manifest: Record<string, unknown>;

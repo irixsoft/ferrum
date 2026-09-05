@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT app_id AS \"app_id!\", app_slug AS \"app_slug!\", app_name AS \"app_name!\",\n                  account AS \"account!\", installation_id, connected_at AS \"connected_at!\"\n           FROM github_app WHERE id = 1",
+  "query": "SELECT app_id AS \"app_id!\", app_slug AS \"app_slug!\", app_name AS \"app_name!\",\n                  account AS \"account!\", account_type AS \"account_type!: AccountType\",\n                  installation_id, connected_at AS \"connected_at!\"\n           FROM github_apps ORDER BY connected_at, app_id",
   "describe": {
     "columns": [
       {
@@ -24,13 +24,18 @@
         "type_info": "Text"
       },
       {
-        "name": "installation_id",
+        "name": "account_type!: AccountType",
         "ordinal": 4,
+        "type_info": "Text"
+      },
+      {
+        "name": "installation_id",
+        "ordinal": 5,
         "type_info": "Integer"
       },
       {
         "name": "connected_at!",
-        "ordinal": 5,
+        "ordinal": 6,
         "type_info": "Text"
       }
     ],
@@ -42,9 +47,10 @@
       false,
       false,
       false,
+      false,
       true,
       false
     ]
   },
-  "hash": "4e16047c727ae4432f86d518e5faaba0bf0e91a9850ffd492755bfe8e60de1d8"
+  "hash": "5897ca4c5ab680cda4cf27b0076118a86767d96cb93321f48f6a0fd3f8d720a4"
 }

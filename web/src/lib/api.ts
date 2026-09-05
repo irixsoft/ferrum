@@ -676,8 +676,11 @@ export async function installRuntime(
 /** GitHub renders a confirmation page, which only a form the browser submits can reach. */
 export function useConnectGithub() {
   return useMutation({
-    mutationFn: async () => {
-      const { manifest, action } = await request<GithubHandoff>("/github/connect", { method: "POST" });
+    mutationFn: async (organization?: string) => {
+      const { manifest, action } = await request<GithubHandoff>(
+        "/github/connect",
+        body(organization ? { organization } : {}),
+      );
       const form = document.createElement("form");
       form.method = "POST";
       form.action = action;
@@ -693,7 +696,9 @@ export function useConnectGithub() {
 }
 
 export function useDisconnectGithub() {
-  return useInvalidating(keys.github, () => request<void>("/github", { method: "DELETE" }));
+  return useInvalidating(keys.github, (appId: number) =>
+    request<void>(`/github/${appId}`, { method: "DELETE" }),
+  );
 }
 
 export function useSignOut() {

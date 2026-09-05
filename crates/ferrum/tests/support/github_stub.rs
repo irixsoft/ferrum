@@ -1,7 +1,7 @@
 #![allow(dead_code)]
 
 use axum::extract::{Path, Query, State};
-use axum::http::StatusCode;
+use axum::http::{HeaderMap, StatusCode};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use base64::Engine;
@@ -24,6 +24,9 @@ pub static TEST_KEY: LazyLock<String> = LazyLock::new(|| {
 });
 
 pub const INSTALLATION_ID: i64 = 4242;
+pub const ORG_APP_ID: i64 = 67890;
+pub const ORG_INSTALLATION_ID: i64 = 6767;
+pub const ORG_REPO: &str = "acme/site";
 pub const BUN_LATEST: &str = "1.2.3";
 const PER_PAGE: usize = 2;
 
@@ -154,20 +157,41 @@ pub fn release_json(downloads: &str, tag: &str, name: &str, body: &str, size: u6
     })
 }
 
-async fn installations(State(c): State<Counters>) -> Json<Value> {
+/// The App JWT names its App in `iss`; the payload is read without verifying, this is a stub.
+fn app_id_of(headers: &HeaderMap) -> Option<i64> {
+    let bearer = headers.get("authorization")?.to_str().ok()?;
+    let jwt = bearer.strip_prefix("Bearer ")?;
+    let payload = jwt.split('.').nth(1)?;
+    let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(payload)
+        .ok()?;
+    let claims: Value = serde_json::from_slice(&bytes).ok()?;
+    match &claims["iss"] {
+        Value::Number(n) => n.as_i64(),
+        Value::String(s) => s.parse().ok(),
+        _ => None,
+    }
+}
+
+/// Each private App is installed on its own account only.
+async fn installations(State(c): State<Counters>, headers: HeaderMap) -> Json<Value> {
     if c.installed.load(Ordering::SeqCst) == 0 {
         return Json(json!([]));
     }
-    Json(json!([{ "id": INSTALLATION_ID }]))
+    let id = match app_id_of(&headers) {
+        Some(ORG_APP_ID) => ORG_INSTALLATION_ID,
+        _ => INSTALLATION_ID,
+    };
+    Json(json!([{ "id": id }]))
 }
 
-async fn access_tokens(State(c): State<Counters>, Path(_id): Path<i64>) -> Json<Value> {
+async fn access_tokens(State(c): State<Counters>, Path(id): Path<i64>) -> Json<Value> {
     let nth = c.mints.fetch_add(1, Ordering::SeqCst) + 1;
     let seconds = c.expires_in.load(Ordering::SeqCst);
     let expires_at = chrono::Utc::now() + chrono::Duration::seconds(seconds);
 
     Json(json!({
-        "token": format!("ghs_stub_{nth}"),
+        "token": format!("ghs_stub_{id}_{nth}"),
         "expires_at": expires_at.to_rfc3339(),
         "permissions": { "contents": "read", "metadata": "read" },
     }))
@@ -178,9 +202,31 @@ struct Paging {
     page: Option<usize>,
 }
 
-async fn repositories(State(c): State<Counters>, Query(paging): Query<Paging>) -> Json<Value> {
+fn org_token(headers: &HeaderMap) -> bool {
+    headers
+        .get("authorization")
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|v| v.contains(&format!("ghs_stub_{ORG_INSTALLATION_ID}_")))
+}
+
+async fn repositories(
+    State(c): State<Counters>,
+    headers: HeaderMap,
+    Query(paging): Query<Paging>,
+) -> Json<Value> {
     c.repo_pages.fetch_add(1, Ordering::SeqCst);
 
+    if org_token(&headers) {
+        return Json(json!({
+            "total_count": 1,
+            "repositories": [{
+                "full_name": ORG_REPO,
+                "private": true,
+                "default_branch": "main",
+                "pushed_at": "2026-09-01T10:00:00Z",
+            }]
+        }));
+    }
     let all = [
         ("irixsoft/ledger", false, "main"),
         ("irixsoft/panel", true, "main"),

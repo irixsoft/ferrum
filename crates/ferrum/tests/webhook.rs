@@ -2,7 +2,9 @@ mod support;
 
 use axum::http::StatusCode;
 use ferrum_core::github::webhook::sign;
-use support::{Harness, WEBHOOK_SECRET as SECRET, harness, push_payload, release_payload};
+use support::{
+    Harness, ORG_WEBHOOK_SECRET, WEBHOOK_SECRET as SECRET, harness, push_payload, release_payload,
+};
 
 async fn connected() -> Harness {
     let h = harness().await;
@@ -122,6 +124,29 @@ async fn an_event_ferrum_does_not_track_is_acknowledged_and_dropped() {
 }
 
 #[tokio::test]
+async fn a_delivery_signed_by_any_connected_app_is_accepted() {
+    let h = connected().await;
+    h.connect_org_github().await;
+    let body = push_payload("acme/site", "refs/tags/v1.0.0", "abc123");
+
+    assert_eq!(
+        h.webhook("push", "d-org", &sign(ORG_WEBHOOK_SECRET, &body), &body)
+            .await
+            .status,
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(
+        h.webhook("push", "d-bad", &sign("whsec_other", &body), &body)
+            .await
+            .status,
+        StatusCode::UNAUTHORIZED
+    );
+    let rows = h.deliveries().await;
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].repository, "acme/site");
+}
+
+#[tokio::test]
 async fn a_delivery_arriving_with_no_connection_is_refused() {
     let h = harness().await;
     let body = push_payload("irixsoft/ledger", "refs/heads/main", "abc123");
@@ -138,7 +163,7 @@ async fn a_delivery_arriving_with_no_connection_is_refused() {
 async fn a_delivery_after_disconnecting_is_refused() {
     let h = connected().await;
     let body = push_payload("irixsoft/ledger", "refs/heads/main", "abc123");
-    ferrum_core::github::disconnect(&h.db).await.unwrap();
+    ferrum_core::github::disconnect(&h.db, 12345).await.unwrap();
 
     assert_eq!(
         h.webhook("push", "d-1", &sign(SECRET, &body), &body)

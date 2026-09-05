@@ -239,6 +239,7 @@ pub async fn signed_in() -> (Harness, String) {
 }
 
 pub const WEBHOOK_SECRET: &str = "whsec_test";
+pub const ORG_WEBHOOK_SECRET: &str = "whsec_acme";
 
 #[derive(sqlx::FromRow, Debug)]
 pub struct Delivery {
@@ -450,10 +451,31 @@ impl Harness {
                 app_slug: "ferrum-panel-example".into(),
                 app_name: "ferrum-panel-example".into(),
                 account: "irixsoft".into(),
+                account_type: ferrum_core::github::AccountType::User,
                 private_key: github_stub::TEST_KEY.clone(),
                 webhook_secret: WEBHOOK_SECRET.into(),
                 client_id: "Iv1.abc".into(),
                 client_secret: "cs_abc".into(),
+            },
+        )
+        .await
+        .unwrap()
+    }
+
+    /// A second, organisation-owned App next to the personal one.
+    pub async fn connect_org_github(&self) -> ferrum_core::github::Connection {
+        ferrum_core::github::save(
+            &self.db,
+            ferrum_core::github::NewConnection {
+                app_id: github_stub::ORG_APP_ID,
+                app_slug: "ferrum-acme-panel-example".into(),
+                app_name: "ferrum-acme-panel-example".into(),
+                account: "acme".into(),
+                account_type: ferrum_core::github::AccountType::Organization,
+                private_key: github_stub::TEST_KEY.clone(),
+                webhook_secret: ORG_WEBHOOK_SECRET.into(),
+                client_id: "Iv1.def".into(),
+                client_secret: "cs_def".into(),
             },
         )
         .await

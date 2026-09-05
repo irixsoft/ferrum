@@ -8,7 +8,8 @@ pub mod webhook;
 
 use crate::state::State;
 use crate::{secrets, time};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 pub const GITHUB_API: &str = "https://api.github.com";
@@ -16,7 +17,7 @@ pub const GITHUB_API: &str = "https://api.github.com";
 #[derive(Clone)]
 pub struct Api {
     base: String,
-    installation: Arc<Mutex<Option<token::Installed>>>,
+    installations: Arc<Mutex<HashMap<i64, token::Installed>>>,
     fixed_token: Option<String>,
 }
 
@@ -30,7 +31,7 @@ impl Api {
     pub fn at(base: impl Into<String>) -> Self {
         Self {
             base: base.into(),
-            installation: Arc::new(Mutex::new(None)),
+            installations: Arc::new(Mutex::new(HashMap::new())),
             fixed_token: None,
         }
     }
@@ -47,12 +48,12 @@ impl Api {
             .build()?)
     }
 
-    /// Call after connecting or disconnecting, or the cached client keeps the previous app's key.
+    /// Call after connecting or disconnecting, or a cached client keeps a previous app's key.
     pub fn forget(&self) {
-        *self
-            .installation
+        self.installations
             .lock()
-            .expect("the cache lock is not poisoned") = None;
+            .expect("the cache lock is not poisoned")
+            .clear();
     }
 }
 
@@ -62,12 +63,21 @@ impl std::fmt::Debug for Api {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, sqlx::Type)]
+#[serde(rename_all = "lowercase")]
+#[sqlx(rename_all = "lowercase")]
+pub enum AccountType {
+    User,
+    Organization,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct Connection {
     pub app_id: i64,
     pub app_slug: String,
     pub app_name: String,
     pub account: String,
+    pub account_type: AccountType,
     pub installation_id: Option<i64>,
     pub connected_at: String,
 }
@@ -78,107 +88,134 @@ pub struct NewConnection {
     pub app_slug: String,
     pub app_name: String,
     pub account: String,
+    pub account_type: AccountType,
     pub private_key: String,
     pub webhook_secret: String,
     pub client_id: String,
     pub client_secret: String,
 }
 
+/// The account half of `owner/repo`, which names the App that can read it.
+pub fn owner_of(full_name: &str) -> &str {
+    full_name.split('/').next().unwrap_or(full_name)
+}
+
+/// Connecting an account again replaces its App; the previous one keeps existing on GitHub.
 pub async fn save(state: &State, saved: NewConnection) -> anyhow::Result<Connection> {
     let private_key = secrets::encrypt(&state.key, &saved.private_key);
     let webhook_secret = secrets::encrypt(&state.key, &saved.webhook_secret);
     let client_secret = secrets::encrypt(&state.key, &saved.client_secret);
-    let row = sqlx::query!(
-        r#"INSERT INTO github_app
-             (id, app_id, app_slug, app_name, account, private_key, webhook_secret,
+    let mut tx = state.pool.begin().await?;
+    sqlx::query!(
+        "DELETE FROM github_apps WHERE account = ? OR app_id = ?",
+        saved.account,
+        saved.app_id
+    )
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query!(
+        "INSERT INTO github_apps
+             (app_id, app_slug, app_name, account, account_type, private_key, webhook_secret,
               client_id, client_secret, installation_id, connected_at)
-           VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, NULL, datetime('now'))
-           ON CONFLICT(id) DO UPDATE SET
-             app_id = excluded.app_id,
-             app_slug = excluded.app_slug,
-             app_name = excluded.app_name,
-             account = excluded.account,
-             private_key = excluded.private_key,
-             webhook_secret = excluded.webhook_secret,
-             client_id = excluded.client_id,
-             client_secret = excluded.client_secret,
-             installation_id = NULL,
-             connected_at = excluded.connected_at
-           RETURNING app_id AS "app_id!", app_slug AS "app_slug!", app_name AS "app_name!",
-                     account AS "account!", installation_id, connected_at AS "connected_at!""#,
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, datetime('now'))",
         saved.app_id,
         saved.app_slug,
         saved.app_name,
         saved.account,
+        saved.account_type,
         private_key,
         webhook_secret,
         saved.client_id,
         client_secret,
     )
-    .fetch_one(&state.pool)
+    .execute(&mut *tx)
     .await?;
-
-    Ok(Connection {
-        app_id: row.app_id,
-        app_slug: row.app_slug,
-        app_name: row.app_name,
-        account: row.account,
-        installation_id: row.installation_id,
-        connected_at: time::utc(row.connected_at),
-    })
+    tx.commit().await?;
+    by_app(state, saved.app_id)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("the connection vanished as it was saved"))
 }
 
-pub async fn load(state: &State) -> anyhow::Result<Option<Connection>> {
-    let row = sqlx::query!(
+pub async fn load_all(state: &State) -> anyhow::Result<Vec<Connection>> {
+    let rows = sqlx::query!(
         r#"SELECT app_id AS "app_id!", app_slug AS "app_slug!", app_name AS "app_name!",
-                  account AS "account!", installation_id, connected_at AS "connected_at!"
-           FROM github_app WHERE id = 1"#
+                  account AS "account!", account_type AS "account_type!: AccountType",
+                  installation_id, connected_at AS "connected_at!"
+           FROM github_apps ORDER BY connected_at, app_id"#
+    )
+    .fetch_all(&state.pool)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .map(|r| Connection {
+            app_id: r.app_id,
+            app_slug: r.app_slug,
+            app_name: r.app_name,
+            account: r.account,
+            account_type: r.account_type,
+            installation_id: r.installation_id,
+            connected_at: time::utc(r.connected_at),
+        })
+        .collect())
+}
+
+pub async fn by_account(state: &State, account: &str) -> anyhow::Result<Option<Connection>> {
+    Ok(load_all(state)
+        .await?
+        .into_iter()
+        .find(|c| c.account.eq_ignore_ascii_case(account)))
+}
+
+pub async fn by_app(state: &State, app_id: i64) -> anyhow::Result<Option<Connection>> {
+    Ok(load_all(state)
+        .await?
+        .into_iter()
+        .find(|c| c.app_id == app_id))
+}
+
+pub async fn private_key(state: &State, app_id: i64) -> anyhow::Result<Option<String>> {
+    let row = sqlx::query!(
+        r#"SELECT private_key AS "private_key!" FROM github_apps WHERE app_id = ?"#,
+        app_id
     )
     .fetch_optional(&state.pool)
     .await?;
-
-    Ok(row.map(|r| Connection {
-        app_id: r.app_id,
-        app_slug: r.app_slug,
-        app_name: r.app_name,
-        account: r.account,
-        installation_id: r.installation_id,
-        connected_at: time::utc(r.connected_at),
-    }))
-}
-
-pub async fn private_key(state: &State) -> anyhow::Result<Option<String>> {
-    let row = sqlx::query!(r#"SELECT private_key AS "private_key!" FROM github_app WHERE id = 1"#)
-        .fetch_optional(&state.pool)
-        .await?;
     row.map(|r| secrets::decrypt(&state.key, &r.private_key))
         .transpose()
 }
 
-pub async fn webhook_secret(state: &State) -> anyhow::Result<Option<String>> {
-    let row =
-        sqlx::query!(r#"SELECT webhook_secret AS "webhook_secret!" FROM github_app WHERE id = 1"#)
-            .fetch_optional(&state.pool)
-            .await?;
-    row.map(|r| secrets::decrypt(&state.key, &r.webhook_secret))
-        .transpose()
+/// Every App's secret with its id, so a delivery can be matched to the App that signed it.
+pub async fn webhook_secrets(state: &State) -> anyhow::Result<Vec<(i64, String)>> {
+    let rows = sqlx::query!(
+        r#"SELECT app_id AS "app_id!", webhook_secret AS "webhook_secret!" FROM github_apps"#
+    )
+    .fetch_all(&state.pool)
+    .await?;
+    rows.into_iter()
+        .map(|r| Ok((r.app_id, secrets::decrypt(&state.key, &r.webhook_secret)?)))
+        .collect()
 }
 
-pub async fn set_installation(state: &State, installation_id: i64) -> anyhow::Result<()> {
+pub async fn set_installation(
+    state: &State,
+    app_id: i64,
+    installation_id: i64,
+) -> anyhow::Result<()> {
     sqlx::query!(
-        "UPDATE github_app SET installation_id = ? WHERE id = 1",
-        installation_id
+        "UPDATE github_apps SET installation_id = ? WHERE app_id = ?",
+        installation_id,
+        app_id
     )
     .execute(&state.pool)
     .await?;
     Ok(())
 }
 
-pub async fn disconnect(state: &State) -> anyhow::Result<()> {
-    sqlx::query!("DELETE FROM github_app WHERE id = 1")
+pub async fn disconnect(state: &State, app_id: i64) -> anyhow::Result<bool> {
+    let done = sqlx::query!("DELETE FROM github_apps WHERE app_id = ?", app_id)
         .execute(&state.pool)
         .await?;
-    Ok(())
+    Ok(done.rows_affected() > 0)
 }
 
 #[cfg(test)]
@@ -200,10 +237,25 @@ pub(crate) mod tests {
             app_slug: "ferrum-panel-example".into(),
             app_name: "ferrum-panel-example".into(),
             account: "irixsoft".into(),
+            account_type: AccountType::User,
             private_key: TEST_PEM.into(),
             webhook_secret: "whsec_test".into(),
             client_id: "Iv1.abc".into(),
             client_secret: "cs_abc".into(),
+        }
+    }
+
+    pub fn org_sample() -> NewConnection {
+        NewConnection {
+            app_id: 67890,
+            app_slug: "ferrum-acme-panel-example".into(),
+            app_name: "ferrum-acme-panel-example".into(),
+            account: "acme".into(),
+            account_type: AccountType::Organization,
+            private_key: TEST_PEM.into(),
+            webhook_secret: "whsec_acme".into(),
+            client_id: "Iv1.def".into(),
+            client_secret: "cs_def".into(),
         }
     }
 
@@ -212,9 +264,10 @@ pub(crate) mod tests {
         let (_d, state) = state().await;
         save(&state, sample()).await.unwrap();
 
-        let loaded = load(&state).await.unwrap().unwrap();
+        let loaded = by_account(&state, "IRIXSOFT").await.unwrap().unwrap();
         assert_eq!(loaded.app_name, "ferrum-panel-example");
         assert_eq!(loaded.account, "irixsoft");
+        assert_eq!(loaded.account_type, AccountType::User);
         assert!(loaded.installation_id.is_none());
 
         let json = serde_json::to_string(&loaded).unwrap();
@@ -228,84 +281,96 @@ pub(crate) mod tests {
         let (_d, state) = state().await;
         save(&state, sample()).await.unwrap();
         assert!(
-            private_key(&state)
+            private_key(&state, 12345)
                 .await
                 .unwrap()
                 .unwrap()
                 .contains("PRIVATE KEY")
         );
         assert_eq!(
-            webhook_secret(&state).await.unwrap().as_deref(),
-            Some("whsec_test")
+            webhook_secrets(&state).await.unwrap(),
+            vec![(12345, "whsec_test".to_string())]
         );
     }
 
     #[tokio::test]
-    async fn connecting_again_replaces_the_previous_app() {
+    async fn each_account_has_one_app_and_reconnecting_replaces_it() {
         let (_d, state) = state().await;
         save(&state, sample()).await.unwrap();
-        let mut second = sample();
-        second.app_name = "ferrum-panel-second".into();
-        save(&state, second).await.unwrap();
+        save(&state, org_sample()).await.unwrap();
+        let mut again = sample();
+        again.app_id = 12346;
+        again.app_name = "ferrum-panel-second".into();
+        save(&state, again).await.unwrap();
 
+        let all = load_all(&state).await.unwrap();
+        let mut names: Vec<(&str, i64)> =
+            all.iter().map(|c| (c.account.as_str(), c.app_id)).collect();
+        names.sort();
+        assert_eq!(names, vec![("acme", 67890), ("irixsoft", 12346)]);
+        assert!(by_app(&state, 12345).await.unwrap().is_none());
         assert_eq!(
-            load(&state).await.unwrap().unwrap().app_name,
-            "ferrum-panel-second"
+            by_account(&state, "acme")
+                .await
+                .unwrap()
+                .unwrap()
+                .account_type,
+            AccountType::Organization
         );
-        let rows: i64 = sqlx::query_scalar("SELECT count(*) FROM github_app")
-            .fetch_one(&state.pool)
-            .await
-            .unwrap();
-        assert_eq!(rows, 1, "there is exactly one GitHub App per install");
     }
 
     #[tokio::test]
     async fn reconnecting_forgets_the_previous_installation() {
         let (_d, state) = state().await;
         save(&state, sample()).await.unwrap();
-        set_installation(&state, 4242).await.unwrap();
+        set_installation(&state, 12345, 4242).await.unwrap();
 
         save(&state, sample()).await.unwrap();
         assert_eq!(
-            load(&state).await.unwrap().unwrap().installation_id,
+            by_app(&state, 12345)
+                .await
+                .unwrap()
+                .unwrap()
+                .installation_id,
             None,
             "an installation id belongs to the app that issued it"
         );
     }
 
     #[tokio::test]
-    async fn disconnecting_removes_the_private_key() {
+    async fn disconnecting_one_account_keeps_the_others() {
         let (_d, state) = state().await;
         save(&state, sample()).await.unwrap();
-        disconnect(&state).await.unwrap();
+        save(&state, org_sample()).await.unwrap();
+        assert!(disconnect(&state, 12345).await.unwrap());
+        assert!(!disconnect(&state, 12345).await.unwrap());
 
-        assert!(load(&state).await.unwrap().is_none());
-        assert!(private_key(&state).await.unwrap().is_none());
-        assert!(webhook_secret(&state).await.unwrap().is_none());
+        assert!(private_key(&state, 12345).await.unwrap().is_none());
+        assert_eq!(
+            webhook_secrets(&state).await.unwrap(),
+            vec![(67890, "whsec_acme".to_string())]
+        );
+        assert_eq!(load_all(&state).await.unwrap().len(), 1);
     }
 
     #[tokio::test]
     async fn the_installation_id_is_recorded_after_the_app_is_installed() {
         let (_d, state) = state().await;
         save(&state, sample()).await.unwrap();
-        set_installation(&state, 4242).await.unwrap();
+        set_installation(&state, 12345, 4242).await.unwrap();
         assert_eq!(
-            load(&state).await.unwrap().unwrap().installation_id,
+            by_app(&state, 12345)
+                .await
+                .unwrap()
+                .unwrap()
+                .installation_id,
             Some(4242)
         );
     }
 
-    #[tokio::test]
-    async fn a_second_row_cannot_be_inserted() {
-        let (_d, state) = state().await;
-        save(&state, sample()).await.unwrap();
-        let forced = sqlx::query(
-            "INSERT INTO github_app (id, app_id, app_slug, app_name, account, private_key,
-                                     webhook_secret, client_id, client_secret)
-             VALUES (2, 1, 's', 'n', 'a', 'k', 'w', 'c', 'cs')",
-        )
-        .execute(&state.pool)
-        .await;
-        assert!(forced.is_err(), "the schema must enforce a single app");
+    #[test]
+    fn the_owner_is_the_account_half_of_the_name() {
+        assert_eq!(owner_of("irixsoft/ledger"), "irixsoft");
+        assert_eq!(owner_of("acme"), "acme");
     }
 }

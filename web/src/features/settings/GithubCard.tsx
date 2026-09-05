@@ -3,8 +3,13 @@ import { Github } from "lucide-react";
 import { ApiError, useConnectGithub, useDisconnectGithub, useGithub, useGithubRepos } from "@/lib/api";
 import { Card, CardBody, CardHeader } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
+import { Badge } from "@/components/ui/Badge";
 import { Row } from "@/components/ui/Row";
 import { ago } from "@/lib/utils";
+import type { GithubConnection } from "@/types/api";
+
+const INPUT =
+  "h-9 px-3 bg-inset border border-line-strong rounded-control text-sm text-ink placeholder:text-ink-4 font-mono text-[13px]";
 
 /** GitHub sends the browser back with the sentence in the URL; read it once, then take it out. */
 function handoffFailure(): string | null {
@@ -19,80 +24,99 @@ export function GithubCard() {
   const { data: github, isLoading } = useGithub();
   const connect = useConnectGithub();
   const [failure] = useState(handoffFailure);
+  const [organization, setOrganization] = useState("");
   const problem = connect.error?.message ?? failure;
+  const connections = github?.connections ?? [];
+  const hasPersonal = connections.some((c) => c.account_type === "user");
 
   return (
     <Card>
       <CardHeader
         title="GitHub"
-        hint="A private GitHub App that exists only in your account"
+        hint="Private GitHub Apps, one per account, each with read-only access to the repositories you choose"
         action={<Github size={16} className="text-ink-3" />}
       />
-      <CardBody>
-        {isLoading || !github ? null : github.connected ? (
-          <Connected
-            appSlug={github.app_slug}
-            appName={github.app_name}
-            account={github.account}
-            connectedAt={github.connected_at}
-          />
-        ) : (
-          <div className="grid gap-3">
-            <p className="text-[13.5px] text-ink-2 leading-relaxed max-w-prose">
-              Ferrum creates an App in your GitHub account with read-only access to the repositories
-              you choose. Nothing is shared with anyone else.
-            </p>
-            <div className="flex items-center gap-3 flex-wrap">
-              <Button variant="primary" onClick={() => connect.mutate()} disabled={connect.isPending}>
-                Connect GitHub
-              </Button>
+      <CardBody className="grid gap-5">
+        {isLoading || !github ? null : (
+          <>
+            {connections.length === 0 ? (
+              <p className="text-[13.5px] text-ink-2 leading-relaxed max-w-prose">
+                Ferrum creates an App in your GitHub account with read-only access to the
+                repositories you choose. Nothing is shared with anyone else.
+              </p>
+            ) : null}
+            {connections.map((c) => (
+              <Connected key={c.app_id} connection={c} />
+            ))}
+            <div className="grid gap-3 pt-1 border-t border-line">
+              {!hasPersonal ? (
+                <div className="flex items-center gap-3 flex-wrap pt-3">
+                  <Button variant="primary" onClick={() => connect.mutate(undefined)} disabled={connect.isPending}>
+                    Connect GitHub
+                  </Button>
+                  <span className="text-[12.5px] text-ink-4">Your personal account.</span>
+                </div>
+              ) : null}
+              <div className="flex items-center gap-2 flex-wrap pt-3">
+                <input
+                  value={organization}
+                  onChange={(e) => setOrganization(e.target.value)}
+                  placeholder="organisation"
+                  className={`${INPUT} w-48`}
+                />
+                <Button
+                  variant={hasPersonal ? "primary" : "ghost"}
+                  disabled={!organization.trim() || connect.isPending}
+                  onClick={() => connect.mutate(organization.trim())}
+                >
+                  Connect an organisation
+                </Button>
+                <span className="text-[12.5px] text-ink-4">
+                  Registers a private App owned by the organisation. You need to be one of its owners.
+                </span>
+              </div>
               {problem ? <span className="text-[12.5px] text-fail">{problem}</span> : null}
             </div>
-          </div>
+          </>
         )}
       </CardBody>
     </Card>
   );
 }
 
-function Connected({
-  appSlug,
-  appName,
-  account,
-  connectedAt,
-}: {
-  appSlug: string;
-  appName: string;
-  account: string;
-  connectedAt: string;
-}) {
+function Connected({ connection }: { connection: GithubConnection }) {
   const repos = useGithubRepos();
   const disconnect = useDisconnectGithub();
   const [confirming, setConfirming] = useState(false);
-
-  const notInstalled =
-    repos.error instanceof ApiError && repos.error.status === 503 && repos.error.message.includes("not installed");
-  const appUrl = `https://github.com/apps/${appSlug}`;
+  const appUrl = `https://github.com/apps/${connection.app_slug}`;
+  const prefix = `${connection.account.toLowerCase()}/`;
+  const accessible = repos.data?.filter((r) => r.full_name.toLowerCase().startsWith(prefix)).length;
+  const notInstalled = connection.installation_id === null && (repos.data !== undefined || repos.error !== null);
 
   return (
-    <div className="grid gap-4">
+    <div className="grid gap-3">
       <dl>
         <Row label="App">
-          <a href={appUrl} target="_blank" rel="noreferrer" className="text-accent hover:underline">
-            {appName}
-          </a>
+          <span className="inline-flex items-center gap-2">
+            <a href={appUrl} target="_blank" rel="noreferrer" className="text-accent hover:underline">
+              {connection.app_name}
+            </a>
+            <Badge>{connection.account_type === "organization" ? "organisation" : "personal"}</Badge>
+          </span>
         </Row>
-        <Row label="Account">{account}</Row>
+        <Row label="Account">{connection.account}</Row>
         <Row label="Repositories">
-          {repos.data
-            ? `${repos.data.length} accessible`
+          {accessible !== undefined && accessible > 0
+            ? `${accessible} accessible`
             : notInstalled
               ? "Not installed yet"
               : repos.error
                 ? repos.error.message
-                : "…"}
+                : accessible === 0
+                  ? "None yet"
+                  : "…"}
         </Row>
-        <Row label="Connected">{ago(connectedAt)}</Row>
+        <Row label="Connected">{ago(connection.connected_at)}</Row>
       </dl>
 
       {notInstalled ? (
@@ -109,12 +133,16 @@ function Connected({
       {confirming ? (
         <div className="bg-inset border border-line rounded-inset p-3 grid gap-3">
           <p className="text-[13px] text-ink-2 leading-relaxed">
-            This deletes the App's private key from this server, so deploys from GitHub stop.{" "}
-            <strong className="text-ink">The App itself keeps existing in your GitHub account</strong>{" "}
-            with the access you gave it, until you delete it there.
+            This deletes the App's private key from this server, so deploys from {connection.account}{" "}
+            stop. <strong className="text-ink">The App itself keeps existing on GitHub</strong> with
+            the access you gave it, until you delete it there.
           </p>
           <div className="flex gap-2">
-            <Button variant="danger" onClick={() => disconnect.mutate()} disabled={disconnect.isPending}>
+            <Button
+              variant="danger"
+              onClick={() => disconnect.mutate(connection.app_id)}
+              disabled={disconnect.isPending}
+            >
               Disconnect
             </Button>
             <a href={`${appUrl}/advanced`} target="_blank" rel="noreferrer">
@@ -124,6 +152,11 @@ function Connected({
               Cancel
             </Button>
           </div>
+          {disconnect.error ? (
+            <p className="text-[12.5px] text-fail">
+              {disconnect.error instanceof ApiError ? disconnect.error.message : String(disconnect.error)}
+            </p>
+          ) : null}
         </div>
       ) : (
         <div>

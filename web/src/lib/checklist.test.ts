@@ -38,12 +38,17 @@ describe("rows", () => {
     const all = rows({
       github: {
         connected: true,
-        app_id: 1,
-        app_slug: "ferrum-panel",
-        app_name: "ferrum-panel",
-        account: "saeed",
-        installation_id: 7,
-        connected_at: "2026-09-05T00:00:00Z",
+        connections: [
+          {
+            app_id: 1,
+            app_slug: "ferrum-panel",
+            app_name: "ferrum-panel",
+            account: "saeed",
+            account_type: "user",
+            installation_id: 7,
+            connected_at: "2026-09-05T00:00:00Z",
+          },
+        ],
       },
       postgres: { installed: true, major: 18, installing: false, error: null, tunnel: "", extensions: [] },
       security: security(true),

@@ -26,7 +26,7 @@ struct CommitRef {
 impl Api {
     /// The repository's tags, newest first as far as their names say.
     pub async fn tags(&self, state: &State, repository: &str) -> anyhow::Result<Vec<Tag>> {
-        let client = self.installed(state).await?;
+        let client = self.installed(state, super::owner_of(repository)).await?;
         let mut found: Vec<Tag> = Vec::new();
         for page in 1..=MAX_PAGES {
             let route = format!("/repos/{repository}/tags?per_page={PER_PAGE}&page={page}");

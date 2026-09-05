@@ -1,4 +1,4 @@
-use super::{Api, NewConnection};
+use super::{AccountType, Api, NewConnection};
 use crate::secret;
 use crate::state::State;
 use anyhow::Context;
@@ -6,10 +6,24 @@ use serde::Deserialize;
 
 pub const NEW_APP_URL: &str = "https://github.com/settings/apps/new";
 pub const STATE_TTL_MINUTES: i64 = 15;
+const NAME_MAX: usize = 34;
 
-pub fn manifest(hostname: &str) -> serde_json::Value {
+/// GitHub App names are unique across GitHub and at most 34 characters.
+pub fn app_name(hostname: &str, organization: Option<&str>) -> String {
+    let host = hostname.replace('.', "-");
+    let mut name = match organization {
+        Some(org) => format!("ferrum-{org}-{host}"),
+        None => format!("ferrum-{host}"),
+    };
+    if name.len() > NAME_MAX {
+        name.truncate(NAME_MAX);
+    }
+    name.trim_end_matches('-').to_string()
+}
+
+pub fn manifest(hostname: &str, organization: Option<&str>) -> serde_json::Value {
     serde_json::json!({
-        "name": format!("ferrum-{}", hostname.replace('.', "-")),
+        "name": app_name(hostname, organization),
         "url": format!("https://{hostname}"),
         "description": "Deploys and manages applications on this server.",
         "hook_attributes": {
@@ -25,8 +39,25 @@ pub fn manifest(hostname: &str) -> serde_json::Value {
     })
 }
 
-pub fn action(state_value: &str) -> String {
-    format!("{NEW_APP_URL}?state={state_value}")
+pub fn action(state_value: &str, organization: Option<&str>) -> String {
+    match organization {
+        Some(org) => {
+            format!("https://github.com/organizations/{org}/settings/apps/new?state={state_value}")
+        }
+        None => format!("{NEW_APP_URL}?state={state_value}"),
+    }
+}
+
+/// A login is letters, digits and single hyphens, up to 39 characters.
+pub fn valid_organization(login: &str) -> bool {
+    let bytes = login.as_bytes();
+    (1..=39).contains(&bytes.len())
+        && bytes
+            .iter()
+            .all(|b| b.is_ascii_alphanumeric() || *b == b'-')
+        && !login.starts_with('-')
+        && !login.ends_with('-')
+        && !login.contains("--")
 }
 
 pub async fn issue_state(state: &State) -> anyhow::Result<String> {
@@ -74,6 +105,8 @@ struct Converted {
 #[derive(Deserialize)]
 struct Owner {
     login: String,
+    #[serde(rename = "type", default)]
+    kind: String,
 }
 
 impl Api {
@@ -89,11 +122,17 @@ impl Api {
             "github created the app without a webhook secret, so deliveries could not be verified",
         )?;
 
+        let account_type = if converted.owner.kind.eq_ignore_ascii_case("organization") {
+            AccountType::Organization
+        } else {
+            AccountType::User
+        };
         Ok(NewConnection {
             app_id: converted.id,
             app_slug: converted.slug,
             app_name: converted.name,
             account: converted.owner.login,
+            account_type,
             private_key: converted.pem,
             webhook_secret,
             client_id: converted.client_id,
@@ -111,7 +150,7 @@ mod tests {
 
     #[test]
     fn the_manifest_points_every_url_at_this_host() {
-        let m = manifest(HOST);
+        let m = manifest(HOST, None);
         assert_eq!(m["name"], "ferrum-panel-example-com");
         assert_eq!(m["url"], "https://panel.example.com");
         assert_eq!(
@@ -126,8 +165,33 @@ mod tests {
     }
 
     #[test]
+    fn an_organisations_app_is_named_after_it_and_registered_under_it() {
+        let m = manifest(HOST, Some("acme"));
+        assert_eq!(m["name"], "ferrum-acme-panel-example-com");
+        assert_eq!(m["public"], false, "the org's own private App");
+        assert_eq!(
+            action("abc123", Some("acme")),
+            "https://github.com/organizations/acme/settings/apps/new?state=abc123"
+        );
+        assert_eq!(
+            app_name("a-very-long-panel-hostname.example.com", Some("acme")),
+            "ferrum-acme-a-very-long-panel-host"
+        );
+        assert_eq!(
+            app_name("x.io", Some("abcdefghijklmnopqrstuvwxy")),
+            "ferrum-abcdefghijklmnopqrstuvwxy-x"
+        );
+        for good in ["acme", "my-org", "a1"] {
+            assert!(valid_organization(good), "{good}");
+        }
+        for bad in ["", "-acme", "acme-", "my--org", "my org", "a/b"] {
+            assert!(!valid_organization(bad), "{bad}");
+        }
+    }
+
+    #[test]
     fn the_app_is_private_and_read_only() {
-        let m = manifest(HOST);
+        let m = manifest(HOST, None);
         assert_eq!(m["public"], false);
         assert_eq!(
             m["default_events"],
@@ -147,7 +211,7 @@ mod tests {
     #[test]
     fn the_state_travels_in_the_action_url() {
         assert_eq!(
-            action("abc123"),
+            action("abc123", None),
             "https://github.com/settings/apps/new?state=abc123"
         );
     }

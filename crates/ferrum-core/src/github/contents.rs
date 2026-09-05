@@ -44,7 +44,7 @@ impl Api {
         full_name: &str,
         git_ref: &str,
     ) -> anyhow::Result<Listing> {
-        let client = self.installed(state).await?;
+        let client = self.installed(state, super::owner_of(full_name)).await?;
         let route = format!("/repos/{full_name}/git/trees/{git_ref}?recursive=1");
         let response: TreeResponse = match client.get(&route, None::<&()>).await {
             Ok(r) => r,
@@ -72,7 +72,7 @@ impl Api {
         git_ref: &str,
         path: &str,
     ) -> anyhow::Result<Option<String>> {
-        let client = self.installed(state).await?;
+        let client = self.installed(state, super::owner_of(full_name)).await?;
         let route = format!("/repos/{full_name}/contents/{path}?ref={git_ref}");
         let found: Contents = match client.get(&route, None::<&()>).await {
             Ok(c) => c,

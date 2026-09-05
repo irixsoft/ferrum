@@ -101,8 +101,8 @@ export function NewAppPage() {
         <Card>
           <CardBody className="pt-5 grid gap-3">
             <p className="text-[13.5px] text-ink-2 leading-relaxed max-w-prose">
-              Ferrum reads repositories through a GitHub App that lives in your account. Connect
-              it once and every repository you grant it appears here.
+              Ferrum reads repositories through a private GitHub App in your account or your
+              organisation. Connect one once and every repository you grant it appears here.
             </p>
             <div>
               <Link to="/settings" search={{ github: "connect" }}>
@@ -235,7 +235,7 @@ function Picker({
         <CardBody className="pb-3">
           {notInstalled ? (
             <p className="text-[13.5px] text-ink-3">
-              The App is not installed on any repository yet. Install it from Settings → Connections.
+              No App is installed on a repository yet. Install one from Settings → Connections.
             </p>
           ) : repos.error ? (
             <p className="text-[13.5px] text-fail">{repos.error.message}</p>

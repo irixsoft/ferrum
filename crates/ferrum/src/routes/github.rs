@@ -1,6 +1,7 @@
 use crate::auth::Caller;
 use crate::routes::error::{ApiError, ApiResult};
 use crate::server::AppState;
+use axum::body::Bytes;
 use axum::extract::{Path, Query, State as Extract};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Redirect, Response};
@@ -30,11 +31,16 @@ pub fn router() -> Router<AppState> {
         .route("/api/github/status", get(status))
         .route("/api/github/repos", get(repos))
         .route("/api/github/repos/{owner}/{repo}/tags", get(tags))
-        .route("/api/github", axum::routing::delete(remove))
+        .route("/api/github/{app_id}", axum::routing::delete(remove))
 }
 
 pub fn public_router() -> Router<AppState> {
     Router::new().route("/api/github/callback", get(callback))
+}
+
+#[derive(Deserialize, Default)]
+struct Connect {
+    organization: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -47,8 +53,7 @@ struct Handoff {
 #[derive(Serialize)]
 struct Status {
     connected: bool,
-    #[serde(flatten, skip_serializing_if = "Option::is_none")]
-    connection: Option<github::Connection>,
+    connections: Vec<github::Connection>,
 }
 
 #[derive(Deserialize)]
@@ -57,15 +62,38 @@ struct Callback {
     state: Option<String>,
 }
 
-async fn connect(Extract(app): Extract<AppState>, _: Caller) -> ApiResult<Json<Handoff>> {
+/// The body is optional: the personal App needs nothing, an organisation names itself.
+async fn connect(
+    Extract(app): Extract<AppState>,
+    _: Caller,
+    body: Bytes,
+) -> ApiResult<Json<Handoff>> {
+    let wanted: Connect = if body.trim_ascii().is_empty() {
+        Connect::default()
+    } else {
+        serde_json::from_slice(&body)
+            .map_err(|e| ApiError::bad_request(format!("The request could not be read: {e}")))?
+    };
+    let organization = wanted
+        .organization
+        .as_deref()
+        .map(str::trim)
+        .filter(|o| !o.is_empty());
+    if let Some(org) = organization
+        && !manifest::valid_organization(org)
+    {
+        return Err(ApiError::bad_request(
+            "An organisation is its GitHub login: letters, digits and hyphens.",
+        ));
+    }
     let hostname = setup::hostname(&app.db)
         .await?
         .ok_or_else(|| ApiError::unavailable("This server has not finished setup yet."))?;
 
     let value = manifest::issue_state(&app.db).await?;
     Ok(Json(Handoff {
-        manifest: manifest::manifest(&hostname),
-        action: manifest::action(&value),
+        manifest: manifest::manifest(&hostname, organization),
+        action: manifest::action(&value, organization),
         state: value,
     }))
 }
@@ -103,10 +131,10 @@ async fn exchange(app: &AppState, query: Callback) -> ApiResult<()> {
 }
 
 async fn status(Extract(app): Extract<AppState>, _: Caller) -> ApiResult<Json<Status>> {
-    let connection = github::load(&app.db).await?;
+    let connections = github::load_all(&app.db).await?;
     Ok(Json(Status {
-        connected: connection.is_some(),
-        connection,
+        connected: !connections.is_empty(),
+        connections,
     }))
 }
 
@@ -131,16 +159,22 @@ async fn tags(
 
 /// "Not connected" and "not installed" are the user's to fix, so they must survive as a sentence
 /// rather than collapsing into a 500.
-fn reachable(e: anyhow::Error) -> ApiError {
+pub(crate) fn reachable(e: anyhow::Error) -> ApiError {
     let message = format!("{e}");
-    if message == github::token::NOT_CONNECTED || message == github::token::NOT_INSTALLED {
+    if github::token::user_fixable(&message) {
         return ApiError::unavailable(message);
     }
     e.into()
 }
 
-async fn remove(Extract(app): Extract<AppState>, _: Caller) -> ApiResult<StatusCode> {
-    github::disconnect(&app.db).await?;
+async fn remove(
+    Extract(app): Extract<AppState>,
+    _: Caller,
+    Path(app_id): Path<i64>,
+) -> ApiResult<StatusCode> {
+    if !github::disconnect(&app.db, app_id).await? {
+        return Err(ApiError::not_found("No such connection."));
+    }
     app.github.forget();
     Ok(StatusCode::NO_CONTENT)
 }

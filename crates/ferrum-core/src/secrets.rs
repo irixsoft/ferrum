@@ -100,7 +100,7 @@ pub async fn any_encrypted(pool: &sqlx::SqlitePool) -> anyhow::Result<bool> {
              SELECT value AS v FROM app_env
              UNION ALL SELECT password FROM databases
              UNION ALL SELECT password FROM redis_instances
-             UNION ALL SELECT private_key FROM github_app
+             UNION ALL SELECT private_key FROM github_apps
            ) WHERE substr(v, 1, 3) = 'v1:'"#
     )
     .fetch_one(pool)
@@ -164,22 +164,24 @@ pub async fn migrate(state: &State) -> anyhow::Result<u64> {
         .await?;
         done += 1;
     }
-    if let Some(row) = sqlx::query!(
-        r#"SELECT private_key AS "private_key!", webhook_secret AS "webhook_secret!",
-                  client_secret AS "client_secret!"
-           FROM github_app WHERE id = 1 AND substr(private_key, 1, 3) <> 'v1:'"#
+    for row in sqlx::query!(
+        r#"SELECT app_id AS "app_id!", private_key AS "private_key!",
+                  webhook_secret AS "webhook_secret!", client_secret AS "client_secret!"
+           FROM github_apps WHERE substr(private_key, 1, 3) <> 'v1:'"#
     )
-    .fetch_optional(&state.pool)
+    .fetch_all(&state.pool)
     .await?
     {
         let private_key = encrypt(key, &row.private_key);
         let webhook_secret = encrypt(key, &row.webhook_secret);
         let client_secret = encrypt(key, &row.client_secret);
         sqlx::query!(
-            "UPDATE github_app SET private_key = ?, webhook_secret = ?, client_secret = ? WHERE id = 1",
+            "UPDATE github_apps SET private_key = ?, webhook_secret = ?, client_secret = ?
+             WHERE app_id = ?",
             private_key,
             webhook_secret,
-            client_secret
+            client_secret,
+            row.app_id
         )
         .execute(&state.pool)
         .await?;
@@ -256,9 +258,9 @@ mod tests {
         let raw: Vec<String> = sqlx::query_scalar(
             "SELECT value FROM app_env UNION ALL SELECT password FROM databases
              UNION ALL SELECT password FROM redis_instances
-             UNION ALL SELECT private_key FROM github_app
-             UNION ALL SELECT webhook_secret FROM github_app
-             UNION ALL SELECT client_secret FROM github_app",
+             UNION ALL SELECT private_key FROM github_apps
+             UNION ALL SELECT webhook_secret FROM github_apps
+             UNION ALL SELECT client_secret FROM github_apps",
         )
         .fetch_all(&state.pool)
         .await
@@ -279,12 +281,12 @@ mod tests {
         let redis_url = redis::url_for(&state, &app.id).await.unwrap().unwrap();
         assert!(!redis_url.contains("v1:"), "{redis_url}");
         assert_eq!(
-            github::private_key(&state).await.unwrap().as_deref(),
+            github::private_key(&state, 12345).await.unwrap().as_deref(),
             Some(github::tests::TEST_PEM)
         );
         assert_eq!(
-            github::webhook_secret(&state).await.unwrap().as_deref(),
-            Some("whsec_test")
+            github::webhook_secrets(&state).await.unwrap(),
+            vec![(12345, "whsec_test".to_string())]
         );
         assert_eq!(migrate(&state).await.unwrap(), 0);
     }

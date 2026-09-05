@@ -42,7 +42,7 @@ pub async fn commit(
     git_ref: &str,
 ) -> anyhow::Result<Head> {
     let found: CommitRef = api
-        .installed(state)
+        .installed(state, super::owner_of(repository))
         .await?
         .get(
             format!("/repos/{repository}/commits/{git_ref}"),

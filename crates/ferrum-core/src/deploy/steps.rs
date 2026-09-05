@@ -221,7 +221,11 @@ impl Job {
         }
         let sha = self.deploy.commit_sha.clone().expect("resolved above");
         let repository = &self.app.repository;
-        let token = self.ctx.github.installation_token(&self.ctx.state).await?;
+        let token = self
+            .ctx
+            .github
+            .installation_token(&self.ctx.state, crate::github::owner_of(repository))
+            .await?;
         let url = format!("https://x-access-token:{token}@github.com/{repository}.git");
         let public = format!("https://github.com/{repository}.git");
         let dir = releases::release_dir(&self.app, &sha);

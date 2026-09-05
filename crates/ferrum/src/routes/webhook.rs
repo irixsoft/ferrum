@@ -6,7 +6,7 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::{Router, routing::post};
 use ferrum_core::github::{self, webhook};
 
-const REFUSED: &str = "That delivery is not signed by this installation.";
+const REFUSED: &str = "That delivery is not signed by a connected App.";
 
 pub fn router() -> Router<AppState> {
     Router::new().route("/api/github/webhook", post(receive))
@@ -19,14 +19,13 @@ async fn receive(
     headers: HeaderMap,
     body: Bytes,
 ) -> ApiResult<StatusCode> {
-    let secret = github::webhook_secret(&app.db)
-        .await?
-        .ok_or_else(|| ApiError::unauthorized(REFUSED))?;
     let signature = header(&headers, webhook::SIGNATURE_HEADER).unwrap_or_default();
-
-    if !webhook::verify(&secret, signature, &body) {
-        return Err(ApiError::unauthorized(REFUSED));
-    }
+    let signer = github::webhook_secrets(&app.db)
+        .await?
+        .into_iter()
+        .find(|(_, secret)| webhook::verify(secret, signature, &body))
+        .map(|(app_id, _)| app_id)
+        .ok_or_else(|| ApiError::unauthorized(REFUSED))?;
 
     let name = header(&headers, webhook::EVENT_HEADER)
         .ok_or_else(|| ApiError::bad_request("That delivery names no event."))?;
@@ -45,6 +44,7 @@ async fn receive(
         tracing::info!(
             event = event.name(),
             repository = event.repository(),
+            app_id = signer,
             deploys = queued.len(),
             "delivery recorded"
         );

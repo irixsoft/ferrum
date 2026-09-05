@@ -1,0 +1,26 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT app_id AS \"app_id!\", webhook_secret AS \"webhook_secret!\" FROM github_apps",
+  "describe": {
+    "columns": [
+      {
+        "name": "app_id!",
+        "ordinal": 0,
+        "type_info": "Integer"
+      },
+      {
+        "name": "webhook_secret!",
+        "ordinal": 1,
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "69b219d99169126a845a27b2a9c10afbfe8cda559eb75f441012856c38874b1c"
+}

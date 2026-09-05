@@ -125,7 +125,7 @@ async fn inspect(
             return ApiError::new(StatusCode::UNPROCESSABLE_ENTITY, e.to_string());
         }
         let message = e.to_string();
-        if message == github::token::NOT_CONNECTED || message == github::token::NOT_INSTALLED {
+        if github::token::user_fixable(&message) {
             return ApiError::unavailable(message);
         }
         if message.starts_with("GitHub has no branch or tag") {

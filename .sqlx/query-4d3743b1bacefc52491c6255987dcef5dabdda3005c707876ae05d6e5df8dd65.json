@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE github_apps SET installation_id = ? WHERE app_id = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": []
+  },
+  "hash": "4d3743b1bacefc52491c6255987dcef5dabdda3005c707876ae05d6e5df8dd65"
+}
