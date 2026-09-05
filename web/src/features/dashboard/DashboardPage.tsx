@@ -13,6 +13,7 @@ import { Badge } from "@/components/ui/Badge";
 import { uptime } from "@/lib/utils";
 import { useRange } from "@/lib/range";
 import { SearchPill } from "@/components/SearchPill";
+import { Checklist } from "@/features/dashboard/Checklist";
 import { StagingBadge } from "@/components/StagingBadge";
 import { Segmented } from "@/components/ui/Segmented";
 
@@ -47,6 +48,10 @@ export function DashboardPage() {
       />
 
       <div className="grid gap-4 lg:grid-cols-12">
+        <div className="lg:col-span-12 empty:hidden">
+          <Checklist host={host} />
+        </div>
+
         <div className="lg:col-span-7">
           {deploy ? (
             <Card>

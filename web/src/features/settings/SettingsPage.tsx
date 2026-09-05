@@ -29,6 +29,7 @@ import {
 import { useShell } from "@/shells/useShell";
 import { useTheme, type Theme } from "@/lib/theme";
 import { PageTitle } from "@/components/PageTitle";
+import { Handoff } from "@/components/Handoff";
 import { Card, CardBody, CardFoot, CardHeader } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
 import { Badge } from "@/components/ui/Badge";
@@ -43,9 +44,15 @@ type Tab = "people" | "tokens" | "connections" | "builds" | "appearance" | "abou
 
 const message = (e: unknown) => (e instanceof ApiError ? e.message : e ? String(e) : null);
 
+const TABS: Tab[] = ["people", "tokens", "connections", "builds", "appearance", "about"];
+
 /** GitHub sends the browser back to `/settings?github=…`, and that belongs on the Connections tab. */
-const initialTab = (): Tab =>
-  new URLSearchParams(window.location.search).has("github") ? "connections" : "people";
+const initialTab = (): Tab => {
+  const query = new URLSearchParams(window.location.search);
+  if (query.has("github")) return "connections";
+  const asked = query.get("tab");
+  return TABS.find((t) => t === asked) ?? "people";
+};
 
 export function SettingsPage() {
   const [tab, setTab] = useState<Tab>(initialTab);
@@ -363,30 +370,6 @@ function ConnectAgent({ token }: { token: string | null }) {
   );
 }
 
-function Handoff({
-  label,
-  value,
-  onDone,
-}: {
-  label: string;
-  value: string;
-  onDone: () => void;
-}) {
-  return (
-    <div className="mb-4 bg-inset border border-line rounded-inset p-3">
-      <p className="text-[12.5px] text-ink-3 mb-2">{label}</p>
-      <div className="flex items-center gap-2">
-        <code className="flex-1 font-mono text-[12px] text-ink break-all">{value}</code>
-        <Button size="sm" onClick={() => navigator.clipboard?.writeText(value)}>
-          Copy
-        </Button>
-        <Button size="sm" variant="ghost" onClick={onDone}>
-          Done
-        </Button>
-      </div>
-    </div>
-  );
-}
 
 function Connections({ onTokens }: { onTokens: () => void }) {
   return (

@@ -488,6 +488,12 @@ const hardening = (path: string) =>
     request<Security>(`/security/${path}`, { method: "POST" }),
   );
 
+export function useHideChecklist() {
+  return useInvalidating(keys.host, (hidden: boolean) =>
+    request<void>("/settings/checklist", body({ hidden }, "PUT")),
+  );
+}
+
 export const useEnableFirewall = () => hardening("firewall");
 export const useEnableFail2ban = () => hardening("fail2ban");
 export const useEnableUpdates = () => hardening("updates");

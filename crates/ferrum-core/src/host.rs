@@ -45,7 +45,20 @@ pub struct HostStatus {
     pub disk_used_gb: f64,
     pub disk_total_gb: f64,
     pub certificates_staging: bool,
+    pub checklist_hidden: bool,
     pub services: Vec<Service>,
+}
+
+const CHECKLIST_HIDDEN: &str = "panel.checklist_hidden";
+
+pub async fn checklist_hidden(state: &State) -> anyhow::Result<bool> {
+    Ok(state.get_setting(CHECKLIST_HIDDEN).await?.as_deref() == Some("true"))
+}
+
+pub async fn set_checklist_hidden(state: &State, hidden: bool) -> anyhow::Result<()> {
+    state
+        .set_setting(CHECKLIST_HIDDEN, &hidden.to_string())
+        .await
 }
 
 fn service(name: &str, ok: bool, detail: impl Into<String>) -> Service {
@@ -117,6 +130,7 @@ pub async fn status(
         disk_used_gb: gb(disk.used_bytes),
         disk_total_gb: gb(disk.total_bytes),
         certificates_staging: staging,
+        checklist_hidden: checklist_hidden(state).await?,
         services: services(state, platform)
             .await?
             .into_iter()

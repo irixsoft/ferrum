@@ -96,3 +96,40 @@ async fn build_limits_default_from_the_host_and_round_trip_within_its_bounds() {
         .await;
     assert_eq!(refused.status, StatusCode::FORBIDDEN);
 }
+
+#[tokio::test]
+async fn the_checklist_is_hidden_per_box_and_only_by_a_writer() {
+    let (h, cookie) = signed_in().await;
+    let host = h.get_with_cookie("/api/host", &cookie).await;
+    assert_eq!(host.json["checklist_hidden"], false, "{}", host.json);
+
+    let hidden = h
+        .put_with_cookie("/api/settings/checklist", r#"{"hidden":true}"#, &cookie)
+        .await;
+    assert_eq!(hidden.status, StatusCode::NO_CONTENT, "{}", hidden.json);
+    assert_eq!(
+        h.get_with_cookie("/api/host", &cookie).await.json["checklist_hidden"],
+        true
+    );
+
+    let token = h.machine_token(true).await;
+    let refused = h
+        .send(
+            axum::http::Request::builder()
+                .method("PUT")
+                .uri("/api/settings/checklist")
+                .header(axum::http::header::CONTENT_TYPE, "application/json")
+                .header(axum::http::header::AUTHORIZATION, format!("Bearer {token}"))
+                .body(axum::body::Body::from(r#"{"hidden":false}"#))
+                .unwrap(),
+        )
+        .await;
+    assert_eq!(refused.status, StatusCode::FORBIDDEN);
+
+    h.put_with_cookie("/api/settings/checklist", r#"{"hidden":false}"#, &cookie)
+        .await;
+    assert_eq!(
+        h.get_with_cookie("/api/host", &cookie).await.json["checklist_hidden"],
+        false
+    );
+}

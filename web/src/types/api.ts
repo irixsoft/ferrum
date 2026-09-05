@@ -321,6 +321,7 @@ export interface HostStatus {
   disk_total_gb: number;
   /** Certificates come from Let's Encrypt's staging directory, which browsers do not trust. */
   certificates_staging: boolean;
+  checklist_hidden: boolean;
   services: ServiceStatus[];
 }
 

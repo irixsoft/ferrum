@@ -14,6 +14,7 @@ import {
 } from "@/lib/api";
 import type { JobStatus, Security } from "@/types/api";
 import { PageTitle } from "@/components/PageTitle";
+import { EnableButton, enableFailure } from "@/components/EnableButton";
 import { ChartKey, MetricChart, type Band } from "@/components/MetricChart";
 import { Card, CardBody, CardFoot, CardHeader } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
@@ -32,30 +33,7 @@ const BANDS: Record<"cpu" | "memory", Band[]> = {
 };
 
 const message = (e: unknown) => (e instanceof ApiError ? e.message : e ? String(e) : null);
-
-/** apt runs in the background; the security query polls until the job settles. */
-function EnableButton({
-  label,
-  job,
-  mutation,
-}: {
-  label: string;
-  job: JobStatus;
-  mutation: { isPending: boolean; mutate: (v: undefined) => void };
-}) {
-  const running = job.running || mutation.isPending;
-  return (
-    <span className="flex items-center gap-3">
-      {running ? <span className="text-[12.5px] text-ink-4">About a minute.</span> : null}
-      <Button size="sm" variant="primary" disabled={running} onClick={() => mutation.mutate(undefined)}>
-        {running ? "Installing…" : label}
-      </Button>
-    </span>
-  );
-}
-
-const failure = (job: JobStatus, mutation: { error: unknown }) =>
-  job.running ? null : (message(mutation.error) ?? job.error);
+const failure = enableFailure;
 
 export function SystemPage() {
   const { data: host } = useHost();

@@ -2,12 +2,30 @@ use crate::auth::Caller;
 use crate::routes::error::{ApiError, ApiResult};
 use crate::server::AppState;
 use axum::extract::State as Extract;
-use axum::{Json, Router, routing::get};
+use axum::http::StatusCode;
+use axum::{Json, Router, routing::get, routing::put};
+use ferrum_core::host;
 use ferrum_core::settings::{self, BuildLimits, SettingsError};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 pub fn router() -> Router<AppState> {
-    Router::new().route("/api/settings/builds", get(builds).put(set_builds))
+    Router::new()
+        .route("/api/settings/builds", get(builds).put(set_builds))
+        .route("/api/settings/checklist", put(set_checklist))
+}
+
+#[derive(Deserialize)]
+struct Checklist {
+    hidden: bool,
+}
+
+async fn set_checklist(
+    Extract(app): Extract<AppState>,
+    _: Caller,
+    Json(body): Json<Checklist>,
+) -> ApiResult<StatusCode> {
+    host::set_checklist_hidden(&app.db, body.hidden).await?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 #[derive(Serialize)]
