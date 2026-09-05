@@ -34,6 +34,8 @@ pub const SSHD_DROPIN: &str = "/etc/ssh/sshd_config.d/10-ferrum.conf";
 /// Socket-activated sshd removes its runtime directory between sessions, and `sshd -T` needs it.
 pub const RUN_SSHD: &str = "/run/sshd";
 pub const APT_AUTO_UPGRADES: &str = "/etc/apt/apt.conf.d/20auto-upgrades";
+/// What `netfilter-persistent` restores at boot on images that ship it, Oracle's among them.
+pub const RULES_V4: &str = "/etc/iptables/rules.v4";
 pub const ROOT_AUTHORIZED_KEYS: &str = "/root/.ssh/authorized_keys";
 const HOME_DIR: &str = "/home";
 const AUTHORIZED_KEYS: &str = ".ssh/authorized_keys";
@@ -991,16 +993,26 @@ impl Platform for Ubuntu {
             .and_then(|out| parse_ufw_status(&out)))
     }
 
-    fn ufw_apply(&self, allow: &[&str], enable: bool) -> Result<(), PlatformError> {
+    fn ufw_apply(&self, allow: &[&str]) -> Result<(), PlatformError> {
         exec::run(&["ufw", "default", "deny", "incoming"])?;
         exec::run(&["ufw", "default", "allow", "outgoing"])?;
         for rule in allow {
             exec::run(&["ufw", "allow", rule])?;
         }
-        if enable {
-            exec::run(&["ufw", "--force", "enable"])?;
-        }
         Ok(())
+    }
+
+    fn ufw_enable(&self) -> Result<(), PlatformError> {
+        exec::run(&["ufw", "--force", "enable"]).map(|_| ())
+    }
+
+    fn iptables_restore(&self, rules: &str) -> Result<(), PlatformError> {
+        exec::run_with_stdin(&["iptables-restore"], rules).map(|_| ())
+    }
+
+    fn iptables_flush(&self) -> Result<(), PlatformError> {
+        exec::run(&["iptables", "-F"])?;
+        exec::run(&["iptables", "-X"]).map(|_| ())
     }
 
     fn fail2ban_jails(&self) -> Result<Vec<String>, PlatformError> {

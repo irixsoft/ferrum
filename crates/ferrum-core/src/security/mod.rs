@@ -1,5 +1,6 @@
 pub mod bans;
 pub mod firewall;
+pub mod persisted;
 pub mod ssh;
 pub mod updates;
 
@@ -31,6 +32,7 @@ pub struct Firewall {
     pub enabled: bool,
     pub ssh_port: u16,
     pub rules: Vec<FirewallRule>,
+    pub persisted: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]

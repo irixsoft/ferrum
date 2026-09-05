@@ -50,8 +50,9 @@ async fn the_firewall_reads_the_ssh_port_first_and_refuses_a_second_enable() {
     let calls = h.platform.calls();
     let apply = calls
         .iter()
-        .position(|c| c == "ufw_apply 2222/tcp 80/tcp 443/tcp enable")
+        .position(|c| c == "ufw_apply 2222/tcp 80/tcp 443/tcp")
         .unwrap();
+    let up = calls.iter().position(|c| c == "ufw_enable").unwrap();
     let install = calls
         .iter()
         .position(|c| c == "install_packages ufw")
@@ -60,7 +61,11 @@ async fn the_firewall_reads_the_ssh_port_first_and_refuses_a_second_enable() {
         .iter()
         .rposition(|c| c == "sshd_effective")
         .unwrap();
-    assert!(read < install && install < apply, "{calls:#?}");
+    assert!(
+        read < install && install < apply && apply < up,
+        "{calls:#?}"
+    );
+    assert_eq!(after["firewall"]["persisted"], false);
     assert_eq!(after["firewall"]["enabled"], true);
     assert_eq!(after["firewall"]["rules"].as_array().unwrap().len(), 3);
     assert_eq!(after["firewall"]["rules"][0]["port"], "2222/tcp");

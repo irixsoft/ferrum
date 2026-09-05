@@ -5,7 +5,7 @@ use ferrum_core::acme::{self, Directory, Issuer};
 use ferrum_core::dns::{self, Verdict};
 use ferrum_core::setup::{self, Stage};
 use ferrum_core::state::State;
-use ferrum_core::{FERRUM_UNIT, enrollment, nginx, swap, users};
+use ferrum_core::{FERRUM_UNIT, enrollment, nginx, security, swap, users};
 use ferrum_platform::{Platform, ServiceAction, Ubuntu};
 use std::net::IpAddr;
 use std::os::unix::fs::MetadataExt;
@@ -51,15 +51,8 @@ pub async fn run(opts: SetupOpts) -> anyhow::Result<()> {
 
     let codename = host_info.codename.clone();
     let already_installed = stage >= Stage::PlatformInstalled;
-    let install = tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
-        let platform = Ubuntu;
-        if let Some(mb) = swap_mb {
-            swap::create(&platform, mb)?;
-        }
-        if !already_installed {
-            nginx::install(&platform, &codename)?;
-        }
-        Ok(())
+    let install = tokio::task::spawn_blocking(move || {
+        install_platform(&Ubuntu, &codename, swap_mb, already_installed)
     });
 
     let timeout = if opts.non_interactive {
@@ -122,6 +115,25 @@ pub async fn run(opts: SetupOpts) -> anyhow::Result<()> {
         println!("  Run `ferrum passkey enroll` for a new one.\n");
     }
 
+    Ok(())
+}
+
+/// A host that persists its own iptables rules keeps 80 and 443 shut, and HTTP-01 needs them.
+fn install_platform(
+    platform: &dyn Platform,
+    codename: &str,
+    swap_mb: Option<u64>,
+    already_installed: bool,
+) -> anyhow::Result<()> {
+    if let Some(mb) = swap_mb {
+        swap::create(platform, mb)?;
+    }
+    if !already_installed {
+        nginx::install(platform, codename)?;
+    }
+    if security::persisted::ensure_open(platform, &[80, 443])? {
+        println!("  Opened 80 and 443 in this host's own iptables rules.");
+    }
     Ok(())
 }
 
@@ -273,5 +285,43 @@ async fn wait_for_health() -> anyhow::Result<()> {
             bail!("The Ferrum service did not become healthy. Check: journalctl -u {FERRUM_UNIT}");
         }
         tokio::time::sleep(Duration::from_secs(1)).await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ferrum_platform::FakePlatform;
+    use ferrum_platform::ubuntu::RULES_V4;
+    use std::path::Path;
+
+    #[test]
+    fn the_install_opens_a_persisted_ruleset_after_nginx_and_only_when_there_is_one() {
+        let p = FakePlatform::new();
+        install_platform(&p, "noble", None, false).unwrap();
+        assert!(p.calls_matching("install_packages nginx").len() == 1);
+        assert!(p.calls_matching("iptables_").is_empty());
+
+        p.write_file(
+            Path::new(RULES_V4),
+            "*filter\n-A INPUT -p tcp --dport 22 -j ACCEPT\n-A INPUT -j REJECT\nCOMMIT\n",
+            0o644,
+        )
+        .unwrap();
+        install_platform(&p, "noble", None, true).unwrap();
+        let calls = p.calls();
+        assert_eq!(
+            calls
+                .iter()
+                .filter(|c| c.starts_with("install_packages nginx"))
+                .count(),
+            1
+        );
+        assert_eq!(p.calls_matching("iptables_restore").len(), 1);
+        assert!(
+            p.written(RULES_V4)
+                .unwrap()
+                .contains("--dports 80,443 -j ACCEPT\n-A INPUT -j REJECT")
+        );
     }
 }

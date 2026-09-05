@@ -41,6 +41,7 @@ struct Inner {
     disk_usage: DiskUsage,
     follows_ended: usize,
     ufw: Option<Vec<FirewallRule>>,
+    ufw_pending: Vec<FirewallRule>,
     jails: Vec<String>,
     bans: Vec<Ban>,
     sshd: Sshd,
@@ -716,13 +717,9 @@ impl Platform for FakePlatform {
         Ok(self.inner.lock().unwrap().ufw.clone())
     }
 
-    fn ufw_apply(&self, allow: &[&str], enable: bool) -> Result<(), PlatformError> {
-        self.record(format!(
-            "ufw_apply {}{}",
-            allow.join(" "),
-            if enable { " enable" } else { "" }
-        ))?;
-        let rules = allow
+    fn ufw_apply(&self, allow: &[&str]) -> Result<(), PlatformError> {
+        self.record(format!("ufw_apply {}", allow.join(" ")))?;
+        let rules: Vec<FirewallRule> = allow
             .iter()
             .map(|port| FirewallRule {
                 port: port.to_string(),
@@ -731,10 +728,27 @@ impl Platform for FakePlatform {
             })
             .collect();
         let mut inner = self.inner.lock().unwrap();
-        if enable || inner.ufw.is_some() {
-            inner.ufw = Some(rules);
+        if inner.ufw.is_some() {
+            inner.ufw = Some(rules.clone());
         }
+        inner.ufw_pending = rules;
         Ok(())
+    }
+
+    fn ufw_enable(&self) -> Result<(), PlatformError> {
+        self.record("ufw_enable".into())?;
+        let mut inner = self.inner.lock().unwrap();
+        let rules = inner.ufw_pending.clone();
+        inner.ufw = Some(rules);
+        Ok(())
+    }
+
+    fn iptables_restore(&self, rules: &str) -> Result<(), PlatformError> {
+        self.record(format!("iptables_restore {} lines", rules.lines().count()))
+    }
+
+    fn iptables_flush(&self) -> Result<(), PlatformError> {
+        self.record("iptables_flush".into())
     }
 
     fn fail2ban_jails(&self) -> Result<Vec<String>, PlatformError> {
@@ -1056,15 +1070,18 @@ mod tests {
     fn the_hardening_tools_are_scripted_and_recorded() {
         let p = FakePlatform::new();
         assert_eq!(p.ufw_status().unwrap(), None);
-        p.ufw_apply(&["2222/tcp", "80/tcp"], false).unwrap();
+        p.ufw_apply(&["2222/tcp", "80/tcp"]).unwrap();
         assert_eq!(p.ufw_status().unwrap(), None, "no enable, still inactive");
-        p.ufw_apply(&["2222/tcp", "80/tcp"], true).unwrap();
+        p.ufw_enable().unwrap();
         let rules = p.ufw_status().unwrap().unwrap();
         assert_eq!(rules.len(), 2);
         assert_eq!(rules[0].port, "2222/tcp");
-        assert!(
-            p.calls()
-                .contains(&"ufw_apply 2222/tcp 80/tcp enable".to_string())
+        assert!(p.calls().contains(&"ufw_apply 2222/tcp 80/tcp".to_string()));
+        p.iptables_restore("*filter\nCOMMIT\n").unwrap();
+        p.iptables_flush().unwrap();
+        assert_eq!(
+            p.calls_matching("iptables_"),
+            vec!["iptables_restore 2 lines", "iptables_flush"]
         );
 
         assert!(p.fail2ban_jails().unwrap().is_empty());

@@ -355,7 +355,7 @@ export interface JobStatus {
 }
 
 export interface Security {
-  firewall: { enabled: boolean; ssh_port: number; rules: FirewallRule[] };
+  firewall: { enabled: boolean; ssh_port: number; rules: FirewallRule[]; persisted: boolean };
   bans: { installed: boolean; jails: string[]; banned: BannedIp[]; allowlist: string[] };
   updates: { enabled: boolean };
   ssh: { port: number; password_auth: boolean; keys: KeyFingerprint[] };

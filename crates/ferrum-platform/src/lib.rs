@@ -217,7 +217,10 @@ pub trait Platform: Send + Sync {
     /// `None` while ufw is inactive or not installed.
     fn ufw_status(&self) -> Result<Option<Vec<FirewallRule>>, PlatformError>;
     /// Default deny in, allow out, then one `allow` per rule in the order given, then enable.
-    fn ufw_apply(&self, allow: &[&str], enable: bool) -> Result<(), PlatformError>;
+    fn ufw_apply(&self, allow: &[&str]) -> Result<(), PlatformError>;
+    fn ufw_enable(&self) -> Result<(), PlatformError>;
+    fn iptables_restore(&self, rules: &str) -> Result<(), PlatformError>;
+    fn iptables_flush(&self) -> Result<(), PlatformError>;
     fn fail2ban_jails(&self) -> Result<Vec<String>, PlatformError>;
     fn fail2ban_bans(&self, jail: &str) -> Result<Vec<Ban>, PlatformError>;
     fn fail2ban_unban(&self, jail: &str, ip: &str) -> Result<(), PlatformError>;

@@ -197,10 +197,14 @@ function Firewall({ firewall, job }: { firewall: Security["firewall"]; job: JobS
         ) : (
           <p className="text-[13px] text-ink-2 leading-relaxed">
             SSH on <Code>{firewall.ssh_port}</Code>, 80 and 443 stay open; everything else is denied.
-            The port is read from the running sshd before anything changes, so the session you are
-            using survives.
           </p>
         )}
+        {firewall.persisted ? (
+          <p className="text-[12.5px] text-ink-4 mt-3 leading-relaxed">
+            This host keeps its own rules in <Code>/etc/iptables/rules.v4</Code>; SSH, 80 and 443 are
+            open there too.
+          </p>
+        ) : null}
         {failure(job, enable) ? <p className="text-[12.5px] text-fail mt-3">{failure(job, enable)}</p> : null}
       </CardBody>
     </Card>
