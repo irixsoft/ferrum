@@ -218,6 +218,13 @@ pub async fn serve(data_dir: &Path) -> anyhow::Result<()> {
         hostname: ferrum_core::setup::hostname(&state).await?,
         ..Deps::default()
     };
+    if let Some(hostname) = deps.hostname.clone() {
+        match ferrum_core::nginx::refresh_panel_vhost(deps.platform.as_ref(), &hostname) {
+            Ok(true) => tracing::info!("panel vhost refreshed"),
+            Ok(false) => {}
+            Err(e) => tracing::warn!(error = %e, "refreshing the panel vhost"),
+        }
+    }
     let app_state = AppState::new(state.clone(), deps);
     ferrum_core::certs::spawn_sweeper(
         state.clone(),

@@ -1,4 +1,4 @@
-use crate::{ACME_ROOT, LISTEN_ADDR};
+use crate::{ACME_ROOT, LISTEN_ADDR, acme};
 use ferrum_platform::ubuntu::{NGINX_CONF_DIR, NGINX_UNIT};
 use ferrum_platform::{Platform, PlatformError, ServiceAction};
 use std::path::{Path, PathBuf};
@@ -34,6 +34,21 @@ pub fn render_panel_vhost(hostname: &str, cert_dir: &Path) -> String {
         .replace("{{cert_dir}}", &cert_dir.to_string_lossy())
         .replace("{{acme_root}}", ACME_ROOT)
         .replace("{{upstream}}", &LISTEN_ADDR.to_string())
+}
+
+/// A no-op until setup has issued the certificate, and whenever the file already matches.
+pub fn refresh_panel_vhost(platform: &dyn Platform, hostname: &str) -> Result<bool, PlatformError> {
+    let cert_dir = acme::cert_dir(hostname);
+    if !platform.file_exists(&cert_dir.join("fullchain.pem")) {
+        return Ok(false);
+    }
+    let rendered = render_panel_vhost(hostname, &cert_dir);
+    let path = panel_conf_path();
+    if platform.read_file(&path)?.as_deref() == Some(rendered.as_str()) {
+        return Ok(false);
+    }
+    replace_and_reload(platform, &path, &rendered)?;
+    Ok(true)
 }
 
 pub fn write_and_reload(
@@ -124,6 +139,63 @@ mod tests {
         assert!(conf.contains("proxy_set_header Upgrade $http_upgrade;"));
         assert!(conf.contains("proxy_set_header Connection $connection_upgrade;"));
         assert!(conf.contains("proxy_read_timeout 3600s;"));
+        assert_eq!(conf.matches("proxy_set_header Host $host;").count(), 1);
+        assert_eq!(conf.matches("proxy_http_version 1.1;").count(), 1);
+        assert_eq!(conf.matches("proxy_pass http://127.0.0.1:8443;").count(), 2);
+    }
+
+    #[test]
+    fn the_restore_upload_alone_is_unlimited_and_unbuffered() {
+        let conf = render_panel_vhost("p.example.com", Path::new("/c"));
+        let restore = conf
+            .find("location ~ ^/api/databases/[^/]+/restore$ {")
+            .unwrap();
+        let end = restore + conf[restore..].find('}').unwrap();
+        let block = &conf[restore..end];
+        assert!(block.contains("client_max_body_size 0;"), "{block}");
+        assert!(block.contains("proxy_request_buffering off;"), "{block}");
+        assert!(
+            block.contains("proxy_pass http://127.0.0.1:8443;"),
+            "{block}"
+        );
+        assert_eq!(conf.matches("client_max_body_size 0;").count(), 1);
+        assert_eq!(conf.matches("proxy_request_buffering").count(), 1);
+        assert!(conf.contains("client_max_body_size 64m;"));
+    }
+
+    #[test]
+    fn the_panel_vhost_is_refreshed_only_once_a_certificate_exists_and_only_when_it_differs() {
+        let p = FakePlatform::new();
+        assert!(!refresh_panel_vhost(&p, "p.example.com").unwrap());
+        assert!(p.calls_matching("write_file").is_empty());
+
+        let cert = acme::cert_dir("p.example.com").join("fullchain.pem");
+        p.write_file(&cert, "cert", 0o644).unwrap();
+        p.write_file(&panel_conf_path(), "server {}", 0o644)
+            .unwrap();
+        assert!(refresh_panel_vhost(&p, "p.example.com").unwrap());
+        let written = p.written(&panel_conf_path().to_string_lossy()).unwrap();
+        assert!(written.contains("server_name p.example.com;"));
+        assert_eq!(p.calls_matching("service reload nginx").len(), 1);
+
+        assert!(!refresh_panel_vhost(&p, "p.example.com").unwrap());
+        assert_eq!(p.calls_matching("service reload nginx").len(), 1);
+    }
+
+    #[test]
+    fn a_refresh_nginx_rejects_leaves_the_old_vhost_in_place() {
+        let p = FakePlatform::new();
+        let cert = acme::cert_dir("p.example.com").join("fullchain.pem");
+        p.write_file(&cert, "cert", 0o644).unwrap();
+        p.write_file(&panel_conf_path(), "server {}", 0o644)
+            .unwrap();
+        p.fail_next("nginx_test");
+        assert!(refresh_panel_vhost(&p, "p.example.com").is_err());
+        assert_eq!(
+            p.written(&panel_conf_path().to_string_lossy()).as_deref(),
+            Some("server {}")
+        );
+        assert!(p.calls_matching("service reload nginx").is_empty());
     }
 
     #[test]
