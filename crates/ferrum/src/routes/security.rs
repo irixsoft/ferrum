@@ -24,7 +24,7 @@ pub fn router() -> Router<AppState> {
 }
 
 #[derive(Serialize)]
-struct View {
+pub(crate) struct View {
     #[serde(flatten)]
     security: Security,
     jobs: Jobs,
@@ -37,7 +37,7 @@ struct Jobs {
     updates: JobStatus,
 }
 
-async fn view(app: &AppState) -> ApiResult<View> {
+pub(crate) async fn view(app: &AppState) -> ApiResult<View> {
     let security = security::status(&app.db, app.platform.as_ref())
         .await
         .map_err(security_error)?;

@@ -1,10 +1,10 @@
 use super::handler::{Ferrum, ToolResult, finish};
 use crate::routes::error::{ApiError, ApiResult};
 use crate::routes::{apps, databases, deploys, host, logs, nginx};
+use ferrum_core::certs;
 use ferrum_core::deploy::{self, log};
 use ferrum_core::logs::{DEFAULT_LINES, MAX_LINES};
 use ferrum_core::metrics::HOST;
-use ferrum_core::{certs, security};
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::{schemars, tool, tool_router};
 use serde::Deserialize;
@@ -215,7 +215,7 @@ impl Ferrum {
 
     #[tool(
         name = "system_status",
-        description = "The host: Ferrum version, uptime, load, memory, disk, the services with a sentence each, and under `security` the firewall, bans, updates and SSH state.",
+        description = "The host: Ferrum version, uptime, load, memory, disk, the services with a sentence each, and under `security` the firewall, bans, updates and SSH state with any enable still running under `jobs`.",
         annotations(read_only_hint = true, idempotent_hint = true, open_world_hint = false)
     )]
     async fn system_status(&self) -> ToolResult {
@@ -226,14 +226,14 @@ impl Ferrum {
                     ferrum_core::host::status(&self.state.db, self.state.platform.as_ref(), &build)
                         .await?;
                 let mut value = serde_json::to_value(host).map_err(anyhow::Error::from)?;
-                match security::status(&self.state.db, self.state.platform.as_ref()).await {
+                match crate::routes::security::view(&self.state).await {
                     Ok(security) => {
                         value["security"] =
                             serde_json::to_value(security).map_err(anyhow::Error::from)?;
                     }
                     Err(e) => {
                         value["security"] = serde_json::Value::Null;
-                        value["security_error"] = serde_json::Value::String(e.to_string());
+                        value["security_error"] = serde_json::Value::String(e.message);
                     }
                 }
                 Ok::<_, ApiError>(value)
