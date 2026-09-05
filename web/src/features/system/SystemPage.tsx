@@ -12,7 +12,7 @@ import {
   useSecurity,
   useUnban,
 } from "@/lib/api";
-import type { Security } from "@/types/api";
+import type { JobStatus, Security } from "@/types/api";
 import { PageTitle } from "@/components/PageTitle";
 import { ChartKey, MetricChart, type Band } from "@/components/MetricChart";
 import { Card, CardBody, CardFoot, CardHeader } from "@/components/ui/Card";
@@ -32,6 +32,30 @@ const BANDS: Record<"cpu" | "memory", Band[]> = {
 };
 
 const message = (e: unknown) => (e instanceof ApiError ? e.message : e ? String(e) : null);
+
+/** apt runs in the background; the security query polls until the job settles. */
+function EnableButton({
+  label,
+  job,
+  mutation,
+}: {
+  label: string;
+  job: JobStatus;
+  mutation: { isPending: boolean; mutate: (v: undefined) => void };
+}) {
+  const running = job.running || mutation.isPending;
+  return (
+    <span className="flex items-center gap-3">
+      {running ? <span className="text-[12.5px] text-ink-4">About a minute.</span> : null}
+      <Button size="sm" variant="primary" disabled={running} onClick={() => mutation.mutate(undefined)}>
+        {running ? "Installing…" : label}
+      </Button>
+    </span>
+  );
+}
+
+const failure = (job: JobStatus, mutation: { error: unknown }) =>
+  job.running ? null : (message(mutation.error) ?? job.error);
 
 export function SystemPage() {
   const { data: host } = useHost();
@@ -104,15 +128,15 @@ export function SystemPage() {
         {security ? (
           <>
             <div className="lg:col-span-5">
-              <Firewall firewall={security.firewall} />
+              <Firewall firewall={security.firewall} job={security.jobs.firewall} />
             </div>
 
             <div className="lg:col-span-7">
-              <Bans bans={security.bans} />
+              <Bans bans={security.bans} job={security.jobs.fail2ban} />
             </div>
 
             <div className="lg:col-span-5">
-              <Updates updates={security.updates} />
+              <Updates updates={security.updates} job={security.jobs.updates} />
             </div>
 
             <div className="lg:col-span-7">
@@ -146,7 +170,7 @@ function Gauge({ label, value, detail }: { label: string; value: number; detail:
   );
 }
 
-function Firewall({ firewall }: { firewall: Security["firewall"] }) {
+function Firewall({ firewall, job }: { firewall: Security["firewall"]; job: JobStatus }) {
   const enable = useEnableFirewall();
   return (
     <Card className="h-full">
@@ -157,9 +181,7 @@ function Firewall({ firewall }: { firewall: Security["firewall"] }) {
           firewall.enabled ? (
             <Badge tone="ok">Enabled</Badge>
           ) : (
-            <Button size="sm" variant="primary" disabled={enable.isPending} onClick={() => enable.mutate(undefined)}>
-              Enable firewall
-            </Button>
+            <EnableButton label="Enable firewall" job={job} mutation={enable} />
           )
         }
       />
@@ -179,17 +201,13 @@ function Firewall({ firewall }: { firewall: Security["firewall"] }) {
             using survives.
           </p>
         )}
-        {enable.error ? <p className="text-[12.5px] text-fail mt-3">{message(enable.error)}</p> : null}
-        <p className="text-[12.5px] text-ink-4 mt-4 leading-relaxed">
-          The app port range and 5432 stay closed by the default deny. That is what makes
-          loopback-only PostgreSQL actually hold.
-        </p>
+        {failure(job, enable) ? <p className="text-[12.5px] text-fail mt-3">{failure(job, enable)}</p> : null}
       </CardBody>
     </Card>
   );
 }
 
-function Bans({ bans }: { bans: Security["bans"] }) {
+function Bans({ bans, job }: { bans: Security["bans"]; job: JobStatus }) {
   const enable = useEnableFail2ban();
   const unban = useUnban();
   const allow = useAllowlist();
@@ -218,9 +236,7 @@ function Bans({ bans }: { bans: Security["bans"] }) {
               Allowlist an IP
             </Button>
           ) : (
-            <Button size="sm" variant="primary" disabled={enable.isPending} onClick={() => enable.mutate(undefined)}>
-              Enable fail2ban
-            </Button>
+            <EnableButton label="Enable fail2ban" job={job} mutation={enable} />
           )
         }
       />
@@ -244,7 +260,7 @@ function Bans({ bans }: { bans: Security["bans"] }) {
           </div>
         ) : null}
         {allow.error ? <p className="text-[12.5px] text-fail mb-3">{message(allow.error)}</p> : null}
-        {enable.error ? <p className="text-[12.5px] text-fail mb-3">{message(enable.error)}</p> : null}
+        {failure(job, enable) ? <p className="text-[12.5px] text-fail mb-3">{failure(job, enable)}</p> : null}
         {!bans.installed ? (
           <p className="text-[13px] text-ink-2 leading-relaxed">
             Jails for sshd and the three nginx patterns, banning for an hour after five failures in
@@ -290,7 +306,7 @@ function Bans({ bans }: { bans: Security["bans"] }) {
   );
 }
 
-function Updates({ updates }: { updates: Security["updates"] }) {
+function Updates({ updates, job }: { updates: Security["updates"]; job: JobStatus }) {
   const enable = useEnableUpdates();
   return (
     <Card className="h-full">
@@ -301,18 +317,15 @@ function Updates({ updates }: { updates: Security["updates"] }) {
           updates.enabled ? (
             <Badge tone="ok">Enabled</Badge>
           ) : (
-            <Button size="sm" variant="primary" disabled={enable.isPending} onClick={() => enable.mutate(undefined)}>
-              Enable updates
-            </Button>
+            <EnableButton label="Enable updates" job={job} mutation={enable} />
           )
         }
       />
       <CardBody>
         <p className="text-[13px] text-ink-2 leading-relaxed">
-          Ubuntu's security pocket, installed daily without asking. The single biggest reason
-          unmanaged servers get compromised is a patch that was never applied.
+          Ubuntu's security pocket, installed daily without asking.
         </p>
-        {enable.error ? <p className="text-[12.5px] text-fail mt-3">{message(enable.error)}</p> : null}
+        {failure(job, enable) ? <p className="text-[12.5px] text-fail mt-3">{failure(job, enable)}</p> : null}
       </CardBody>
     </Card>
   );

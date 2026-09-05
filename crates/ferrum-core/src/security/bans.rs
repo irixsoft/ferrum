@@ -45,20 +45,20 @@ pub async fn allowlist(state: &State) -> anyhow::Result<Vec<String>> {
         .collect())
 }
 
-async fn write_config(state: &State, platform: &dyn Platform) -> anyhow::Result<()> {
+fn write_config(platform: &dyn Platform, allowlist: &[String]) -> anyhow::Result<()> {
     let sshd = sshd_or_default(platform);
-    let allowlist = allowlist(state).await?;
     platform.write_file(
         Path::new(FAIL2BAN_JAIL_LOCAL),
-        &jail_local(sshd.port, &allowlist),
+        &jail_local(sshd.port, allowlist),
         0o644,
     )?;
     Ok(())
 }
 
-pub async fn enable(state: &State, platform: &dyn Platform) -> anyhow::Result<()> {
+/// Synchronous so a caller can put the apt run on a blocking thread; read the allowlist first.
+pub fn enable(platform: &dyn Platform, allowlist: &[String]) -> anyhow::Result<()> {
     platform.install_packages(&[FAIL2BAN_UNIT])?;
-    write_config(state, platform).await?;
+    write_config(platform, allowlist)?;
     if platform.service_is_active(FAIL2BAN_UNIT) {
         platform.service(ServiceAction::Reload, FAIL2BAN_UNIT)?;
     } else {
@@ -117,7 +117,7 @@ pub async fn allow(state: &State, platform: &dyn Platform, ip: &str) -> anyhow::
         list.push(entry);
         state.set_setting(ALLOWLIST_KEY, &list.join(" ")).await?;
     }
-    write_config(state, platform).await?;
+    write_config(platform, &list)?;
     if platform.service_is_active(FAIL2BAN_UNIT) {
         platform.service(ServiceAction::Reload, FAIL2BAN_UNIT)?;
     }
@@ -158,7 +158,7 @@ mod tests {
             password_auth: true,
         });
         assert!(!status(&state, &p).await.unwrap().installed);
-        enable(&state, &p).await.unwrap();
+        enable(&p, &allowlist(&state).await.unwrap()).unwrap();
         let calls = p.calls();
         let install = calls
             .iter()
@@ -179,7 +179,7 @@ mod tests {
                 .contains("port = 2222")
         );
         p.set_active("fail2ban");
-        enable(&state, &p).await.unwrap();
+        enable(&p, &[]).unwrap();
         assert!(p.calls().contains(&"service reload fail2ban".to_string()));
     }
 

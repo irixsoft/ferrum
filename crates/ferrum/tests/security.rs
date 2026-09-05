@@ -22,26 +22,54 @@ async fn the_firewall_reads_the_ssh_port_first_and_refuses_a_second_enable() {
     assert_eq!(before.json["ssh"]["password_auth"], true);
     assert_eq!(before.json["ssh"]["keys"], serde_json::json!([]));
 
+    assert_eq!(before.json["jobs"]["firewall"]["running"], false);
+
+    let gate = h.platform.gate("install_packages ufw");
     let res = h
         .post_with_cookie("/api/security/firewall", "", &cookie)
         .await;
     assert_eq!(res.status, StatusCode::ACCEPTED, "{}", res.json);
+    assert_eq!(
+        res.json["jobs"]["firewall"]["running"], true,
+        "{}",
+        res.json
+    );
+    assert_eq!(res.json["firewall"]["enabled"], false);
+    let twice = h
+        .post_with_cookie("/api/security/firewall", "", &cookie)
+        .await;
+    assert_eq!(twice.status, StatusCode::CONFLICT, "{}", twice.json);
+    assert_eq!(
+        twice.json["error"],
+        "The firewall is already being enabled."
+    );
+    gate.open();
+    let after = settled(&h, &cookie, "firewall").await;
+    assert_eq!(after["jobs"]["firewall"]["error"], serde_json::Value::Null);
+
     let calls = h.platform.calls();
-    let read = calls.iter().rposition(|c| c == "sshd_effective").unwrap();
     let apply = calls
         .iter()
         .position(|c| c == "ufw_apply 2222/tcp 80/tcp 443/tcp enable")
         .unwrap();
-    assert!(read < apply, "{calls:#?}");
-    let after = h.get_with_cookie("/api/security", &cookie).await;
-    assert_eq!(after.json["firewall"]["enabled"], true);
-    assert_eq!(after.json["firewall"]["rules"].as_array().unwrap().len(), 3);
-    assert_eq!(after.json["firewall"]["rules"][0]["port"], "2222/tcp");
+    let install = calls
+        .iter()
+        .position(|c| c == "install_packages ufw")
+        .unwrap();
+    let read = calls[..install]
+        .iter()
+        .rposition(|c| c == "sshd_effective")
+        .unwrap();
+    assert!(read < install && install < apply, "{calls:#?}");
+    assert_eq!(after["firewall"]["enabled"], true);
+    assert_eq!(after["firewall"]["rules"].as_array().unwrap().len(), 3);
+    assert_eq!(after["firewall"]["rules"][0]["port"], "2222/tcp");
 
     let again = h
         .post_with_cookie("/api/security/firewall", "", &cookie)
         .await;
     assert_eq!(again.status, StatusCode::CONFLICT, "{}", again.json);
+    assert_eq!(again.json["error"], "The firewall is already enabled.");
     assert_eq!(h.platform.calls_matching("ufw_apply").len(), 1);
 
     let token = h.machine_token(true).await;
@@ -66,13 +94,42 @@ async fn the_firewall_reads_the_ssh_port_first_and_refuses_a_second_enable() {
     );
 }
 
+/// The enables finish on a blocking thread; this waits for the named job to leave `running`.
+async fn settled(h: &support::Harness, cookie: &str, job: &str) -> serde_json::Value {
+    for _ in 0..500 {
+        let res = h.get_with_cookie("/api/security", cookie).await;
+        if res.json["jobs"][job]["running"] == false {
+            return res.json;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    panic!("{job} never settled");
+}
+
 #[tokio::test]
 async fn fail2ban_is_enabled_bans_are_listed_unbanned_and_addresses_allowlisted() {
     let (h, cookie) = signed_in().await;
+    h.platform.fail_next("install_packages fail2ban");
+    let failed = h
+        .post_with_cookie("/api/security/fail2ban", "", &cookie)
+        .await;
+    assert_eq!(failed.status, StatusCode::ACCEPTED, "{}", failed.json);
+    let outcome = settled(&h, &cookie, "fail2ban").await;
+    assert!(
+        outcome["jobs"]["fail2ban"]["error"]
+            .as_str()
+            .unwrap()
+            .starts_with("The host refused: "),
+        "{outcome}"
+    );
+    assert!(h.platform.written(FAIL2BAN_JAIL_LOCAL).is_none());
+
     let res = h
         .post_with_cookie("/api/security/fail2ban", "", &cookie)
         .await;
     assert_eq!(res.status, StatusCode::ACCEPTED, "{}", res.json);
+    let done = settled(&h, &cookie, "fail2ban").await;
+    assert_eq!(done["jobs"]["fail2ban"]["error"], serde_json::Value::Null);
     let jail = h.platform.written(FAIL2BAN_JAIL_LOCAL).unwrap();
     assert!(
         jail.contains("[sshd]\nenabled = true\nport = 22\n"),
@@ -144,16 +201,14 @@ async fn updates_and_password_login_are_switched_behind_their_guards() {
         .post_with_cookie("/api/security/updates", "", &cookie)
         .await;
     assert_eq!(res.status, StatusCode::ACCEPTED, "{}", res.json);
+    let done = settled(&h, &cookie, "updates").await;
     assert!(
         h.platform
             .written(APT_AUTO_UPGRADES)
             .unwrap()
             .contains("Unattended-Upgrade \"1\"")
     );
-    assert_eq!(
-        h.get_with_cookie("/api/security", &cookie).await.json["updates"]["enabled"],
-        true
-    );
+    assert_eq!(done["updates"]["enabled"], true);
 
     let wrong = h
         .post_with_cookie(
@@ -194,7 +249,7 @@ async fn updates_and_password_login_are_switched_behind_their_guards() {
     let done = h
         .post_with_cookie("/api/security/ssh/disable-passwords", &body, &cookie)
         .await;
-    assert_eq!(done.status, StatusCode::ACCEPTED, "{}", done.json);
+    assert_eq!(done.status, StatusCode::NO_CONTENT, "{}", done.json);
     assert_eq!(
         h.platform.written(SSHD_DROPIN).as_deref(),
         Some("PasswordAuthentication no\nKbdInteractiveAuthentication no\n")

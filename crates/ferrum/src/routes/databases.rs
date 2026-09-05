@@ -1,6 +1,6 @@
 use crate::auth::Caller;
 use crate::routes::error::{ApiError, ApiResult};
-use crate::server::{AppState, Install};
+use crate::server::{AppState, Install, JobStatus};
 use axum::body::Body;
 use axum::extract::{DefaultBodyLimit, Path, Request, State as Extract};
 use axum::http::StatusCode;
@@ -39,30 +39,11 @@ pub fn router() -> Router<AppState> {
 pub(crate) struct Listed {
     #[serde(flatten)]
     database: Database,
-    restore: RestoreStatus,
+    restore: JobStatus,
 }
 
-#[derive(Serialize)]
-pub(crate) struct RestoreStatus {
-    running: bool,
-    error: Option<String>,
-}
-
-fn restore_status(app: &AppState, name: &str) -> RestoreStatus {
-    match app.restores.lock().unwrap().get(name) {
-        Some(Install::Running) => RestoreStatus {
-            running: true,
-            error: None,
-        },
-        Some(Install::Failed(e)) => RestoreStatus {
-            running: false,
-            error: Some(e.clone()),
-        },
-        _ => RestoreStatus {
-            running: false,
-            error: None,
-        },
-    }
+fn restore_status(app: &AppState, name: &str) -> JobStatus {
+    app.restores.lock().unwrap().get(name).into()
 }
 
 #[derive(Serialize)]

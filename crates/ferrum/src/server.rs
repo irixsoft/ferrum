@@ -69,6 +69,35 @@ pub enum Install {
     Failed(String),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Job {
+    Firewall,
+    Fail2ban,
+    Updates,
+}
+
+#[derive(Debug, Clone, Default, serde::Serialize)]
+pub struct JobStatus {
+    pub running: bool,
+    pub error: Option<String>,
+}
+
+impl From<Option<&Install>> for JobStatus {
+    fn from(install: Option<&Install>) -> Self {
+        match install {
+            Some(Install::Running) => Self {
+                running: true,
+                error: None,
+            },
+            Some(Install::Failed(e)) => Self {
+                running: false,
+                error: Some(e.clone()),
+            },
+            _ => Self::default(),
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct AppState {
     pub db: State,
@@ -81,6 +110,7 @@ pub struct AppState {
     pub codename: String,
     pub postgres_install: Arc<Mutex<Install>>,
     pub restores: Arc<Mutex<HashMap<String, Install>>>,
+    pub hardening: Arc<Mutex<HashMap<Job, Install>>>,
     pub deployer: Deployer,
     pub certs: Issuance,
     pub hostname: Option<String>,
@@ -122,6 +152,7 @@ impl AppState {
             codename: deps.codename,
             postgres_install: Arc::default(),
             restores: Arc::default(),
+            hardening: Arc::default(),
             deployer: Deployer::start(ctx),
             certs: Issuance::new(deps.directory, deps.lookup, deps.public_ip),
             hostname: deps.hostname,

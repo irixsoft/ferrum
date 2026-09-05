@@ -264,12 +264,7 @@ export interface Database {
   extensions: string[];
   linked_apps: string[];
   created_at: string;
-  restore: RestoreStatus;
-}
-
-export interface RestoreStatus {
-  running: boolean;
-  error: string | null;
+  restore: JobStatus;
 }
 
 export interface NewDatabase {
@@ -354,11 +349,17 @@ export interface KeyFingerprint {
   kind: string;
 }
 
+export interface JobStatus {
+  running: boolean;
+  error: string | null;
+}
+
 export interface Security {
   firewall: { enabled: boolean; ssh_port: number; rules: FirewallRule[] };
   bans: { installed: boolean; jails: string[]; banned: BannedIp[]; allowlist: string[] };
   updates: { enabled: boolean };
   ssh: { port: number; password_auth: boolean; keys: KeyFingerprint[] };
+  jobs: { firewall: JobStatus; fail2ban: JobStatus; updates: JobStatus };
 }
 
 export interface BuildLimits {

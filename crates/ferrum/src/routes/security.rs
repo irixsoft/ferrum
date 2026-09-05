@@ -1,13 +1,13 @@
 use crate::auth::Caller;
 use crate::routes::error::{ApiError, ApiResult};
-use crate::server::AppState;
+use crate::server::{AppState, Install, Job, JobStatus};
 use axum::extract::{Path, State as Extract};
 use axum::http::StatusCode;
 use axum::{Json, Router, routing::get, routing::post};
 use ferrum_core::security::{self, Security, SecurityError, bans, firewall, ssh, updates};
 use ferrum_core::setup;
 use ferrum_platform::PlatformError;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 pub fn router() -> Router<AppState> {
     Router::new()
@@ -23,29 +23,112 @@ pub fn router() -> Router<AppState> {
         )
 }
 
-async fn status(Extract(app): Extract<AppState>, _: Caller) -> ApiResult<Json<Security>> {
-    Ok(Json(
-        security::status(&app.db, app.platform.as_ref())
-            .await
-            .map_err(security_error)?,
-    ))
+#[derive(Serialize)]
+struct View {
+    #[serde(flatten)]
+    security: Security,
+    jobs: Jobs,
 }
 
-async fn enable_firewall(Extract(app): Extract<AppState>, _: Caller) -> ApiResult<StatusCode> {
-    firewall::enable(app.platform.as_ref()).map_err(security_error)?;
-    Ok(StatusCode::ACCEPTED)
+#[derive(Serialize)]
+struct Jobs {
+    firewall: JobStatus,
+    fail2ban: JobStatus,
+    updates: JobStatus,
 }
 
-async fn enable_fail2ban(Extract(app): Extract<AppState>, _: Caller) -> ApiResult<StatusCode> {
-    bans::enable(&app.db, app.platform.as_ref())
+async fn view(app: &AppState) -> ApiResult<View> {
+    let security = security::status(&app.db, app.platform.as_ref())
         .await
         .map_err(security_error)?;
-    Ok(StatusCode::ACCEPTED)
+    let jobs = app.hardening.lock().unwrap();
+    Ok(View {
+        security,
+        jobs: Jobs {
+            firewall: jobs.get(&Job::Firewall).into(),
+            fail2ban: jobs.get(&Job::Fail2ban).into(),
+            updates: jobs.get(&Job::Updates).into(),
+        },
+    })
 }
 
-async fn enable_updates(Extract(app): Extract<AppState>, _: Caller) -> ApiResult<StatusCode> {
-    updates::enable(app.platform.as_ref()).map_err(security_error)?;
-    Ok(StatusCode::ACCEPTED)
+async fn status(Extract(app): Extract<AppState>, _: Caller) -> ApiResult<Json<View>> {
+    Ok(Json(view(&app).await?))
+}
+
+/// apt takes a minute, so each enable claims its slot, runs on a blocking thread and answers at once.
+fn start(
+    app: &AppState,
+    job: Job,
+    what: &str,
+    work: impl FnOnce() -> anyhow::Result<()> + Send + 'static,
+) -> ApiResult<()> {
+    {
+        let mut jobs = app.hardening.lock().unwrap();
+        if jobs.get(&job) == Some(&Install::Running) {
+            return Err(ApiError::conflict(format!(
+                "{what} is already being enabled."
+            )));
+        }
+        jobs.insert(job, Install::Running);
+    }
+    let slots = app.hardening.clone();
+    tokio::spawn(async move {
+        let outcome = match tokio::task::spawn_blocking(work).await {
+            Ok(Ok(())) => Install::Idle,
+            Ok(Err(e)) => Install::Failed(security_error(e).message),
+            Err(e) => Install::Failed(e.to_string()),
+        };
+        slots.lock().unwrap().insert(job, outcome);
+    });
+    Ok(())
+}
+
+async fn accepted(app: &AppState) -> ApiResult<(StatusCode, Json<View>)> {
+    Ok((StatusCode::ACCEPTED, Json(view(app).await?)))
+}
+
+async fn enable_firewall(
+    Extract(app): Extract<AppState>,
+    _: Caller,
+) -> ApiResult<(StatusCode, Json<View>)> {
+    let enabled = app
+        .platform
+        .ufw_status()
+        .map_err(|e| security_error(e.into()))?;
+    if enabled.is_some() {
+        return Err(ApiError::conflict(
+            SecurityError::AlreadyEnabled.to_string(),
+        ));
+    }
+    let platform = app.platform.clone();
+    start(&app, Job::Firewall, "The firewall", move || {
+        firewall::enable(platform.as_ref())
+    })?;
+    accepted(&app).await
+}
+
+async fn enable_fail2ban(
+    Extract(app): Extract<AppState>,
+    _: Caller,
+) -> ApiResult<(StatusCode, Json<View>)> {
+    let allowlist = bans::allowlist(&app.db).await?;
+    let platform = app.platform.clone();
+    start(&app, Job::Fail2ban, "fail2ban", move || {
+        bans::enable(platform.as_ref(), &allowlist)
+    })?;
+    accepted(&app).await
+}
+
+async fn enable_updates(
+    Extract(app): Extract<AppState>,
+    _: Caller,
+) -> ApiResult<(StatusCode, Json<View>)> {
+    let platform = app.platform.clone();
+    start(&app, Job::Updates, "Security updates", move || {
+        updates::enable(platform.as_ref())
+    })?;
+    accepted(&app).await
 }
 
 async fn unban(
@@ -91,7 +174,7 @@ async fn disable_passwords(
         )));
     }
     ssh::disable_passwords(app.platform.as_ref()).map_err(security_error)?;
-    Ok(StatusCode::ACCEPTED)
+    Ok(StatusCode::NO_CONTENT)
 }
 
 fn security_error(e: anyhow::Error) -> ApiError {
