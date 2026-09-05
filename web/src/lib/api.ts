@@ -61,12 +61,25 @@ export async function request<T>(path: string, init?: RequestInit): Promise<T> {
     throw new ApiError(0, "Could not reach the server.");
   }
 
-  if (!res.ok) {
-    const body = await res.json().catch(() => null);
-    throw new ApiError(res.status, body?.error ?? `${res.status} ${res.statusText}`);
+  return parse<T>(res.status, res.statusText, await res.text());
+}
+
+/** An empty body is `undefined`, whatever the status; a refusal's sentence comes from `error`. */
+export function parse<T>(status: number, statusText: string, text: string): T {
+  const body = text ? tryJson(text) : undefined;
+  if (status < 200 || status >= 300) {
+    const sentence = body && typeof body === "object" && "error" in body ? String(body.error) : null;
+    throw new ApiError(status, sentence ?? `${status} ${statusText}`);
   }
-  if (res.status === 204) return undefined as T;
-  return res.json() as Promise<T>;
+  return body as T;
+}
+
+function tryJson(text: string): unknown {
+  try {
+    return JSON.parse(text);
+  } catch {
+    return undefined;
+  }
 }
 
 export const keys = {
@@ -224,7 +237,10 @@ export function useSecurity() {
   return useQuery({
     queryKey: keys.security,
     queryFn: () => request<Security>("/security"),
-    refetchInterval: 15_000,
+    refetchInterval: (query) => {
+      const jobs = query.state.data?.jobs;
+      return jobs && Object.values(jobs).some((j) => j.running) ? 1_500 : 15_000;
+    },
   });
 }
 
@@ -468,7 +484,9 @@ export function useRestartApp(slug: string) {
 }
 
 const hardening = (path: string) =>
-  useInvalidating([keys.security, keys.host], () => request<void>(`/security/${path}`, { method: "POST" }));
+  useInvalidating([keys.security, keys.host], () =>
+    request<Security>(`/security/${path}`, { method: "POST" }),
+  );
 
 export const useEnableFirewall = () => hardening("firewall");
 export const useEnableFail2ban = () => hardening("fail2ban");
