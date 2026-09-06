@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE deploys SET state = NULL, outcome = ?, failure_reason = ?,\n                            release_id = coalesce(?, release_id), finished_at = datetime('now')\n         WHERE id = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 4
+    },
+    "nullable": []
+  },
+  "hash": "46ef089ad91b6dd63a41fa0f31204730f3396f99dc85ad1c0db1eaec25656b43"
+}

@@ -1,0 +1,50 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE api_tokens SET last_used = datetime('now')\n           WHERE hash = ? AND revoked_at IS NULL\n           RETURNING id AS \"id!\", name AS \"name!\", prefix AS \"prefix!\",\n                     read_only AS \"read_only!: bool\", created_at AS \"created_at!\", last_used",
+  "describe": {
+    "columns": [
+      {
+        "name": "id!",
+        "ordinal": 0,
+        "type_info": "Text"
+      },
+      {
+        "name": "name!",
+        "ordinal": 1,
+        "type_info": "Text"
+      },
+      {
+        "name": "prefix!",
+        "ordinal": 2,
+        "type_info": "Text"
+      },
+      {
+        "name": "read_only!: bool",
+        "ordinal": 3,
+        "type_info": "Integer"
+      },
+      {
+        "name": "created_at!",
+        "ordinal": 4,
+        "type_info": "Text"
+      },
+      {
+        "name": "last_used",
+        "ordinal": 5,
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      true
+    ]
+  },
+  "hash": "ca4faf01cea23f7371758142230198141f75f8c604c85f4d018f774a92b7ac92"
+}

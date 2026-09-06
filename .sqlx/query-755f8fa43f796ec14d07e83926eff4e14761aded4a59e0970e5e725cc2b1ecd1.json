@@ -1,0 +1,20 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT domain AS \"domain!\" FROM app_domains WHERE app_id = ? ORDER BY position",
+  "describe": {
+    "columns": [
+      {
+        "name": "domain!",
+        "ordinal": 0,
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "755f8fa43f796ec14d07e83926eff4e14761aded4a59e0970e5e725cc2b1ecd1"
+}

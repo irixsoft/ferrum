@@ -1,0 +1,32 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT (at / ?) * ? AS \"t!: i64\", avg(cpu_pct) AS \"cpu!: f64\", avg(memory_bytes) AS \"memory!: f64\"\n           FROM metrics WHERE scope = ? AND at >= ?\n           GROUP BY at / ? ORDER BY 1",
+  "describe": {
+    "columns": [
+      {
+        "name": "t!: i64",
+        "ordinal": 0,
+        "type_info": "Null"
+      },
+      {
+        "name": "cpu!: f64",
+        "ordinal": 1,
+        "type_info": "Null"
+      },
+      {
+        "name": "memory!: f64",
+        "ordinal": 2,
+        "type_info": "Null"
+      }
+    ],
+    "parameters": {
+      "Right": 5
+    },
+    "nullable": [
+      null,
+      null,
+      null
+    ]
+  },
+  "hash": "55034afc1887d2ffa0e715cd3f8c9e6b34d0c0fe96b47fa69620338068081b31"
+}

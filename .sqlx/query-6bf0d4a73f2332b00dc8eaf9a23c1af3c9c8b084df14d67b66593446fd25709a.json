@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO deploy_steps (deploy_id, state, position, status, started_at)\n             VALUES (?, ?, ?, ?, CASE WHEN ? = 'active' THEN datetime('now') END)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 5
+    },
+    "nullable": []
+  },
+  "hash": "6bf0d4a73f2332b00dc8eaf9a23c1af3c9c8b084df14d67b66593446fd25709a"
+}

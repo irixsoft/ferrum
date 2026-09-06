@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE credentials SET counter = ?, credential = ?, last_used = datetime('now')\n         WHERE id = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": []
+  },
+  "hash": "3002d9d49714fe3b65082b4731d1fcf46720352888753abadf3efb773d098aad"
+}

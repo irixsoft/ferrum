@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE github_apps SET private_key = ?, webhook_secret = ?, client_secret = ?\n             WHERE app_id = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 4
+    },
+    "nullable": []
+  },
+  "hash": "c55d941f13cb2d3cb0cea248e7de1beb85b7f12a477e2e46c2cac0735e2e0250"
+}

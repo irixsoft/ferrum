@@ -1,0 +1,62 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT r.id AS \"id!\", r.app_id AS \"app_id!\", r.dir AS \"dir!\", r.git_ref AS \"git_ref!\",\n                  r.commit_sha AS \"commit_sha!\", r.commit_message, r.built_at AS \"built_at!\",\n                  (a.current_release_id = r.id) AS \"current!: bool\"\n           FROM releases r JOIN apps a ON a.id = r.app_id\n           WHERE ? IS NULL OR r.app_id = ?\n           ORDER BY r.rowid DESC",
+  "describe": {
+    "columns": [
+      {
+        "name": "id!",
+        "ordinal": 0,
+        "type_info": "Text"
+      },
+      {
+        "name": "app_id!",
+        "ordinal": 1,
+        "type_info": "Text"
+      },
+      {
+        "name": "dir!",
+        "ordinal": 2,
+        "type_info": "Text"
+      },
+      {
+        "name": "git_ref!",
+        "ordinal": 3,
+        "type_info": "Text"
+      },
+      {
+        "name": "commit_sha!",
+        "ordinal": 4,
+        "type_info": "Text"
+      },
+      {
+        "name": "commit_message",
+        "ordinal": 5,
+        "type_info": "Text"
+      },
+      {
+        "name": "built_at!",
+        "ordinal": 6,
+        "type_info": "Text"
+      },
+      {
+        "name": "current!: bool",
+        "ordinal": 7,
+        "type_info": "Integer"
+      }
+    ],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      false,
+      false
+    ]
+  },
+  "hash": "fca648dff5440799a9a9cd9cca58ea01f76b769f2bf2338bbd50d0e52680a16c"
+}

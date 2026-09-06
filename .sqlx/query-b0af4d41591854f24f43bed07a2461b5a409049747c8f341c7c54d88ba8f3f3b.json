@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO enrollments (id, user_id, hash, expires_at)\n         VALUES (?, ?, ?, datetime('now', ?))",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 4
+    },
+    "nullable": []
+  },
+  "hash": "b0af4d41591854f24f43bed07a2461b5a409049747c8f341c7c54d88ba8f3f3b"
+}

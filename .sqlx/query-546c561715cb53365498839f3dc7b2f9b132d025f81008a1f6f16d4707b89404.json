@@ -1,0 +1,20 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT port AS \"port!\" FROM app_ports WHERE app_id = ? AND name = ?",
+  "describe": {
+    "columns": [
+      {
+        "name": "port!",
+        "ordinal": 0,
+        "type_info": "Integer"
+      }
+    ],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "546c561715cb53365498839f3dc7b2f9b132d025f81008a1f6f16d4707b89404"
+}

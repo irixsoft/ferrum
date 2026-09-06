@@ -1,0 +1,20 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE sessions SET last_seen = datetime('now')\n         WHERE id = ? AND expires_at > datetime('now')\n         RETURNING user_id",
+  "describe": {
+    "columns": [
+      {
+        "name": "user_id",
+        "ordinal": 0,
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "78cb54b74eddb2d5a97070a89a4758711c705825b3babc171483865726438a31"
+}

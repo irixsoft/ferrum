@@ -1,0 +1,110 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT d.id AS \"id!\", d.app_id AS \"app_id!\", a.slug AS \"app_slug!\",\n                  d.trigger AS \"trigger!: Trigger\", d.git_ref AS \"git_ref!\", d.commit_sha,\n                  d.commit_message, d.author, d.state AS \"state: DeployState\",\n                  d.outcome AS \"outcome: Outcome\", d.failure_reason, d.release_id,\n                  d.restore_deploy_id, d.started_at AS \"started_at!\", d.finished_at,\n                  CAST(strftime('%s', d.finished_at) - strftime('%s', d.started_at) AS INTEGER) AS \"duration_secs: i64\"\n           FROM deploys d JOIN apps a ON a.id = d.app_id\n           WHERE (? IS NULL OR d.id = ?) AND (? IS NULL OR d.app_id = ?)\n           ORDER BY d.rowid DESC LIMIT ?",
+  "describe": {
+    "columns": [
+      {
+        "name": "id!",
+        "ordinal": 0,
+        "type_info": "Text"
+      },
+      {
+        "name": "app_id!",
+        "ordinal": 1,
+        "type_info": "Text"
+      },
+      {
+        "name": "app_slug!",
+        "ordinal": 2,
+        "type_info": "Text"
+      },
+      {
+        "name": "trigger!: Trigger",
+        "ordinal": 3,
+        "type_info": "Text"
+      },
+      {
+        "name": "git_ref!",
+        "ordinal": 4,
+        "type_info": "Text"
+      },
+      {
+        "name": "commit_sha",
+        "ordinal": 5,
+        "type_info": "Text"
+      },
+      {
+        "name": "commit_message",
+        "ordinal": 6,
+        "type_info": "Text"
+      },
+      {
+        "name": "author",
+        "ordinal": 7,
+        "type_info": "Text"
+      },
+      {
+        "name": "state: DeployState",
+        "ordinal": 8,
+        "type_info": "Text"
+      },
+      {
+        "name": "outcome: Outcome",
+        "ordinal": 9,
+        "type_info": "Text"
+      },
+      {
+        "name": "failure_reason",
+        "ordinal": 10,
+        "type_info": "Text"
+      },
+      {
+        "name": "release_id",
+        "ordinal": 11,
+        "type_info": "Text"
+      },
+      {
+        "name": "restore_deploy_id",
+        "ordinal": 12,
+        "type_info": "Text"
+      },
+      {
+        "name": "started_at!",
+        "ordinal": 13,
+        "type_info": "Text"
+      },
+      {
+        "name": "finished_at",
+        "ordinal": 14,
+        "type_info": "Text"
+      },
+      {
+        "name": "duration_secs: i64",
+        "ordinal": 15,
+        "type_info": "Integer"
+      }
+    ],
+    "parameters": {
+      "Right": 5
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      false,
+      true,
+      true
+    ]
+  },
+  "hash": "50e76f46480b1a578b28daa3e68ab49d858dd3f93749be2feee46539bab5dfc8"
+}

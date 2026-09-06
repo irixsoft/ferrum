@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO github_apps\n             (app_id, app_slug, app_name, account, account_type, private_key, webhook_secret,\n              client_id, client_secret, installation_id, connected_at)\n           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, datetime('now'))",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 9
+    },
+    "nullable": []
+  },
+  "hash": "15bc268c7789339fce64bb43904b1871ad81d3552d367de8861b14016278a77a"
+}

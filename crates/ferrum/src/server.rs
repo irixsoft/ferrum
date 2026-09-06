@@ -1,0 +1,286 @@
+use crate::auth::webauthn::Challenges;
+use axum::Router;
+use axum::routing::get;
+use ferrum_core::acme::Directory;
+use ferrum_core::certs::Issuance;
+use ferrum_core::deploy::{Ctx, Deployer};
+use ferrum_core::dns::Lookup;
+use ferrum_core::github::Api;
+use ferrum_core::runtime::Mirrors;
+use ferrum_core::runtime::toolchain::Store;
+use ferrum_core::state::State;
+use ferrum_core::update::{self, Updater};
+use ferrum_platform::{Platform, Ubuntu};
+use std::collections::HashMap;
+use std::net::IpAddr;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
+
+pub use ed25519_dalek::VerifyingKey;
+use tower_http::trace::TraceLayer;
+
+pub use ferrum_core::LISTEN_ADDR;
+
+/// Everything a test may want to stand a stub in for, exactly as `Directory::Custom` does for
+/// Let's Encrypt.
+#[derive(Clone)]
+pub struct Deps {
+    pub github: Api,
+    pub platform: Arc<dyn Platform>,
+    pub toolchains: Store,
+    pub mirrors: Mirrors,
+    pub codename: String,
+    pub directory: Directory,
+    pub lookup: Lookup,
+    pub public_ip: Option<IpAddr>,
+    /// The panel hostname, which is the `Host` nginx forwards to `/mcp`.
+    pub hostname: Option<String>,
+    /// Verifies release signatures; tests hand in the public half of a key they generated.
+    pub update_key: VerifyingKey,
+    pub binary: PathBuf,
+}
+
+impl Default for Deps {
+    fn default() -> Self {
+        Self {
+            update_key: update::verify::public_key(update::verify::PUBLIC_KEY_PEM)
+                .expect("the compiled-in public key parses"),
+            binary: PathBuf::from(ferrum_platform::ubuntu::FERRUM_BIN),
+            github: Api::default(),
+            platform: Arc::new(Ubuntu),
+            toolchains: Store::default(),
+            mirrors: Mirrors::default(),
+            codename: ferrum_platform::detect()
+                .map(|host| host.codename)
+                .unwrap_or_default(),
+            directory: Directory::LetsEncrypt,
+            lookup: Lookup::Public,
+            public_ip: None,
+            hostname: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub enum Install {
+    #[default]
+    Idle,
+    Running,
+    Failed(String),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Job {
+    Firewall,
+    Fail2ban,
+    Updates,
+}
+
+#[derive(Debug, Clone, Default, serde::Serialize)]
+pub struct JobStatus {
+    pub running: bool,
+    pub error: Option<String>,
+}
+
+impl From<Option<&Install>> for JobStatus {
+    fn from(install: Option<&Install>) -> Self {
+        match install {
+            Some(Install::Running) => Self {
+                running: true,
+                error: None,
+            },
+            Some(Install::Failed(e)) => Self {
+                running: false,
+                error: Some(e.clone()),
+            },
+            _ => Self::default(),
+        }
+    }
+}
+
+#[derive(Clone)]
+pub struct AppState {
+    pub db: State,
+    pub challenges: Challenges,
+    pub http: reqwest::Client,
+    pub github: Api,
+    pub platform: Arc<dyn Platform>,
+    pub toolchains: Store,
+    pub mirrors: Mirrors,
+    pub codename: String,
+    pub postgres_install: Arc<Mutex<Install>>,
+    pub restores: Arc<Mutex<HashMap<String, Install>>>,
+    pub hardening: Arc<Mutex<HashMap<Job, Install>>>,
+    pub deployer: Deployer,
+    pub certs: Issuance,
+    pub hostname: Option<String>,
+    pub updater: Updater,
+}
+
+impl AppState {
+    pub fn new(db: State, deps: Deps) -> Self {
+        let http = ferrum_core::http::client();
+        let ctx = Ctx::new(
+            db.clone(),
+            deps.platform.clone(),
+            deps.github.clone(),
+            http.clone(),
+            deps.toolchains.clone(),
+        );
+        let updater = Updater::new(
+            db.clone(),
+            deps.platform.clone(),
+            deps.github.clone(),
+            http.clone(),
+            update::Binary {
+                path: deps.binary,
+                unit: ferrum_core::FERRUM_UNIT.into(),
+                version: crate::cli::VERSION.into(),
+                target: update::target(),
+                key: deps.update_key,
+            },
+        );
+        Self {
+            updater,
+            db,
+            challenges: Challenges::default(),
+            http,
+            github: deps.github,
+            platform: deps.platform,
+            toolchains: deps.toolchains,
+            mirrors: deps.mirrors,
+            codename: deps.codename,
+            postgres_install: Arc::default(),
+            restores: Arc::default(),
+            hardening: Arc::default(),
+            deployer: Deployer::start(ctx),
+            certs: Issuance::new(deps.directory, deps.lookup, deps.public_ip),
+            hostname: deps.hostname,
+        }
+    }
+
+    /// Certificates take a minute and a request must not wait for one.
+    pub fn issue_certificates_later(&self, app: ferrum_core::apps::App) {
+        if app.domains.is_empty() {
+            return;
+        }
+        let state = self.clone();
+        tokio::spawn(async move {
+            if let Err(e) = ferrum_core::certs::issue_for(
+                &state.db,
+                state.platform.as_ref(),
+                &state.certs,
+                &app,
+            )
+            .await
+            {
+                tracing::warn!(app = %app.slug, error = ?e, "certificate issuance failed");
+            }
+        });
+    }
+}
+
+pub fn app(db: State) -> Router {
+    router(AppState::new(db, Deps::default()))
+}
+
+pub fn app_with_github(db: State, github: Api) -> Router {
+    app_with(
+        db,
+        Deps {
+            github,
+            ..Deps::default()
+        },
+    )
+}
+
+pub fn app_with(db: State, deps: Deps) -> Router {
+    router(AppState::new(db, deps))
+}
+
+fn router(state: AppState) -> Router {
+    let public = Router::new()
+        .route("/api/health", get(crate::routes::health::get))
+        .route("/api/version", get(crate::routes::version::get))
+        .merge(crate::routes::auth::router())
+        .merge(crate::routes::github::public_router())
+        .merge(crate::routes::webhook::router());
+
+    let protected = Router::new()
+        .route("/api/me", get(crate::routes::me::get))
+        .merge(crate::routes::users::router())
+        .merge(crate::routes::sessions::router())
+        .merge(crate::routes::tokens::router())
+        .merge(crate::routes::github::router())
+        .merge(crate::routes::apps::router())
+        .merge(crate::routes::runtimes::router())
+        .merge(crate::routes::databases::router())
+        .merge(crate::routes::deploys::router())
+        .merge(crate::routes::host::router())
+        .merge(crate::routes::logs::router())
+        .merge(crate::routes::security::router())
+        .merge(crate::routes::settings::router())
+        .merge(crate::routes::nginx::router())
+        .merge(crate::routes::update::router())
+        .route_layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            crate::auth::require_caller,
+        ));
+
+    let mcp = Router::new()
+        .fallback_service(crate::mcp::service(state.clone()))
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            crate::mcp::require_token,
+        ));
+
+    public
+        .merge(protected)
+        .nest_service("/mcp", mcp)
+        .merge(crate::panel::router())
+        .layer(TraceLayer::new_for_http())
+        .with_state(state)
+}
+
+pub async fn serve(data_dir: &Path) -> anyhow::Result<()> {
+    let state = State::open(data_dir).await?;
+    let deps = Deps {
+        directory: ferrum_core::acme::directory(&state).await?,
+        hostname: ferrum_core::setup::hostname(&state).await?,
+        ..Deps::default()
+    };
+    if let Some(hostname) = deps.hostname.clone() {
+        match ferrum_core::nginx::refresh_panel_vhost(deps.platform.as_ref(), &hostname) {
+            Ok(true) => tracing::info!("panel vhost refreshed"),
+            Ok(false) => {}
+            Err(e) => tracing::warn!(error = %e, "refreshing the panel vhost"),
+        }
+    }
+    let app_state = AppState::new(state.clone(), deps);
+    ferrum_core::certs::spawn_sweeper(
+        state.clone(),
+        app_state.platform.clone(),
+        app_state.certs.clone(),
+    );
+    ferrum_core::metrics::spawn_sampler(state, app_state.platform.clone());
+    update::ticker::spawn(app_state.updater.clone());
+    let listener = tokio::net::TcpListener::bind(LISTEN_ADDR).await?;
+    tracing::info!(addr = %LISTEN_ADDR, "listening");
+    axum::serve(listener, router(app_state))
+        .with_graceful_shutdown(shutdown_signal())
+        .await?;
+    Ok(())
+}
+
+async fn shutdown_signal() {
+    let ctrl_c = async {
+        tokio::signal::ctrl_c().await.ok();
+    };
+    let term = async {
+        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+            .expect("install SIGTERM handler")
+            .recv()
+            .await;
+    };
+    tokio::select! { _ = ctrl_c => {}, _ = term => {} }
+}

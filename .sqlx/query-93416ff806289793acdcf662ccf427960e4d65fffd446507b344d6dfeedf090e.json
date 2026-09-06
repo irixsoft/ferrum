@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO github_state (hash, expires_at) VALUES (?, datetime('now', ?))",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": []
+  },
+  "hash": "93416ff806289793acdcf662ccf427960e4d65fffd446507b344d6dfeedf090e"
+}

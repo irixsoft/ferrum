@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "DELETE FROM app_databases WHERE app_id = ? AND database_id = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": []
+  },
+  "hash": "610c73ac3798f10b3e40ad9dbdfbda9900075f413f9a3462ecf52a9c6f3e0453"
+}

@@ -1,0 +1,56 @@
+[workspace]
+resolver = "3"
+members = ["crates/ferrum", "crates/ferrum-core", "crates/ferrum-platform"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "AGPL-3.0-only"
+repository = "https://github.com/irixsoft/ferrum"
+
+[workspace.dependencies]
+aes-gcm = { version = "0.10", default-features = false, features = ["aes", "alloc"] }
+anyhow = "1"
+axum = "0.8"
+base64 = "0.22"
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+clap = { version = "4", features = ["derive"] }
+hickory-resolver = "0.26"
+hmac = "0.12"
+jsonwebtoken = { version = "10", default-features = false, features = ["use_pem", "rust_crypto"] }
+mimalloc = { version = "0.1", default-features = false }
+instant-acme = { version = "0.8", default-features = false, features = ["hyper-rustls", "ring", "rcgen", "time", "x509-parser"] }
+mime_guess = "2"
+octocrab = "0.54"
+rand = "0.9"
+rcgen = "0.14"
+rust-embed = { version = "8", features = ["debug-embed"] }
+reqwest = { version = "0.13", default-features = false, features = ["rustls-no-provider", "webpki-roots", "http2", "json"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
+secrecy = "0.10"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "sqlite", "migrate", "macros"] }
+thiserror = "2"
+time = "0.3"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "fs", "process"] }
+tower-http = { version = "0.6", features = ["trace"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+webauthn-rs = { version = "0.6.1-dev", features = ["conditional-ui"] }
+webauthn-rs-proto = "=0.6.1-dev"
+x509-parser = "0.18"
+zeroize = "1"
+
+[profile.dev.package.num-bigint-dig]
+opt-level = 3
+
+[profile.dev.package.rsa]
+opt-level = 3
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true

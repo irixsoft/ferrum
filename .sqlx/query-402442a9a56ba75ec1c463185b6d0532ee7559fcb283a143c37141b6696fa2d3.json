@@ -1,0 +1,32 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT app_id AS \"app_id!\", key AS \"key!\", value AS \"value!\"\n           FROM app_env WHERE substr(value, 1, 3) <> 'v1:'",
+  "describe": {
+    "columns": [
+      {
+        "name": "app_id!",
+        "ordinal": 0,
+        "type_info": "Text"
+      },
+      {
+        "name": "key!",
+        "ordinal": 1,
+        "type_info": "Text"
+      },
+      {
+        "name": "value!",
+        "ordinal": 2,
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "402442a9a56ba75ec1c463185b6d0532ee7559fcb283a143c37141b6696fa2d3"
+}

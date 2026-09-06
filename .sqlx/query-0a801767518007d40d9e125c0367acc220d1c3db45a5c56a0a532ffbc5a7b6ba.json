@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "DELETE FROM github_apps WHERE account = ? OR app_id = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": []
+  },
+  "hash": "0a801767518007d40d9e125c0367acc220d1c3db45a5c56a0a532ffbc5a7b6ba"
+}

@@ -1,0 +1,43 @@
+[package]
+name = "ferrum-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+aes-gcm.workspace = true
+anyhow.workspace = true
+base64.workspace = true
+chrono.workspace = true
+jsonwebtoken.workspace = true
+secrecy.workspace = true
+ferrum-platform = { path = "../ferrum-platform" }
+hickory-resolver.workspace = true
+hmac.workspace = true
+instant-acme.workspace = true
+octocrab.workspace = true
+rand.workspace = true
+rcgen.workspace = true
+reqwest.workspace = true
+rustls.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+time.workspace = true
+tokio.workspace = true
+uuid.workspace = true
+x509-parser.workspace = true
+sqlx.workspace = true
+tracing.workspace = true
+toml = "1"
+zeroize.workspace = true
+ed25519-dalek = "2"
+subtle = "2"
+
+[dev-dependencies]
+flate2 = "1"
+tar = "0.4"
+tempfile = "3"
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "net", "io-util"] }

@@ -1,0 +1,38 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT state AS \"state!: DeployState\", status AS \"status!: StepStatus\", note,\n                  CAST(strftime('%s', finished_at) - strftime('%s', started_at) AS INTEGER) AS \"elapsed_secs: i64\"\n           FROM deploy_steps WHERE deploy_id = ? ORDER BY position",
+  "describe": {
+    "columns": [
+      {
+        "name": "state!: DeployState",
+        "ordinal": 0,
+        "type_info": "Text"
+      },
+      {
+        "name": "status!: StepStatus",
+        "ordinal": 1,
+        "type_info": "Text"
+      },
+      {
+        "name": "note",
+        "ordinal": 2,
+        "type_info": "Text"
+      },
+      {
+        "name": "elapsed_secs: i64",
+        "ordinal": 3,
+        "type_info": "Null"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false,
+      false,
+      true,
+      null
+    ]
+  },
+  "hash": "713895f533ccd346782fcc8bda59094756ec4692899a3fe001b86d80ad72107a"
+}

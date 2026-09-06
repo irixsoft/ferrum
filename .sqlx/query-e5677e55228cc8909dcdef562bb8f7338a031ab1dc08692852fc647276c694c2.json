@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO toolchains (kind, version, path, size_bytes, installed_at)\n         VALUES (?, ?, ?, ?, datetime('now'))\n         ON CONFLICT(kind, version) DO UPDATE SET\n           path = excluded.path, size_bytes = excluded.size_bytes, installed_at = excluded.installed_at",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 4
+    },
+    "nullable": []
+  },
+  "hash": "e5677e55228cc8909dcdef562bb8f7338a031ab1dc08692852fc647276c694c2"
+}

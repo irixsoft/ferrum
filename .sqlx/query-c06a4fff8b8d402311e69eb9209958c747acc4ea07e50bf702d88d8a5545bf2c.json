@@ -1,0 +1,20 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT private_key AS \"private_key!\" FROM github_apps WHERE app_id = ?",
+  "describe": {
+    "columns": [
+      {
+        "name": "private_key!",
+        "ordinal": 0,
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "c06a4fff8b8d402311e69eb9209958c747acc4ea07e50bf702d88d8a5545bf2c"
+}

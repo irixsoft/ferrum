@@ -1,0 +1,20 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE enrollments SET used_at = datetime('now')\n         WHERE hash = ? AND used_at IS NULL AND expires_at > datetime('now')\n         RETURNING user_id",
+  "describe": {
+    "columns": [
+      {
+        "name": "user_id",
+        "ordinal": 0,
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "090d0169d48abfbb20a192d31e06681a1b78823c3372c96cd4a420ff85e481ce"
+}

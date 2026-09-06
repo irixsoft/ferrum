@@ -1,0 +1,20 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT d.name AS \"name!\" FROM app_databases l JOIN databases d ON d.id = l.database_id\n           WHERE l.app_id = ? ORDER BY l.position, d.name",
+  "describe": {
+    "columns": [
+      {
+        "name": "name!",
+        "ordinal": 0,
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "54336a7a3ec42d1a1a7f3c2cdb411625d699a568bb068dc9250d0db26a717708"
+}

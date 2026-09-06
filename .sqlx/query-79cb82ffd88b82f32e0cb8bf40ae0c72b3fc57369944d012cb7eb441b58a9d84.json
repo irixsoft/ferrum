@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE app_env SET value = ? WHERE app_id = ? AND key = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": []
+  },
+  "hash": "79cb82ffd88b82f32e0cb8bf40ae0c72b3fc57369944d012cb7eb441b58a9d84"
+}

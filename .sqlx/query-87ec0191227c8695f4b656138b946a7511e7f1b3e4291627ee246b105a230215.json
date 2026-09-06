@@ -1,0 +1,38 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT r.path AS \"path!\", r.port_name AS \"port_name!\", r.websocket AS \"websocket!: bool\",\n                  p.port AS \"port!\"\n           FROM app_routes r JOIN app_ports p ON p.app_id = r.app_id AND p.name = r.port_name\n           WHERE r.app_id = ? ORDER BY length(r.path), r.path",
+  "describe": {
+    "columns": [
+      {
+        "name": "path!",
+        "ordinal": 0,
+        "type_info": "Text"
+      },
+      {
+        "name": "port_name!",
+        "ordinal": 1,
+        "type_info": "Text"
+      },
+      {
+        "name": "websocket!: bool",
+        "ordinal": 2,
+        "type_info": "Integer"
+      },
+      {
+        "name": "port!",
+        "ordinal": 3,
+        "type_info": "Integer"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "87ec0191227c8695f4b656138b946a7511e7f1b3e4291627ee246b105a230215"
+}

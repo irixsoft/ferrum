@@ -1,0 +1,56 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT at AS \"at!: i64\", cpu_pct AS \"cpu_pct!: f64\", memory_bytes AS \"memory_bytes!: i64\",\n                  memory_peak_bytes, disk_used_bytes, net_rx_bytes, net_tx_bytes\n           FROM metrics WHERE scope = ? ORDER BY at DESC LIMIT 1",
+  "describe": {
+    "columns": [
+      {
+        "name": "at!: i64",
+        "ordinal": 0,
+        "type_info": "Integer"
+      },
+      {
+        "name": "cpu_pct!: f64",
+        "ordinal": 1,
+        "type_info": "Float"
+      },
+      {
+        "name": "memory_bytes!: i64",
+        "ordinal": 2,
+        "type_info": "Integer"
+      },
+      {
+        "name": "memory_peak_bytes",
+        "ordinal": 3,
+        "type_info": "Integer"
+      },
+      {
+        "name": "disk_used_bytes",
+        "ordinal": 4,
+        "type_info": "Integer"
+      },
+      {
+        "name": "net_rx_bytes",
+        "ordinal": 5,
+        "type_info": "Integer"
+      },
+      {
+        "name": "net_tx_bytes",
+        "ordinal": 6,
+        "type_info": "Integer"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      true,
+      true,
+      true,
+      true
+    ]
+  },
+  "hash": "ce93b4e20cded24c125b4d79978d0a929e668c4c9c60bb596a1f466fd22f62ca"
+}

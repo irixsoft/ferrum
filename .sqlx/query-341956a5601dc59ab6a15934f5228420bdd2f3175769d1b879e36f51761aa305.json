@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO redis_instances (app_id, password, maxmemory_mb) VALUES (?, ?, ?)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": []
+  },
+  "hash": "341956a5601dc59ab6a15934f5228420bdd2f3175769d1b879e36f51761aa305"
+}

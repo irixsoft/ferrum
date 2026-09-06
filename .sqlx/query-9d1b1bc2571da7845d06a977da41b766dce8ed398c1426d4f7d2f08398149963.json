@@ -1,0 +1,38 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT a.slug AS \"app_slug!\", r.maxmemory_mb AS \"maxmemory_mb!\", r.created_at AS \"created_at!\",\n                  p.port AS \"port!\"\n           FROM redis_instances r\n           JOIN apps a ON a.id = r.app_id\n           JOIN app_ports p ON p.app_id = r.app_id AND p.name = ?\n           ORDER BY a.slug",
+  "describe": {
+    "columns": [
+      {
+        "name": "app_slug!",
+        "ordinal": 0,
+        "type_info": "Text"
+      },
+      {
+        "name": "maxmemory_mb!",
+        "ordinal": 1,
+        "type_info": "Integer"
+      },
+      {
+        "name": "created_at!",
+        "ordinal": 2,
+        "type_info": "Text"
+      },
+      {
+        "name": "port!",
+        "ordinal": 3,
+        "type_info": "Integer"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "9d1b1bc2571da7845d06a977da41b766dce8ed398c1426d4f7d2f08398149963"
+}

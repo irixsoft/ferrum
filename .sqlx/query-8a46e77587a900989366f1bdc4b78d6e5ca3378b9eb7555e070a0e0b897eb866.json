@@ -1,0 +1,26 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO deploy_logs (deploy_id, seq, stream, line)\n           VALUES (?, (SELECT coalesce(max(seq), 0) + 1 FROM deploy_logs WHERE deploy_id = ?), ?, ?)\n           RETURNING seq AS \"seq!\", at AS \"at!\"",
+  "describe": {
+    "columns": [
+      {
+        "name": "seq!",
+        "ordinal": 0,
+        "type_info": "Integer"
+      },
+      {
+        "name": "at!",
+        "ordinal": 1,
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Right": 4
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "8a46e77587a900989366f1bdc4b78d6e5ca3378b9eb7555e070a0e0b897eb866"
+}

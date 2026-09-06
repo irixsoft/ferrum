@@ -1,0 +1,38 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT seq AS \"seq!\", at AS \"at!\", stream AS \"stream!\", line AS \"line!\"\n           FROM deploy_logs WHERE deploy_id = ? AND seq > ? ORDER BY seq",
+  "describe": {
+    "columns": [
+      {
+        "name": "seq!",
+        "ordinal": 0,
+        "type_info": "Integer"
+      },
+      {
+        "name": "at!",
+        "ordinal": 1,
+        "type_info": "Text"
+      },
+      {
+        "name": "stream!",
+        "ordinal": 2,
+        "type_info": "Text"
+      },
+      {
+        "name": "line!",
+        "ordinal": 3,
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "5cbebbe8f6152594a905603d4d71ec856617b347110c6b4e5ced62b83638c965"
+}

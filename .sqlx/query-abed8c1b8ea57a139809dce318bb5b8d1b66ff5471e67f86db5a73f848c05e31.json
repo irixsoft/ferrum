@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO releases (id, app_id, dir, git_ref, commit_sha, commit_message) VALUES (?, ?, ?, ?, ?, ?)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 6
+    },
+    "nullable": []
+  },
+  "hash": "abed8c1b8ea57a139809dce318bb5b8d1b66ff5471e67f86db5a73f848c05e31"
+}
