@@ -5,7 +5,7 @@ use super::{
 };
 use crate::apps::provision::{app_dir, user_name, write_env};
 use crate::apps::unit::unit_name;
-use crate::apps::{App, env};
+use crate::apps::{App, env, packages};
 use crate::github::commits;
 use crate::runtime::toolchain;
 use crate::runtime::{Phase, RuntimeKind};
@@ -330,13 +330,61 @@ impl Job {
         Ok(())
     }
 
+    /// The tag's Aptfile adds to the app's list; it never removes, that stays the user's call.
     async fn packages_step(&mut self) -> anyhow::Result<()> {
-        if self.app.packages.is_empty() {
+        let dir = self.release_dir.clone().expect("cloned first");
+        let aptfile = self
+            .ctx
+            .platform
+            .read_file(&work_dir(&dir, &self.app.root).join("Aptfile"))?;
+        let (listed, rejected) = aptfile
+            .as_deref()
+            .map(packages::parse_aptfile)
+            .unwrap_or_default();
+        let added: Vec<String> = listed
+            .iter()
+            .filter(|n| !self.app.packages.contains(n))
+            .cloned()
+            .collect();
+        let unlisted: Vec<String> = match aptfile {
+            Some(_) => self
+                .app
+                .packages
+                .iter()
+                .filter(|n| !listed.contains(n))
+                .cloned()
+                .collect(),
+            None => Vec::new(),
+        };
+        if self.app.packages.is_empty() && added.is_empty() {
             return self
                 .skip(DeployState::InstallingSystemPackages, "no system packages")
                 .await;
         }
         self.enter(DeployState::InstallingSystemPackages).await?;
+        if !rejected.is_empty() {
+            self.say(&format!(
+                "Ignoring Aptfile lines that are not package names: {}",
+                rejected.join(", ")
+            ))
+            .await?;
+        }
+        if !added.is_empty() {
+            self.say(&format!("The Aptfile adds {}", added.join(", ")))
+                .await?;
+            let preexisting = packages::install(self.ctx.platform.as_ref(), &added)
+                .context("installing system packages")?;
+            packages::add(&self.ctx.state, &self.app.id, &added).await?;
+            packages::record(&self.ctx.state, &added, &preexisting).await?;
+            self.app.packages.extend(added);
+        }
+        if !unlisted.is_empty() {
+            self.say(&format!(
+                "Not in the Aptfile, kept from the configuration: {}",
+                unlisted.join(", ")
+            ))
+            .await?;
+        }
         let resolved: Vec<String> = self
             .app
             .packages

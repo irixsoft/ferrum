@@ -410,6 +410,46 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn the_tag_s_aptfile_adds_packages_and_never_removes_any() {
+        let (_d, state) = state().await;
+        let p = Arc::new(FakePlatform::new());
+        let health = Health::serve(200).await;
+        let app = provisioned(&state, &p, "ledger", health.port, |new| {
+            new.packages = vec!["ffmpeg".into()];
+        })
+        .await;
+        p.serve_clone(&[("Aptfile", "# media\nlibvips42\nbad name\n")]);
+        let ctx = ctx(&state, &p);
+        let (outcome, d) = deploy(&ctx, &app, "abc1234").await;
+        assert_eq!(outcome, Outcome::Live, "{:?}", d.failure_reason);
+
+        let calls = p.calls();
+        assert!(calls.contains(&"install_packages libvips42".to_string()));
+        assert!(calls.contains(&"install_packages ffmpeg libvips42".to_string()));
+        assert!(p.calls_matching("remove_packages").is_empty());
+        let stored = crate::apps::by_slug(&state, "ledger")
+            .await
+            .unwrap()
+            .unwrap()
+            .packages;
+        assert_eq!(stored, vec!["ffmpeg", "libvips42"]);
+        let text: Vec<String> = log::lines(&state, &d.id, 0)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|l| l.text)
+            .collect();
+        for line in [
+            "The Aptfile adds libvips42",
+            "Not in the Aptfile, kept from the configuration: ffmpeg",
+            "Ignoring Aptfile lines that are not package names: bad name",
+        ] {
+            assert!(text.iter().any(|t| t == line), "{line}\n{text:#?}");
+        }
+        assert_eq!(d.steps[2].note.as_deref(), Some("2 packages"));
+    }
+
+    #[tokio::test]
     async fn a_bun_app_gets_node_beside_bun_before_its_first_command() {
         let (_d, state) = state().await;
         let p = Arc::new(FakePlatform::new());
@@ -427,6 +467,9 @@ mod tests {
         let calls = p.calls();
         let link = position(&calls, |c| {
             c == "symlink_swap bun /var/lib/ferrum/runtimes/bun/1.2.3/node"
+        });
+        let bunx = position(&calls, |c| {
+            c == "symlink_swap bun /var/lib/ferrum/runtimes/bun/1.2.3/bunx"
         });
         let install = position(&calls, |c| {
             c.starts_with("run_scoped") && c.contains("bun install")
@@ -468,9 +511,6 @@ mod tests {
         );
         assert_eq!(
             build.memory_max_mb, 1536,
-        let bunx = position(&calls, |c| {
-            c == "symlink_swap bun /var/lib/ferrum/runtimes/bun/1.2.3/bunx"
-        });
             "the fake's 2 GiB less the reserve"
         );
         assert_eq!(build.timeout, Duration::from_secs(1200));

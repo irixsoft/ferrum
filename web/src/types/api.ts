@@ -241,6 +241,13 @@ export interface FerrumToml {
   packages: string[];
 }
 
+/** What deleting the app, or dropping these packages, would do on the server. */
+export interface PackageRemoval {
+  removable: string[];
+  kept: { name: string; by: string }[];
+  preexisting: string[];
+}
+
 export interface Wants {
   postgres: string | null;
   redis: string | null;

@@ -422,6 +422,10 @@ export function ConfigForm({
             Packages are system-wide and shared by every application on the box, so two
             applications needing conflicting versions of the same library will collide.
           </span>
+          <span>
+            A deploy adds what the tag&apos;s Aptfile lists. A package removed here is uninstalled on
+            Save, unless another application lists it or the server had it before Ferrum.
+          </span>
         </CardFoot>
       </Card>
 

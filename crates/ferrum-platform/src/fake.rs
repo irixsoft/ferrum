@@ -51,6 +51,7 @@ struct Inner {
     keys: Vec<KeyFingerprint>,
     self_check: String,
     installed: Option<Vec<u8>>,
+    packages: HashSet<String>,
 }
 
 pub struct FakePlatform {
@@ -276,6 +277,15 @@ impl FakePlatform {
         self.inner.lock().unwrap().sql.clone()
     }
 
+    /// Packages dpkg reports as already installed.
+    pub fn answer_installed(&self, names: &[&str]) {
+        self.inner
+            .lock()
+            .unwrap()
+            .packages
+            .extend(names.iter().map(|n| n.to_string()));
+    }
+
     pub fn answer_restore_list(&self, listing: &str) {
         self.inner.lock().unwrap().restore_list = listing.to_string();
     }
@@ -342,7 +352,28 @@ impl Platform for FakePlatform {
     }
 
     fn install_packages(&self, names: &[&str]) -> Result<(), PlatformError> {
-        self.record(format!("install_packages {}", names.join(" ")))
+        self.record(format!("install_packages {}", names.join(" ")))?;
+        let mut inner = self.inner.lock().unwrap();
+        inner.packages.extend(names.iter().map(|n| n.to_string()));
+        Ok(())
+    }
+
+    fn installed_packages(&self, names: &[&str]) -> Result<Vec<String>, PlatformError> {
+        let inner = self.inner.lock().unwrap();
+        Ok(names
+            .iter()
+            .filter(|n| inner.packages.contains(**n))
+            .map(|n| n.to_string())
+            .collect())
+    }
+
+    fn remove_packages(&self, names: &[&str]) -> Result<(), PlatformError> {
+        self.record(format!("remove_packages {}", names.join(" ")))?;
+        let mut inner = self.inner.lock().unwrap();
+        for name in names {
+            inner.packages.remove(*name);
+        }
+        Ok(())
     }
 
     fn add_apt_repo(&self, name: &str, key_url: &str, repo: &str) -> Result<(), PlatformError> {
@@ -407,6 +438,10 @@ impl Platform for FakePlatform {
         self.record(format!("chown_tree {} {user}", path.to_string_lossy()))
     }
 
+    fn chown(&self, path: &Path, user: &str) -> Result<(), PlatformError> {
+        self.record(format!("chown {} {user}", path.to_string_lossy()))
+    }
+
     fn user_exists(&self, name: &str) -> bool {
         self.inner.lock().unwrap().users.contains(name)
     }
@@ -438,10 +473,6 @@ impl Platform for FakePlatform {
         ))?;
         Ok(crate::archive::extract_tar_gz(
             archive,
-    fn chown(&self, path: &Path, user: &str) -> Result<(), PlatformError> {
-        self.record(format!("chown {} {user}", path.to_string_lossy()))
-    }
-
             dest,
             strip_components,
         )?)

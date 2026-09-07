@@ -264,20 +264,7 @@ fn under<'a>(path: &'a str, prefix: &str) -> Option<&'a str> {
 }
 
 pub fn aptfile(tree: &RepoTree) -> (Vec<String>, Vec<String>) {
-    let mut ok = Vec::new();
-    let mut bad = Vec::new();
-    for line in tree.read("Aptfile").unwrap_or("").lines() {
-        let line = line.trim();
-        if line.is_empty() || line.starts_with('#') {
-            continue;
-        }
-        if valid_package(line) {
-            ok.push(line.to_string());
-        } else {
-            bad.push(line.to_string());
-        }
-    }
-    (ok, bad)
+    crate::apps::packages::parse_aptfile(tree.read("Aptfile").unwrap_or(""))
 }
 
 /// `^[a-z0-9][a-z0-9+._-]*$` — a package name reaches `apt-get` as one argv entry.

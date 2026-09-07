@@ -7,6 +7,7 @@ import {
   useDeleteApp,
   useDeploys,
   useMetrics,
+  usePackageRemoval,
   useReleases,
   useRestartApp,
   useRestoreSnapshot,
@@ -438,8 +439,10 @@ function Configuration({ app }: { app: AppDetail }) {
   const navigate = useNavigate();
   const [draft, setDraft] = useState<Draft>(() => draftFromApp(app));
   const [confirm, setConfirm] = useState("");
+  const [uninstall, setUninstall] = useState(true);
   const update = useUpdateApp(app.slug);
   const remove = useDeleteApp(app.slug);
+  const removal = usePackageRemoval(app.slug, app.packages.length > 0).data;
 
   return (
     <div className="grid gap-4">
@@ -465,6 +468,29 @@ function Configuration({ app }: { app: AppDetail }) {
           <p className="text-[13px] text-ink-2">
             Linked databases are not deleted. Type <strong className="text-ink">{app.name}</strong> to confirm.
           </p>
+          {removal ? (
+            <div className="grid gap-1 text-[12.5px] text-ink-2">
+              {removal.removable.length ? (
+                <label className="flex items-center gap-2">
+                  <input type="checkbox" checked={uninstall} onChange={(e) => setUninstall(e.target.checked)} />
+                  <span>
+                    Also uninstall <Code>{removal.removable.join(" ")}</Code>, which no other app lists.
+                  </span>
+                </label>
+              ) : null}
+              {removal.kept.map((k) => (
+                <span key={k.name}>
+                  <Code>{k.name}</Code> stays: {k.by} also lists it.
+                </span>
+              ))}
+              {removal.preexisting.length ? (
+                <span>
+                  <Code>{removal.preexisting.join(" ")}</Code> {removal.preexisting.length === 1 ? "was" : "were"} on the
+                  server before Ferrum installed anything, and stays.
+                </span>
+              ) : null}
+            </div>
+          ) : null}
           <div className="flex gap-2 flex-wrap">
             <input
               value={confirm}
@@ -476,7 +502,10 @@ function Configuration({ app }: { app: AppDetail }) {
               variant="danger"
               disabled={confirm !== app.name || remove.isPending}
               onClick={async () => {
-                await remove.mutateAsync(confirm);
+                await remove.mutateAsync({
+                  name: confirm,
+                  uninstall: uninstall && (removal?.removable.length ?? 0) > 0,
+                });
                 navigate({ to: "/apps" });
               }}
             >

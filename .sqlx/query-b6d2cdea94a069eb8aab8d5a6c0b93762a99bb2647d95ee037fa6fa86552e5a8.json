@@ -1,0 +1,20 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT a.slug AS \"slug!\" FROM app_packages p JOIN apps a ON a.id = p.app_id\n               WHERE p.name = ? AND p.app_id != ? ORDER BY a.slug LIMIT 1",
+  "describe": {
+    "columns": [
+      {
+        "name": "slug!",
+        "ordinal": 0,
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "b6d2cdea94a069eb8aab8d5a6c0b93762a99bb2647d95ee037fa6fa86552e5a8"
+}

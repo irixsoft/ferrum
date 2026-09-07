@@ -526,6 +526,29 @@ impl Platform for Ubuntu {
         exec::run_env(&argv, &APT_ENV).map(|_| ())
     }
 
+    fn installed_packages(&self, names: &[&str]) -> Result<Vec<String>, PlatformError> {
+        let listing = exec::run(&["dpkg-query", "-W", "-f", "${Package} ${db:Status-Status}\n"])?;
+        Ok(listing
+            .lines()
+            .filter_map(|line| line.split_once(' '))
+            .filter(|(name, status)| *status == "installed" && names.contains(name))
+            .map(|(name, _)| name.to_string())
+            .collect())
+    }
+
+    fn remove_packages(&self, names: &[&str]) -> Result<(), PlatformError> {
+        let mut argv = vec![
+            "apt-get",
+            "remove",
+            "-y",
+            "-o",
+            "DPkg::Lock::Timeout=120",
+            "--auto-remove",
+        ];
+        argv.extend_from_slice(names);
+        exec::run_env(&argv, &APT_ENV).map(|_| ())
+    }
+
     fn add_apt_repo(&self, name: &str, key_url: &str, repo: &str) -> Result<(), PlatformError> {
         let keyring = keyring_path(name);
         std::fs::create_dir_all(KEYRING_DIR)?;
@@ -592,6 +615,11 @@ impl Platform for Ubuntu {
         exec::run(&["chown", "-R", &owner, &path.to_string_lossy()]).map(|_| ())
     }
 
+    fn chown(&self, path: &Path, user: &str) -> Result<(), PlatformError> {
+        let owner = format!("{user}:{user}");
+        exec::run(&["chown", &owner, &path.to_string_lossy()]).map(|_| ())
+    }
+
     fn user_exists(&self, name: &str) -> bool {
         exec::status(&["getent", "passwd", name])
     }
@@ -615,11 +643,6 @@ impl Platform for Ubuntu {
     fn remove_system_user(&self, name: &str) -> Result<(), PlatformError> {
         tolerate(exec::run(&["userdel", name]), USERDEL_MISSING)
     }
-    fn chown(&self, path: &Path, user: &str) -> Result<(), PlatformError> {
-        let owner = format!("{user}:{user}");
-        exec::run(&["chown", &owner, &path.to_string_lossy()]).map(|_| ())
-    }
-
 
     fn extract_tar_gz(
         &self,

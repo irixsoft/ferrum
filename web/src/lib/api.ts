@@ -28,6 +28,7 @@ import type {
   NewApp,
   NewDatabase,
   NginxFiles,
+  PackageRemoval,
   PostgresStatus,
   Progress,
   RedisInstance,
@@ -368,9 +369,17 @@ export function useUpdateApp(slug: string) {
 }
 
 export function useDeleteApp(slug: string) {
-  return useInvalidating(keys.apps, (name: string) =>
-    request<void>(`/apps/${slug}`, body({ name }, "DELETE")),
+  return useInvalidating(keys.apps, (deletion: { name: string; uninstall: boolean }) =>
+    request<void>(`/apps/${slug}`, body(deletion, "DELETE")),
   );
+}
+
+export function usePackageRemoval(slug: string, enabled: boolean) {
+  return useQuery({
+    queryKey: [...keys.app(slug), "packages"] as const,
+    queryFn: () => request<PackageRemoval>(`/apps/${slug}/packages`),
+    enabled,
+  });
 }
 
 export function useSetEnv(slug: string) {

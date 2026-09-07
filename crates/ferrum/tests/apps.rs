@@ -432,6 +432,78 @@ async fn a_duplicate_slug_is_a_conflict() {
 }
 
 #[tokio::test]
+async fn a_package_the_host_had_stays_and_a_shared_one_goes_with_its_last_app() {
+    let (h, cookie, _github) = signed_in_and_connected().await;
+    h.platform.answer_installed(&["curl"]);
+    let mut ledger: serde_json::Value = serde_json::from_str(&new_app_json("ledger")).unwrap();
+    ledger["packages"] = serde_json::json!(["ffmpeg", "curl"]);
+    h.create_app_from(&ledger.to_string(), &cookie).await;
+    let mut billing: serde_json::Value = serde_json::from_str(&new_app_json("billing")).unwrap();
+    billing["packages"] = serde_json::json!(["ffmpeg"]);
+    h.create_app_from(&billing.to_string(), &cookie).await;
+
+    let res = h
+        .get_with_cookie("/api/apps/ledger/packages", &cookie)
+        .await;
+    assert_eq!(res.status, StatusCode::OK, "{}", res.json);
+    assert_eq!(
+        res.json,
+        serde_json::json!({
+            "removable": [],
+            "kept": [{"name": "ffmpeg", "by": "billing"}],
+            "preexisting": ["curl"],
+        })
+    );
+
+    let res = h
+        .delete_json_with_cookie(
+            "/api/apps/ledger",
+            r#"{"name":"ledger","uninstall":true}"#,
+            &cookie,
+        )
+        .await;
+    assert_eq!(res.status, StatusCode::NO_CONTENT, "{}", res.json);
+    assert!(h.platform.calls_matching("remove_packages").is_empty());
+
+    let res = h
+        .delete_json_with_cookie(
+            "/api/apps/billing",
+            r#"{"name":"billing","uninstall":true}"#,
+            &cookie,
+        )
+        .await;
+    assert_eq!(res.status, StatusCode::NO_CONTENT, "{}", res.json);
+    assert_eq!(
+        h.platform.calls_matching("remove_packages"),
+        vec!["remove_packages ffmpeg"]
+    );
+}
+
+#[tokio::test]
+async fn a_package_dropped_on_save_is_uninstalled_and_a_delete_without_the_choice_removes_none() {
+    let (h, cookie, _github) = signed_in_and_connected().await;
+    let mut body: serde_json::Value = serde_json::from_str(&new_app_json("ledger")).unwrap();
+    body["packages"] = serde_json::json!(["ffmpeg", "libvips42"]);
+    h.create_app_from(&body.to_string(), &cookie).await;
+
+    let res = h
+        .patch_with_cookie("/api/apps/ledger", r#"{"packages":["ffmpeg"]}"#, &cookie)
+        .await;
+    assert_eq!(res.status, StatusCode::OK, "{}", res.json);
+    assert_eq!(res.json["packages"], serde_json::json!(["ffmpeg"]));
+    assert_eq!(
+        h.platform.calls_matching("remove_packages"),
+        vec!["remove_packages libvips42"]
+    );
+
+    let res = h
+        .delete_json_with_cookie("/api/apps/ledger", r#"{"name":"ledger"}"#, &cookie)
+        .await;
+    assert_eq!(res.status, StatusCode::NO_CONTENT, "{}", res.json);
+    assert_eq!(h.platform.calls_matching("remove_packages").len(), 1);
+}
+
+#[tokio::test]
 async fn a_read_only_token_can_list_apps_and_nothing_else() {
     let (h, _cookie, _github) = signed_in_and_connected().await;
     let token = h.machine_token(true).await;

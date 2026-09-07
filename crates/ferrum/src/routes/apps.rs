@@ -5,7 +5,7 @@ use axum::extract::{Path, State as Extract};
 use axum::http::StatusCode;
 use axum::{Json, Router, routing::get};
 use ferrum_core::apps::unit::unit_name;
-use ferrum_core::apps::{self, App, AppChanges, AppError, NewApp, env, provision};
+use ferrum_core::apps::{self, App, AppChanges, AppError, NewApp, env, packages, provision};
 use ferrum_core::deploy::{self, Outcome, maintenance, releases};
 use ferrum_core::detect::{self, DetectError, Detected};
 use ferrum_core::redis::{self, RedisError};
@@ -20,6 +20,7 @@ pub fn router() -> Router<AppState> {
         .route("/api/apps/detect", axum::routing::post(inspect))
         .route("/api/apps/{slug}", get(show).patch(update).delete(remove))
         .route("/api/apps/{slug}/env", axum::routing::put(set_env))
+        .route("/api/apps/{slug}/packages", get(package_removal))
         .route(
             "/api/apps/{slug}/databases/{name}",
             axum::routing::post(link_database).delete(unlink_database),
@@ -84,8 +85,10 @@ struct Inspect {
 }
 
 #[derive(Deserialize)]
-struct Removal {
+struct Deletion {
     name: String,
+    #[serde(default)]
+    uninstall: bool,
 }
 
 pub(crate) async fn listed(app: &AppState) -> anyhow::Result<Vec<Listed>> {
@@ -151,20 +154,12 @@ async fn create(
         )));
     }
 
-    let resolved: Vec<String> = new
-        .packages
-        .iter()
-        .flat_map(|p| app.platform.resolve_package(p))
-        .collect();
-    if !resolved.is_empty() {
-        let names: Vec<&str> = resolved.iter().map(String::as_str).collect();
-        app.platform
-            .install_packages(&names)
-            .map_err(|e| ApiError::bad_request(format!("Installing packages failed: {e}")))?;
-    }
+    let preexisting = packages::install(app.platform.as_ref(), &new.packages)
+        .map_err(|e| ApiError::bad_request(format!("Installing packages failed: {e}")))?;
 
     let slug = new.slug.clone();
     let created = apps::create(&app.db, new).await.map_err(app_error)?;
+    packages::record(&app.db, &created.packages, &preexisting).await?;
     if let Err(e) = provision::provision(&app.db, app.platform.as_ref(), &created).await {
         apps::delete(&app.db, &slug).await?;
         return Err(ApiError::bad_request(format!(
@@ -360,24 +355,46 @@ async fn update(
     Ok(Json(apply(&app, &slug, changes).await?))
 }
 
-/// Packages first, then the row, then the host; certificates follow in the background.
+/// Packages first, then the row, then the host; certificates follow in the background. A
+/// package dropped from the list is uninstalled unless another app lists it or the host had it.
 pub(crate) async fn apply(app: &AppState, slug: &str, changes: AppChanges) -> ApiResult<App> {
+    let current = find(app, slug).await?;
+    let mut preexisting = Vec::new();
+    let mut dropped = None;
     if let Some(packages) = &changes.packages {
-        let resolved: Vec<String> = packages
+        let wanted: Vec<String> = packages
             .iter()
             .filter(|p| detect::valid_package(p))
-            .flat_map(|p| app.platform.resolve_package(p))
+            .cloned()
             .collect();
-        if !resolved.is_empty() {
-            let names: Vec<&str> = resolved.iter().map(String::as_str).collect();
-            app.platform
-                .install_packages(&names)
-                .map_err(|e| ApiError::bad_request(format!("Installing packages failed: {e}")))?;
+        preexisting = packages::install(app.platform.as_ref(), &wanted)
+            .map_err(|e| ApiError::bad_request(format!("Installing packages failed: {e}")))?;
+        let gone: Vec<String> = current
+            .packages
+            .iter()
+            .filter(|p| !wanted.contains(p))
+            .cloned()
+            .collect();
+        if !gone.is_empty() {
+            dropped = Some(packages::removal(&app.db, &current, &gone).await?);
         }
     }
     let updated = apps::update(&app.db, slug, changes)
         .await
         .map_err(app_error)?;
+    let added: Vec<String> = updated
+        .packages
+        .iter()
+        .filter(|p| !current.packages.contains(p))
+        .cloned()
+        .collect();
+    packages::record(&app.db, &added, &preexisting).await?;
+    if let Some(removal) = &dropped {
+        packages::uninstall(&app.db, app.platform.as_ref(), removal)
+            .await
+            .map_err(|e| ApiError::bad_request(format!("Uninstalling packages failed: {e:#}")))?;
+        tracing::info!(app = slug, ?removal, "packages dropped from the app");
+    }
     provision::reprovision(&app.db, app.platform.as_ref(), &updated)
         .await
         .map_err(|e| ApiError::bad_request(format!("The host refused the change: {e:#}")))?;
@@ -389,19 +406,41 @@ async fn remove(
     Extract(app): Extract<AppState>,
     _: Caller,
     Path(slug): Path<String>,
-    Json(body): Json<Removal>,
+    Json(body): Json<Deletion>,
 ) -> ApiResult<StatusCode> {
-    let found = apps::by_slug(&app.db, &slug)
-        .await?
-        .ok_or_else(|| ApiError::not_found(AppError::NotFound.to_string()))?;
+    let found = find(&app, &slug).await?;
     if body.name.trim() != found.name {
         return Err(ApiError::bad_request(
             "Type the application's name exactly to delete it.",
         ));
     }
+    let removal = match body.uninstall {
+        true => Some(packages::removal(&app.db, &found, &found.packages).await?),
+        false => None,
+    };
     provision::deprovision(&app.db, app.platform.as_ref(), &found).await?;
     apps::delete(&app.db, &slug).await?;
+    if let Some(removal) = &removal {
+        packages::uninstall(&app.db, app.platform.as_ref(), removal)
+            .await
+            .map_err(|e| {
+                ApiError::bad_request(format!(
+                    "The app is gone, but uninstalling its packages failed: {e:#}"
+                ))
+            })?;
+    }
     Ok(StatusCode::NO_CONTENT)
+}
+
+async fn package_removal(
+    Extract(app): Extract<AppState>,
+    _: Caller,
+    Path(slug): Path<String>,
+) -> ApiResult<Json<packages::Removal>> {
+    let found = find(&app, &slug).await?;
+    Ok(Json(
+        packages::removal(&app.db, &found, &found.packages).await?,
+    ))
 }
 
 async fn set_env(
