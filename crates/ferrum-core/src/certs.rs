@@ -248,8 +248,8 @@ async fn try_issue(
     }
 }
 
-/// Issues for every domain of the app that has no certificate; `true` when one landed and the
-/// vhost was re-rendered with it.
+/// Issues for every domain of the app that has no certificate, then brings the site in line
+/// with the certificates on disk; `true` when either changed something.
 pub async fn issue_for(
     state: &State,
     platform: &dyn Platform,
@@ -260,10 +260,8 @@ pub async fn issue_for(
     for domain in &app.domains {
         landed |= try_issue(state, platform, issuance, domain, false).await?;
     }
-    if landed {
-        provision::provision(state, platform, app).await?;
-    }
-    Ok(landed)
+    let refreshed = provision::refresh_vhost(platform, app)?;
+    Ok(landed || refreshed)
 }
 
 /// Every certificate on disk with under thirty days left, the panel's included.
@@ -423,6 +421,42 @@ pub(crate) mod tests {
             status(&state, &p, "ledger.example.com").await.unwrap(),
             CertStatus::None
         );
+    }
+
+    #[tokio::test]
+    async fn the_sweep_gives_a_site_its_tls_blocks_once_its_certificate_is_on_disk() {
+        let (_d, state) = state().await;
+        let p = FakePlatform::new();
+        let app = app_with_domain(&state).await;
+        provision::provision(&state, &p, &app).await.unwrap();
+        let site = "/etc/nginx/conf.d/ferrum-ledger.conf";
+        assert!(!p.written(site).unwrap().contains("listen 443"));
+        p.write_file(
+            &acme::cert_dir("ledger.example.com").join("fullchain.pem"),
+            &self_signed("ledger.example.com", 60),
+            0o644,
+        )
+        .unwrap();
+        let issuance = Issuance::new(
+            unreachable_directory(),
+            Lookup::Fixed(vec![]),
+            Some(ip(HERE)),
+        );
+        let writes = |p: &FakePlatform| {
+            p.calls()
+                .iter()
+                .filter(|c| c.starts_with(&format!("write_file {site}")))
+                .count()
+        };
+        let before = writes(&p);
+
+        assert!(issue_for(&state, &p, &issuance, &app).await.unwrap());
+        assert!(p.written(site).unwrap().contains("listen 443 ssl;"));
+        assert_eq!(writes(&p), before + 1);
+        assert_eq!(p.calls_matching("service reload nginx").len(), 2);
+
+        assert!(!issue_for(&state, &p, &issuance, &app).await.unwrap());
+        assert_eq!(writes(&p), before + 1, "a matching site is left alone");
     }
 
     pub(crate) fn self_signed(domain: &str, days_left: i64) -> String {

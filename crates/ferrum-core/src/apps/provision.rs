@@ -63,16 +63,35 @@ pub async fn provision(state: &State, platform: &dyn Platform, app: &App) -> any
         platform.write_file(&custom, "", 0o644)?;
     }
     maintenance::ensure_page(platform)?;
+    nginx::replace_and_reload(platform, &vhost_path(&app.slug), &render_for(platform, app))
+        .context("nginx refused the generated site configuration")?;
+    Ok(())
+}
+
+/// Rewrites a site whose file no longer matches what its certificates call for. A site that is
+/// not on disk belongs to an app not yet provisioned or being removed, and is left alone.
+pub fn refresh_vhost(platform: &dyn Platform, app: &App) -> anyhow::Result<bool> {
+    let path = vhost_path(&app.slug);
+    let Some(current) = platform.read_file(&path)? else {
+        return Ok(false);
+    };
+    let vhost = render_for(platform, app);
+    if current == vhost {
+        return Ok(false);
+    }
+    nginx::replace_and_reload(platform, &path, &vhost)
+        .context("nginx refused the generated site configuration")?;
+    Ok(true)
+}
+
+fn render_for(platform: &dyn Platform, app: &App) -> String {
     let with_tls: Vec<String> = app
         .domains
         .iter()
         .filter(|d| platform.file_exists(&acme::cert_dir(d).join("fullchain.pem")))
         .cloned()
         .collect();
-    let vhost = render_vhost(app, &app.domains, &with_tls);
-    nginx::replace_and_reload(platform, &vhost_path(&app.slug), &vhost)
-        .context("nginx refused the generated site configuration")?;
-    Ok(())
+    render_vhost(app, &app.domains, &with_tls)
 }
 
 pub async fn write_env(state: &State, platform: &dyn Platform, app: &App) -> anyhow::Result<()> {
@@ -161,6 +180,17 @@ mod tests {
                 && test < nginx,
             "{calls:#?}"
         );
+        for path in [
+            "",
+            "/releases",
+            "/shared",
+            "/shared/cache",
+            "/shared/storage",
+            "/shared/.env",
+        ] {
+            let chown = format!("chown /var/lib/ferrum/apps/ledger{path} ferrum-ledger");
+            assert!(calls.contains(&chown), "{calls:#?}");
+        }
         assert!(
             !calls.iter().any(|c| c.starts_with("chown_tree")),
             "a recursive chown walks a cache a build may be deleting under it"
@@ -178,17 +208,6 @@ mod tests {
             platform
                 .written("/etc/nginx/ferrum-custom/ledger.conf")
                 .as_deref(),
-        for path in [
-            "",
-            "/releases",
-            "/shared",
-            "/shared/cache",
-            "/shared/storage",
-            "/shared/.env",
-        ] {
-            let chown = format!("chown /var/lib/ferrum/apps/ledger{path} ferrum-ledger");
-            assert!(calls.contains(&chown), "{calls:#?}");
-        }
             Some(""),
             "the include target must exist or nginx refuses to start"
         );
