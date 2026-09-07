@@ -28,6 +28,17 @@ pub fn install(platform: &dyn Platform, codename: &str) -> Result<(), PlatformEr
     platform.service(ServiceAction::EnableNow, NGINX_UNIT)
 }
 
+/// The shipped defaults (the ACME root on 80, the refused handshake on 443) are rewritten
+/// whenever the file on disk differs, so a box updated in place gets a newer one.
+pub fn refresh_defaults(platform: &dyn Platform) -> Result<bool, PlatformError> {
+    let path = acme_conf_path();
+    if platform.read_file(&path)?.as_deref() == Some(ACME_CONF) {
+        return Ok(false);
+    }
+    replace_and_reload(platform, &path, ACME_CONF)?;
+    Ok(true)
+}
+
 pub fn render_panel_vhost(hostname: &str, cert_dir: &Path) -> String {
     PANEL_TMPL
         .replace("{{hostname}}", hostname)
@@ -209,6 +220,25 @@ mod tests {
         let panel = render_panel_vhost("p.example.com", Path::new("/c"));
         assert!(ACME_CONF.contains("map $http_upgrade $connection_upgrade"));
         assert!(!panel.contains("map $http_upgrade"));
+    }
+
+    #[test]
+    fn an_unknown_name_on_443_gets_a_refused_handshake_and_a_stale_default_file_is_replaced() {
+        let block = ACME_CONF.find("listen 443 ssl default_server;").unwrap();
+        assert!(ACME_CONF[block..].contains("ssl_reject_handshake on;"));
+        assert!(ACME_CONF.contains("listen [::]:443 ssl default_server;"));
+        assert!(ACME_CONF.contains("listen 80 default_server;"));
+
+        let p = FakePlatform::new();
+        p.write_file(&acme_conf_path(), "server {}", 0o644).unwrap();
+        assert!(refresh_defaults(&p).unwrap());
+        assert_eq!(
+            p.written(&acme_conf_path().to_string_lossy()).as_deref(),
+            Some(ACME_CONF)
+        );
+        assert_eq!(p.calls_matching("service reload nginx").len(), 1);
+        assert!(!refresh_defaults(&p).unwrap());
+        assert_eq!(p.calls_matching("service reload nginx").len(), 1);
     }
 
     #[test]
