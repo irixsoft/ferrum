@@ -9,7 +9,8 @@ pub const SNIFF_LEN: usize = 5;
 
 const PGDMP: &[u8] = b"PGDMP";
 const GZIP: &[u8] = &[0x1f, 0x8b];
-const SKIPPED: [&[u8]; 6] = [
+const SKIPPED: [&[u8]; 7] = [
+    b"DROP EXTENSION ",
     b"GRANT ",
     b"REVOKE ",
     b"ALTER DEFAULT PRIVILEGES",
@@ -263,6 +264,7 @@ mod tests {
     fn a_plain_dump_loses_its_owners_privileges_and_extensions_but_never_a_data_line() {
         let dump = b"SET statement_timeout = 0;\r\n\
 SET SESSION AUTHORIZATION dbadmin;\n\
+DROP EXTENSION IF EXISTS citext;\n\
 CREATE SCHEMA audit;\n\
 ALTER SCHEMA audit OWNER TO dbadmin;\n\
 CREATE EXTENSION IF NOT EXISTS citext WITH SCHEMA public;\n\
@@ -277,6 +279,7 @@ COPY public.users (id, note) FROM stdin;\n\
 1\tALTER TABLE public.users OWNER TO nobody;\n\
 2\tCREATE EXTENSION postgis;\n\
 3\t\xff\xfe not utf-8\n\
+4\tDROP EXTENSION postgis;\n\
 \\.\n\
 GRANT SELECT ON TABLE public.users TO reader;\n\
 REVOKE ALL ON SCHEMA public FROM PUBLIC;\n\
@@ -293,6 +296,7 @@ COPY public.users (id, note) FROM stdin;\n\
 1\tALTER TABLE public.users OWNER TO nobody;\n\
 2\tCREATE EXTENSION postgis;\n\
 3\t\xff\xfe not utf-8\n\
+4\tDROP EXTENSION postgis;\n\
 \\.\n\
 ALTER TABLE ONLY public.users ADD CONSTRAINT users_pkey PRIMARY KEY (id);\n";
         assert_eq!(
