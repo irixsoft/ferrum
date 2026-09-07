@@ -151,6 +151,7 @@ pub trait Platform: Send + Sync {
     fn chown_tree(&self, path: &Path, user: &str) -> Result<(), PlatformError>;
     fn user_exists(&self, name: &str) -> bool;
     fn create_system_user(&self, name: &str, home: &Path) -> Result<(), PlatformError>;
+    fn chown(&self, path: &Path, user: &str) -> Result<(), PlatformError>;
     fn remove_system_user(&self, name: &str) -> Result<(), PlatformError>;
     fn extract_tar_gz(
         &self,

@@ -615,6 +615,11 @@ impl Platform for Ubuntu {
     fn remove_system_user(&self, name: &str) -> Result<(), PlatformError> {
         tolerate(exec::run(&["userdel", name]), USERDEL_MISSING)
     }
+    fn chown(&self, path: &Path, user: &str) -> Result<(), PlatformError> {
+        let owner = format!("{user}:{user}");
+        exec::run(&["chown", &owner, &path.to_string_lossy()]).map(|_| ())
+    }
+
 
     fn extract_tar_gz(
         &self,

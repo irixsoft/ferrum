@@ -438,6 +438,10 @@ impl Platform for FakePlatform {
         ))?;
         Ok(crate::archive::extract_tar_gz(
             archive,
+    fn chown(&self, path: &Path, user: &str) -> Result<(), PlatformError> {
+        self.record(format!("chown {} {user}", path.to_string_lossy()))
+    }
+
             dest,
             strip_components,
         )?)

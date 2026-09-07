@@ -34,9 +34,14 @@ pub async fn provision(state: &State, platform: &dyn Platform, app: &App) -> any
         ("shared/cache", 0o750),
         ("shared/storage", 0o750),
     ] {
-        platform.make_dirs(&dir.join(sub), mode)?;
+        let path = if sub.is_empty() {
+            dir.clone()
+        } else {
+            dir.join(sub)
+        };
+        platform.make_dirs(&path, mode)?;
+        platform.chown(&path, &user)?;
     }
-    platform.chown_tree(&dir, &user)?;
     write_env(state, platform, app).await?;
 
     if app.runtime.has_process() {
@@ -75,7 +80,7 @@ pub async fn write_env(state: &State, platform: &dyn Platform, app: &App) -> any
     let managed = env::managed_for(state, app).await?;
     let env_path = app_dir(&app.slug).join("shared/.env");
     platform.write_file(&env_path, &env::render(&vars, &managed, &app.routes), 0o600)?;
-    platform.chown_tree(&env_path, &user_name(&app.slug))?;
+    platform.chown(&env_path, &user_name(&app.slug))?;
     Ok(())
 }
 
@@ -157,11 +162,9 @@ mod tests {
             "{calls:#?}"
         );
         assert!(
-            calls.contains(&"chown_tree /var/lib/ferrum/apps/ledger ferrum-ledger".to_string())
+            !calls.iter().any(|c| c.starts_with("chown_tree")),
+            "a recursive chown walks a cache a build may be deleting under it"
         );
-        assert!(calls.contains(
-            &"chown_tree /var/lib/ferrum/apps/ledger/shared/.env ferrum-ledger".to_string()
-        ));
         assert!(
             calls.contains(&"make_dirs /var/lib/ferrum/apps/ledger/shared/storage 750".to_string())
         );
@@ -175,6 +178,17 @@ mod tests {
             platform
                 .written("/etc/nginx/ferrum-custom/ledger.conf")
                 .as_deref(),
+        for path in [
+            "",
+            "/releases",
+            "/shared",
+            "/shared/cache",
+            "/shared/storage",
+            "/shared/.env",
+        ] {
+            let chown = format!("chown /var/lib/ferrum/apps/ledger{path} ferrum-ledger");
+            assert!(calls.contains(&chown), "{calls:#?}");
+        }
             Some(""),
             "the include target must exist or nginx refuses to start"
         );
