@@ -162,7 +162,7 @@ impl Runtime for Bun {
 
     /// Bun's own `node` shim under `/tmp` belongs to whichever app user made it first.
     fn links(&self) -> &'static [(&'static str, &'static str)] {
-        &[("node", "bun")]
+        &[("node", "bun"), ("bunx", "bun")]
     }
 
     fn valid_version(&self, version: &str) -> bool {

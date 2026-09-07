@@ -2,7 +2,7 @@ use super::unit::{render_unit, unit_name, unit_path};
 use super::vhost::{custom_path, render_vhost, vhost_path};
 use super::{App, env};
 use crate::deploy::maintenance;
-use crate::runtime::toolchain::Store;
+use crate::runtime::toolchain::{self, Store};
 use crate::state::State;
 use crate::{APPS_DIR, acme, nginx, redis};
 use anyhow::Context;
@@ -40,8 +40,13 @@ pub async fn provision(state: &State, platform: &dyn Platform, app: &App) -> any
     write_env(state, platform, app).await?;
 
     if app.runtime.has_process() {
-        let toolchain = Store::default().dir(app.toolchain, &app.runtime_version);
-        let unit = render_unit(app, &toolchain)?;
+        let store = Store::default();
+        let extra = toolchain::extra_for(state, &store, app).await?;
+        let unit = render_unit(
+            app,
+            &store.dir(app.toolchain, &app.runtime_version),
+            extra.as_deref(),
+        )?;
         platform.write_file(&unit_path(&app.slug), &unit, 0o644)?;
     } else {
         platform.remove_file(&unit_path(&app.slug))?;

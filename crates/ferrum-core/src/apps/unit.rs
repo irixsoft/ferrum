@@ -12,7 +12,8 @@ pub fn unit_path(slug: &str) -> PathBuf {
     Path::new(SYSTEMD_UNIT_DIR).join(format!("{}.service", unit_name(slug)))
 }
 
-pub fn render_unit(app: &App, toolchain: &Path) -> Result<String, AppError> {
+/// `extra` is the other tool's toolchain when the commands name it, first on PATH as at build.
+pub fn render_unit(app: &App, toolchain: &Path, extra: Option<&Path>) -> Result<String, AppError> {
     if !app.runtime.has_process() {
         return Err(AppError::NoProcess);
     }
@@ -43,7 +44,12 @@ pub fn render_unit(app: &App, toolchain: &Path) -> Result<String, AppError> {
     for (key, value) in
         runtime::by_kind(app.runtime).env_for(Phase::Run, toolchain, app.main_port())
     {
-        unit.push_str(&format!("Environment={key}={value}\n"));
+        match extra {
+            Some(extra) if key == "PATH" => {
+                unit.push_str(&format!("Environment={key}={}:{value}\n", extra.display()))
+            }
+            _ => unit.push_str(&format!("Environment={key}={value}\n")),
+        }
     }
     unit.push_str(&format!("ExecStart={SH} -c '{}'\n", exec_quote(start)));
     unit.push_str("Restart=on-failure\nRestartSec=2\n");
@@ -88,6 +94,7 @@ mod tests {
         let u = render_unit(
             &app("ledger"),
             Path::new("/var/lib/ferrum/runtimes/node/22.11.0"),
+            None,
         )
         .unwrap();
         for line in [
@@ -116,11 +123,24 @@ mod tests {
     }
 
     #[test]
+    fn the_other_tool_s_toolchain_comes_first_on_path_when_the_commands_name_it() {
+        let u = render_unit(
+            &app("ledger"),
+            Path::new("/var/lib/ferrum/runtimes/node/22.11.0"),
+            Some(Path::new("/var/lib/ferrum/runtimes/bun/1.2.3")),
+        )
+        .unwrap();
+        assert!(u.contains(
+            "Environment=PATH=/var/lib/ferrum/runtimes/bun/1.2.3:/var/lib/ferrum/runtimes/node/22.11.0/bin:/usr/local/bin:/usr/bin:/bin\n"
+        ), "{u}");
+    }
+
+    #[test]
     fn a_static_app_has_no_unit() {
         let mut a = app("docs");
         a.runtime = RuntimeKind::Static;
         assert!(matches!(
-            render_unit(&a, Path::new("/x")),
+            render_unit(&a, Path::new("/x"), None),
             Err(AppError::NoProcess)
         ));
     }
@@ -132,7 +152,7 @@ mod tests {
         a.toolchain = RuntimeKind::Dotnet;
         a.runtime_version = "9.0".into();
         a.commands.start = Some("dotnet out/Api.dll".into());
-        let u = render_unit(&a, Path::new("/var/lib/ferrum/runtimes/dotnet/9.0")).unwrap();
+        let u = render_unit(&a, Path::new("/var/lib/ferrum/runtimes/dotnet/9.0"), None).unwrap();
         assert!(u.contains("Environment=ASPNETCORE_URLS=http://127.0.0.1:20000\n"));
         assert!(u.contains("Environment=DOTNET_ROOT=/var/lib/ferrum/runtimes/dotnet/9.0\n"));
     }
@@ -141,7 +161,7 @@ mod tests {
     fn the_start_command_reaches_the_shell_intact() {
         let mut a = app("x");
         a.commands.start = Some("node -e 'console.log(\"$PORT\")' && echo 100%".into());
-        let u = render_unit(&a, Path::new("/t")).unwrap();
+        let u = render_unit(&a, Path::new("/t"), None).unwrap();
         assert!(
             u.contains(r#"ExecStart=/bin/sh -c 'node -e \'console.log("$$PORT")\' && echo 100%%'"#),
             "{u}"

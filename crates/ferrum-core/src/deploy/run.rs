@@ -431,7 +431,7 @@ mod tests {
         let install = position(&calls, |c| {
             c.starts_with("run_scoped") && c.contains("bun install")
         });
-        assert!(link < install, "{calls:#?}");
+        assert!(link < install && bunx < install, "{calls:#?}");
     }
 
     #[tokio::test]
@@ -468,6 +468,9 @@ mod tests {
         );
         assert_eq!(
             build.memory_max_mb, 1536,
+        let bunx = position(&calls, |c| {
+            c == "symlink_swap bun /var/lib/ferrum/runtimes/bun/1.2.3/bunx"
+        });
             "the fake's 2 GiB less the reserve"
         );
         assert_eq!(build.timeout, Duration::from_secs(1200));

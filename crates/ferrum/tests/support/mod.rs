@@ -367,6 +367,7 @@ impl Harness {
         std::fs::write(dir.join(binary), "#!").unwrap();
         if kind == RuntimeKind::Bun {
             let _ = std::os::unix::fs::symlink("bun", dir.join("node"));
+            let _ = std::os::unix::fs::symlink("bun", dir.join("bunx"));
         }
         sqlx::query("INSERT OR IGNORE INTO toolchains (kind, version, path, size_bytes) VALUES (?, ?, ?, 2)")
             .bind(kind.as_str())

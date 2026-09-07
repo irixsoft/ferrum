@@ -7,8 +7,8 @@ use crate::apps::provision::{app_dir, user_name, write_env};
 use crate::apps::unit::unit_name;
 use crate::apps::{App, env};
 use crate::github::commits;
-use crate::runtime::toolchain::{self, Store};
-use crate::runtime::{self, Phase, RuntimeKind};
+use crate::runtime::toolchain;
+use crate::runtime::{Phase, RuntimeKind};
 use crate::{postgres, runtime as rt};
 use anyhow::{Context, bail};
 use ferrum_platform::ubuntu::GIT;
@@ -692,7 +692,8 @@ impl Job {
             .toolchains
             .dir(self.app.toolchain, &self.app.runtime_version);
         let mut env = rt::by_kind(kind).env_for(phase, &toolchain_dir, self.app.main_port());
-        if let Some(extra) = self.extra_toolchain().await?
+        if let Some(extra) =
+            toolchain::extra_for(&self.ctx.state, &self.ctx.toolchains, &self.app).await?
             && let Some(path) = env.iter_mut().find(|(k, _)| k == "PATH")
         {
             path.1 = format!("{}:{}", extra.display(), path.1);
@@ -719,36 +720,6 @@ impl Job {
         let managed = env::managed_for(&self.ctx.state, &self.app).await?;
         env.extend(env::pairs(&vars, &managed, &self.app.routes));
         Ok(dedup_last(env))
-    }
-
-    /// A Node app whose commands start with `bun` needs Bun on the path too, and the reverse.
-    async fn extra_toolchain(&self) -> anyhow::Result<Option<PathBuf>> {
-        let words = [&self.app.commands.install, &self.app.commands.build]
-            .into_iter()
-            .flatten()
-            .filter_map(|c| c.split_whitespace().next());
-        let mut wanted = None;
-        for word in words {
-            match word {
-                "bun" | "bunx" => wanted = Some(RuntimeKind::Bun),
-                "npm" | "npx" | "pnpm" | "yarn" | "node" | "corepack" => {
-                    wanted = Some(RuntimeKind::Node)
-                }
-                _ => {}
-            }
-        }
-        let Some(kind) = wanted.filter(|k| *k != self.app.toolchain) else {
-            return Ok(None);
-        };
-        let mut installed: Vec<_> = toolchain::installed(&self.ctx.state)
-            .await?
-            .into_iter()
-            .filter(|t| t.kind == kind)
-            .collect();
-        installed.sort_by_key(|t| version_key(&t.version));
-        Ok(installed
-            .last()
-            .map(|t| bin_dir(&self.ctx.toolchains, kind, &t.version)))
     }
 
     fn shared(&self) -> PathBuf {
@@ -797,19 +768,6 @@ pub fn looks_like_sha(git_ref: &str) -> bool {
     git_ref.len() >= 7 && git_ref.chars().all(|c| c.is_ascii_hexdigit())
 }
 
-fn bin_dir(store: &Store, kind: RuntimeKind, version: &str) -> PathBuf {
-    let dir = store.dir(kind, version);
-    let binary = runtime::by_kind(kind).binary();
-    dir.join(binary)
-        .parent()
-        .map(Path::to_path_buf)
-        .unwrap_or(dir)
-}
-
-fn version_key(version: &str) -> Vec<u64> {
-    version.split('.').map(|p| p.parse().unwrap_or(0)).collect()
-}
-
 fn dedup_last(env: Vec<(String, String)>) -> Vec<(String, String)> {
     let mut out: Vec<(String, String)> = Vec::with_capacity(env.len());
     for (key, value) in env {
@@ -840,7 +798,7 @@ mod tests {
     }
 
     #[test]
-    fn later_keys_win_and_versions_sort_numerically() {
+    fn later_keys_win() {
         let env = dedup_last(vec![
             ("PATH".into(), "a".into()),
             ("X".into(), "1".into()),
@@ -850,6 +808,5 @@ mod tests {
             env,
             vec![("PATH".into(), "b".into()), ("X".into(), "1".into())]
         );
-        assert!(version_key("1.10.0") > version_key("1.9.3"));
     }
 }

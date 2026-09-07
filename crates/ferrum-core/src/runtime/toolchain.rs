@@ -1,4 +1,5 @@
-use super::{ArchiveFormat, Mirrors, Runtime, RuntimeKind, Source, Target};
+use super::{ArchiveFormat, Mirrors, Runtime, RuntimeKind, Source, Target, by_kind};
+use crate::apps::App;
 use crate::state::State;
 use crate::time;
 use anyhow::{Context, bail};
@@ -84,6 +85,46 @@ pub async fn find(
         .await?
         .into_iter()
         .find(|t| t.kind == kind && t.version == version))
+}
+
+/// The newest installed toolchain of the other tool an app's commands start with: Bun beside
+/// Node when a command starts with `bun`, and the reverse. Never installs one.
+pub async fn extra_for(state: &State, store: &Store, app: &App) -> anyhow::Result<Option<PathBuf>> {
+    let wanted = [
+        &app.commands.install,
+        &app.commands.build,
+        &app.commands.start,
+    ]
+    .into_iter()
+    .flatten()
+    .filter_map(|c| match c.split_whitespace().next() {
+        Some("bun" | "bunx") => Some(RuntimeKind::Bun),
+        Some("npm" | "npx" | "pnpm" | "yarn" | "node" | "corepack") => Some(RuntimeKind::Node),
+        _ => None,
+    })
+    .find(|k| *k != app.toolchain);
+    let Some(kind) = wanted else {
+        return Ok(None);
+    };
+    let mut found: Vec<_> = installed(state)
+        .await?
+        .into_iter()
+        .filter(|t| t.kind == kind)
+        .collect();
+    found.sort_by_key(|t| version_key(&t.version));
+    Ok(found.last().map(|t| bin_dir(store, kind, &t.version)))
+}
+
+pub fn bin_dir(store: &Store, kind: RuntimeKind, version: &str) -> PathBuf {
+    let dir = store.dir(kind, version);
+    dir.join(by_kind(kind).binary())
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or(dir)
+}
+
+fn version_key(version: &str) -> Vec<u64> {
+    version.split('.').map(|p| p.parse().unwrap_or(0)).collect()
 }
 
 async fn record(
@@ -607,7 +648,39 @@ mod tests {
         std::os::unix::fs::symlink("bin/node", installed_at.join("node")).unwrap();
         link(&platform, &Linked, &installed_at).unwrap();
         assert_eq!(platform.calls_matching("symlink_swap").len(), 1);
-        assert!(Bun.links().contains(&("node", "bun")));
+        assert_eq!(Bun.links(), &[("node", "bun"), ("bunx", "bun")]);
+    }
+
+    #[tokio::test]
+    async fn an_app_whose_commands_name_the_other_tool_gets_its_newest_installed_toolchain() {
+        let (_dir, state) = state().await;
+        let store = Store::at("/r");
+        let app = crate::apps::tests::app("ledger");
+        assert_eq!(app.toolchain, RuntimeKind::Node);
+        assert_eq!(app.commands.start.as_deref(), Some("bun run start"));
+        assert_eq!(extra_for(&state, &store, &app).await.unwrap(), None);
+
+        for version in ["1.9.3", "1.10.0"] {
+            record(
+                &state,
+                RuntimeKind::Bun,
+                version,
+                &store.dir(RuntimeKind::Bun, version),
+                1,
+            )
+            .await
+            .unwrap();
+        }
+        assert_eq!(
+            extra_for(&state, &store, &app).await.unwrap(),
+            Some(PathBuf::from("/r/bun/1.10.0"))
+        );
+
+        let mut node_only = app.clone();
+        node_only.commands.install = Some("npm ci".into());
+        node_only.commands.build = None;
+        node_only.commands.start = Some("node server.js".into());
+        assert_eq!(extra_for(&state, &store, &node_only).await.unwrap(), None);
     }
 
     #[tokio::test]
