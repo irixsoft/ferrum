@@ -28,6 +28,13 @@ impl Deployer {
                 }
                 Err(e) => tracing::error!(error = ?e, "could not fail interrupted deploys"),
             }
+            match crate::apps::commands::close_interrupted(&worker.state).await {
+                Ok(0) => {}
+                Ok(n) => {
+                    tracing::warn!(count = n, "commands interrupted by the restart were closed")
+                }
+                Err(e) => tracing::error!(error = ?e, "could not close interrupted commands"),
+            }
             while let Some(id) = rx.recv().await {
                 let waiting = by_id(&worker.state, &id)
                     .await

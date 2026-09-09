@@ -53,7 +53,7 @@ impl Ctx {
     }
 
     /// The limits are settings, read at the start of every run so a change applies next time.
-    async fn with_current_limits(&self) -> anyhow::Result<Self> {
+    pub(crate) async fn with_current_limits(&self) -> anyhow::Result<Self> {
         let limits = settings::build_limits(&self.state, self.platform.as_ref()).await?;
         Ok(Self {
             build_memory_mb: limits.memory_mb,

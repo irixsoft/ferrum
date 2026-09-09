@@ -79,6 +79,15 @@ export interface LogLine {
   text: string;
 }
 
+export interface CommandRun {
+  id: string;
+  app_id: string;
+  command: string;
+  started_at: string;
+  finished_at: string | null;
+  exit: string | null;
+}
+
 export type CertStatus =
   | { kind: "issued"; not_after: string }
   | { kind: "waiting_for_dns"; detail: string }

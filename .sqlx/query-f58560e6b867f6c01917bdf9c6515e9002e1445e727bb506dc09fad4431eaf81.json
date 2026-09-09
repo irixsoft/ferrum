@@ -1,0 +1,20 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT count(*) AS \"n!\" FROM command_runs WHERE app_id = ? AND finished_at IS NULL",
+  "describe": {
+    "columns": [
+      {
+        "name": "n!",
+        "ordinal": 0,
+        "type_info": "Integer"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "f58560e6b867f6c01917bdf9c6515e9002e1445e727bb506dc09fad4431eaf81"
+}

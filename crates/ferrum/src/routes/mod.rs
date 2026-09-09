@@ -1,5 +1,6 @@
 pub mod apps;
 pub mod auth;
+pub mod commands;
 pub mod databases;
 pub mod deploys;
 pub mod error;

@@ -706,68 +706,22 @@ impl Job {
                 bail!(env_scan::failure_sentence(what, &named));
             }
         }
-        match exit {
-            Exit::Code(0) => Ok(()),
-            Exit::Killed { signal: 9 } | Exit::Code(137) => bail!(
-                "The {what} exceeded {} MB and was stopped. Raise the build limit or reduce peak memory.",
-                self.ctx.build_memory_mb
-            ),
-            Exit::TimedOut => bail!(
-                "The {what} did not finish within {} minutes.",
-                timeout.as_secs() / 60
-            ),
-            Exit::Killed { signal } => bail!("The {what} was killed by signal {signal}."),
-            Exit::Code(code) => {
+        let sentence = exit_sentence(what, &exit, self.ctx.build_memory_mb, timeout);
+        match (exit, sentence) {
+            (_, None) => Ok(()),
+            (Exit::Code(_), Some(sentence)) => {
                 let tail = last_stderr
                     .or(last)
                     .map(|l| format!(": {l}"))
                     .unwrap_or_default();
-                bail!("The {what} exited with status {code}{tail}")
+                bail!("{sentence}{tail}")
             }
+            (_, Some(sentence)) => bail!("{sentence}"),
         }
     }
 
-    /// The same content as `shared/.env`, so the build sees what the unit will, plus the
-    /// toolchain, a writable home and the caches.
     async fn command_env(&self, phase: Phase) -> anyhow::Result<Vec<(String, String)>> {
-        let kind = match phase {
-            Phase::Build => self.app.toolchain,
-            Phase::Run if self.app.runtime.has_process() => self.app.runtime,
-            Phase::Run => self.app.toolchain,
-        };
-        let toolchain_dir = self
-            .ctx
-            .toolchains
-            .dir(self.app.toolchain, &self.app.runtime_version);
-        let mut env = rt::by_kind(kind).env_for(phase, &toolchain_dir, self.app.main_port());
-        if let Some(extra) =
-            toolchain::extra_for(&self.ctx.state, &self.ctx.toolchains, &self.app).await?
-            && let Some(path) = env.iter_mut().find(|(k, _)| k == "PATH")
-        {
-            path.1 = format!("{}:{}", extra.display(), path.1);
-        }
-        let shared = self.shared();
-        let user = user_name(&self.app.slug);
-        env.push(("HOME".into(), shared.to_string_lossy().into()));
-        env.push(("USER".into(), user.clone()));
-        env.push(("LOGNAME".into(), user));
-        env.push(("LANG".into(), "C.UTF-8".into()));
-        for (key, dir) in [
-            ("npm_config_cache", "npm"),
-            ("BUN_INSTALL_CACHE_DIR", "bun"),
-            ("npm_config_store_dir", "pnpm"),
-            ("YARN_CACHE_FOLDER", "yarn"),
-            ("NUGET_PACKAGES", "nuget"),
-        ] {
-            env.push((
-                key.into(),
-                shared.join("cache").join(dir).to_string_lossy().into(),
-            ));
-        }
-        let vars = env::all(&self.ctx.state, &self.app.id).await?;
-        let managed = env::managed_for(&self.ctx.state, &self.app).await?;
-        env.extend(env::pairs(&vars, &managed, &self.app.routes));
-        Ok(dedup_last(env))
+        command_env(&self.ctx, &self.app, phase).await
     }
 
     fn shared(&self) -> PathBuf {
@@ -802,6 +756,65 @@ fn hint_file(source: &str) -> Option<String> {
         .strip_prefix("from ")
         .or_else(|| source.strip_prefix("referenced in "))
         .map(str::to_string)
+}
+
+/// The same content as `shared/.env`, so a command sees what the unit will, plus the
+/// toolchain, a writable home and the caches.
+pub async fn command_env(
+    ctx: &Ctx,
+    app: &App,
+    phase: Phase,
+) -> anyhow::Result<Vec<(String, String)>> {
+    let kind = match phase {
+        Phase::Build => app.toolchain,
+        Phase::Run if app.runtime.has_process() => app.runtime,
+        Phase::Run => app.toolchain,
+    };
+    let toolchain_dir = ctx.toolchains.dir(app.toolchain, &app.runtime_version);
+    let mut env = rt::by_kind(kind).env_for(phase, &toolchain_dir, app.main_port());
+    if let Some(extra) = toolchain::extra_for(&ctx.state, &ctx.toolchains, app).await?
+        && let Some(path) = env.iter_mut().find(|(k, _)| k == "PATH")
+    {
+        path.1 = format!("{}:{}", extra.display(), path.1);
+    }
+    let shared = app_dir(&app.slug).join("shared");
+    let user = user_name(&app.slug);
+    env.push(("HOME".into(), shared.to_string_lossy().into()));
+    env.push(("USER".into(), user.clone()));
+    env.push(("LOGNAME".into(), user));
+    env.push(("LANG".into(), "C.UTF-8".into()));
+    for (key, dir) in [
+        ("npm_config_cache", "npm"),
+        ("BUN_INSTALL_CACHE_DIR", "bun"),
+        ("npm_config_store_dir", "pnpm"),
+        ("YARN_CACHE_FOLDER", "yarn"),
+        ("NUGET_PACKAGES", "nuget"),
+    ] {
+        env.push((
+            key.into(),
+            shared.join("cache").join(dir).to_string_lossy().into(),
+        ));
+    }
+    let vars = env::all(&ctx.state, &app.id).await?;
+    let managed = env::managed_for(&ctx.state, app).await?;
+    env.extend(env::pairs(&vars, &managed, &app.routes));
+    Ok(dedup_last(env))
+}
+
+/// A sentence for an exit that is not success, or `None` for status 0.
+pub fn exit_sentence(what: &str, exit: &Exit, memory_mb: u64, timeout: Duration) -> Option<String> {
+    Some(match exit {
+        Exit::Code(0) => return None,
+        Exit::Killed { signal: 9 } | Exit::Code(137) => format!(
+            "The {what} exceeded {memory_mb} MB and was stopped. Raise the build limit or reduce peak memory."
+        ),
+        Exit::TimedOut => format!(
+            "The {what} did not finish within {} minutes.",
+            timeout.as_secs() / 60
+        ),
+        Exit::Killed { signal } => format!("The {what} was killed by signal {signal}."),
+        Exit::Code(code) => format!("The {what} exited with status {code}"),
+    })
 }
 
 pub fn work_dir(release: &Path, root: &str) -> PathBuf {

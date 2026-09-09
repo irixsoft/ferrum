@@ -38,11 +38,12 @@ import { DeployLog } from "./DeployLog";
 import { EnvironmentPanel } from "./EnvironmentPanel";
 import { NginxPanel } from "./NginxPanel";
 import { LogPanel } from "./LogPanel";
+import { RunPanel } from "./RunPanel";
 import { RollbackDialog } from "./RollbackDialog";
 import { ago, bytes, daysUntil, duration } from "@/lib/utils";
 import type { AppDetail, CertStatus, Deploy, Release } from "@/types/api";
 
-type Tab = "overview" | "configuration" | "environment" | "deploys" | "logs" | "nginx";
+type Tab = "overview" | "configuration" | "environment" | "deploys" | "logs" | "run" | "nginx";
 
 const message = (e: unknown) => (e instanceof ApiError ? e.message : e ? String(e) : null);
 const short = (sha: string | null) => (sha ? sha.slice(0, 7) : "");
@@ -145,6 +146,7 @@ export function AppDetailPage({ slug }: { slug: string }) {
           { value: "environment", label: "Environment", count: app.env.filter((e) => e.set).length },
           { value: "deploys", label: "Deploys", count: deploys.length || undefined },
           { value: "logs", label: "Logs" },
+          ...(app.runtime !== "static" ? [{ value: "run" as const, label: "Run" }] : []),
           { value: "nginx", label: "nginx" },
         ]}
       />
@@ -162,6 +164,7 @@ export function AppDetailPage({ slug }: { slug: string }) {
       )}
       {tab === "deploys" && <Deploys app={app} deploys={deploys} />}
       {tab === "logs" && <LogPanel slug={app.slug} hasProcess={app.runtime !== "static"} />}
+      {tab === "run" && <RunPanel slug={app.slug} neverLive={app.never_live} deploying={active !== undefined} />}
       {tab === "nginx" && <NginxPanel slug={app.slug} />}
     </>
   );

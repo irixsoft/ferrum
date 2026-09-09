@@ -1,0 +1,26 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO command_logs (run_id, seq, stream, line)\n           VALUES (?, (SELECT coalesce(max(seq), 0) + 1 FROM command_logs WHERE run_id = ?), ?, ?)\n           RETURNING seq AS \"seq!\", at AS \"at!\"",
+  "describe": {
+    "columns": [
+      {
+        "name": "seq!",
+        "ordinal": 0,
+        "type_info": "Integer"
+      },
+      {
+        "name": "at!",
+        "ordinal": 1,
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Right": 4
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "d2d1dbd4c48464dc83bd5728f489918d3a80037a798624956c53adba1269f87c"
+}

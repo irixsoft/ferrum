@@ -1,3 +1,4 @@
+pub mod commands;
 pub mod env;
 pub mod packages;
 pub mod ports;

@@ -1,0 +1,50 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT id AS \"id!\", app_id AS \"app_id!\", command AS \"command!\",\n                  started_at AS \"started_at!\", finished_at, exit\n           FROM command_runs WHERE app_id = ? ORDER BY started_at DESC, rowid DESC LIMIT ?",
+  "describe": {
+    "columns": [
+      {
+        "name": "id!",
+        "ordinal": 0,
+        "type_info": "Text"
+      },
+      {
+        "name": "app_id!",
+        "ordinal": 1,
+        "type_info": "Text"
+      },
+      {
+        "name": "command!",
+        "ordinal": 2,
+        "type_info": "Text"
+      },
+      {
+        "name": "started_at!",
+        "ordinal": 3,
+        "type_info": "Text"
+      },
+      {
+        "name": "finished_at",
+        "ordinal": 4,
+        "type_info": "Text"
+      },
+      {
+        "name": "exit",
+        "ordinal": 5,
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      true,
+      true
+    ]
+  },
+  "hash": "d5885e9d1b46061ef5b392a4d718fcd7e65f8c2c05287ac577fef79d21618a80"
+}

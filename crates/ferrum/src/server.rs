@@ -216,6 +216,7 @@ fn router(state: AppState) -> Router {
         .merge(crate::routes::runtimes::router())
         .merge(crate::routes::databases::router())
         .merge(crate::routes::deploys::router())
+        .merge(crate::routes::commands::router())
         .merge(crate::routes::host::router())
         .merge(crate::routes::logs::router())
         .merge(crate::routes::security::router())

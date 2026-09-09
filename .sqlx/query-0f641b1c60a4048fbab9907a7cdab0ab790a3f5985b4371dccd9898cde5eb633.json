@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE command_runs SET finished_at = datetime('now'), exit = ? WHERE id = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": []
+  },
+  "hash": "0f641b1c60a4048fbab9907a7cdab0ab790a3f5985b4371dccd9898cde5eb633"
+}

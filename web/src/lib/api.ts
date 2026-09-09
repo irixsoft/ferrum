@@ -4,6 +4,7 @@ import type {
   ApiToken,
   App,
   AppChanges,
+  CommandRun,
   AppDetail,
   AppLogLine,
   BuildLimits,
@@ -94,6 +95,7 @@ export const keys = {
   running: ["deploys", "running"] as const,
   deploy: (id: string) => ["deploys", "one", id] as const,
   appDeploys: (slug: string) => ["deploys", "app", slug] as const,
+  commands: (slug: string) => ["commands", slug] as const,
   releases: (slug: string) => ["releases", slug] as const,
   postgres: ["postgres"] as const,
   extensions: ["postgres", "extensions"] as const,
@@ -487,6 +489,20 @@ export function useReleaseRedis(slug: string) {
   );
 }
 
+export function useCommandRuns(slug: string) {
+  return useQuery({
+    queryKey: keys.commands(slug),
+    queryFn: () => request<CommandRun[]>(`/apps/${slug}/commands`),
+    refetchInterval: (query) => (query.state.data?.some((r) => r.finished_at === null) ? 2000 : false),
+  });
+}
+
+export function useRunCommand(slug: string) {
+  return useInvalidating(keys.commands(slug), (command: string) =>
+    request<CommandRun>(`/apps/${slug}/commands`, body({ command })),
+  );
+}
+
 export function useTriggerDeploy(slug: string) {
   return useInvalidating([keys.deploys, keys.apps], (ref?: string) =>
     request<Deploy>(`/apps/${slug}/deploys`, body(ref ? { ref } : {})),
@@ -640,6 +656,28 @@ export async function followDeployLog(
   );
   if (outcome === null) throw new ApiError(0, "The log ended before the deploy did.");
   return outcome;
+}
+
+/** Stored lines first, then live ones; resolves with the exit sentence once the command ends. */
+export async function followCommandLog(
+  id: string,
+  onLine: (line: LogLine) => void,
+  signal?: AbortSignal,
+): Promise<string> {
+  let exit: string | null = null;
+  await readFrames(
+    `/commands/${id}/log`,
+    (event, data) => {
+      if (event === "done") {
+        exit = (JSON.parse(data) as { exit: string }).exit;
+        return true;
+      }
+      if (event === "line") onLine(JSON.parse(data) as LogLine);
+    },
+    signal,
+  );
+  if (exit === null) throw new ApiError(0, "The log ended before the command did.");
+  return exit;
 }
 
 /** The last lines, then live ones from journald; ends only when `signal` aborts. */

@@ -19,6 +19,8 @@ pub struct Line {
 pub enum Event {
     Line { deploy_id: String, line: Line },
     Done { deploy_id: String, outcome: Outcome },
+    RunLine { run_id: String, line: Line },
+    RunDone { run_id: String, exit: String },
 }
 
 #[derive(Clone)]
@@ -43,6 +45,13 @@ impl Log {
         let _ = self.tx.send(Event::Done {
             deploy_id: deploy_id.to_string(),
             outcome,
+        });
+    }
+
+    pub fn run_done(&self, run_id: &str, exit: &str) {
+        let _ = self.tx.send(Event::RunDone {
+            run_id: run_id.to_string(),
+            exit: exit.to_string(),
         });
     }
 }
@@ -96,6 +105,58 @@ pub async fn lines(state: &State, deploy_id: &str, after_seq: i64) -> anyhow::Re
         r#"SELECT seq AS "seq!", at AS "at!", stream AS "stream!", line AS "line!"
            FROM deploy_logs WHERE deploy_id = ? AND seq > ? ORDER BY seq"#,
         deploy_id,
+        after_seq
+    )
+    .fetch_all(&state.pool)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .map(|r| Line {
+            seq: r.seq,
+            at: time::utc(r.at),
+            stream: r.stream,
+            text: r.line,
+        })
+        .collect())
+}
+
+pub async fn append_run(
+    state: &State,
+    log: &Log,
+    run_id: &str,
+    stream: &str,
+    text: &str,
+) -> anyhow::Result<Line> {
+    let text = redact(text);
+    let row = sqlx::query!(
+        r#"INSERT INTO command_logs (run_id, seq, stream, line)
+           VALUES (?, (SELECT coalesce(max(seq), 0) + 1 FROM command_logs WHERE run_id = ?), ?, ?)
+           RETURNING seq AS "seq!", at AS "at!""#,
+        run_id,
+        run_id,
+        stream,
+        text
+    )
+    .fetch_one(&state.pool)
+    .await?;
+    let line = Line {
+        seq: row.seq,
+        at: time::utc(row.at),
+        stream: stream.to_string(),
+        text,
+    };
+    let _ = log.tx.send(Event::RunLine {
+        run_id: run_id.to_string(),
+        line: line.clone(),
+    });
+    Ok(line)
+}
+
+pub async fn run_lines(state: &State, run_id: &str, after_seq: i64) -> anyhow::Result<Vec<Line>> {
+    let rows = sqlx::query!(
+        r#"SELECT seq AS "seq!", at AS "at!", stream AS "stream!", line AS "line!"
+           FROM command_logs WHERE run_id = ? AND seq > ? ORDER BY seq"#,
+        run_id,
         after_seq
     )
     .fetch_all(&state.pool)

@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO command_runs (id, app_id, command) VALUES (?, ?, ?)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": []
+  },
+  "hash": "ac3b7ed1716a6877366cd24a6ae2c53fdb7760c0ea44f5007f7cc52d76ecc7e5"
+}
