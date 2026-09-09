@@ -3,8 +3,6 @@ import { DesktopShell } from "./DesktopShell";
 import { MobileShell } from "./MobileShell";
 import { useShell } from "./useShell";
 import { CommandPalette } from "@/components/CommandPalette";
-import { ConnectionBanner } from "@/components/ConnectionBanner";
-import { UpdateBanner } from "@/components/UpdateBanner";
 import { UpdatePrompt } from "@/components/UpdatePrompt";
 
 export function Shell({ children }: { children: ReactNode }) {
@@ -13,8 +11,6 @@ export function Shell({ children }: { children: ReactNode }) {
 
   return (
     <>
-      <ConnectionBanner />
-      <UpdateBanner />
       <Chrome>{children}</Chrome>
       <CommandPalette />
       <UpdatePrompt />

@@ -2,6 +2,8 @@ import { Link, useRouterState } from "@tanstack/react-router";
 import type { ReactNode } from "react";
 import { Moon, Sun } from "lucide-react";
 import { Wordmark } from "@/components/Brand";
+import { ConnectionBanner } from "@/components/ConnectionBanner";
+import { UpdateBanner } from "@/components/UpdateBanner";
 import { DeployRail } from "@/components/DeployLadder";
 import { RailButton } from "@/components/ui/RailButton";
 import { Pill, PillIcon } from "@/components/ui/Pill";
@@ -26,6 +28,8 @@ export function DesktopShell({ children }: { children: ReactNode }) {
   return (
     <div className="h-dvh bg-shell p-3">
       <div className="h-full rounded-shell bg-canvas overflow-hidden flex flex-col">
+        <ConnectionBanner />
+        <UpdateBanner />
         <header className="h-20 shrink-0 flex items-center gap-4 px-8">
           <Link to="/" className="text-ink shrink-0" aria-label="Ferrum, dashboard">
             <Wordmark height={26} />

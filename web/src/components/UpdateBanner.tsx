@@ -1,9 +1,8 @@
-import { useState } from "react";
 import { ArrowUpCircle, ShieldAlert } from "lucide-react";
-import { ApiError, useApplyUpdate, useUpdate } from "@/lib/api";
+import { useUpdate } from "@/lib/api";
 import { summary } from "@/lib/release";
 import { cn } from "@/lib/utils";
-import { Button } from "./ui/Button";
+import { UpdateAction } from "./UpdateAction";
 
 const STEPS: Record<string, string> = {
   download: "Downloading the release",
@@ -15,19 +14,16 @@ const STEPS: Record<string, string> = {
 
 export function UpdateBanner() {
   const { data } = useUpdate();
-  const apply = useApplyUpdate();
-  const [confirming, setConfirming] = useState(false);
 
   if (!data?.latest || (!data.available && !data.restarting)) return null;
   const { latest } = data;
   const security = latest.security;
-  const failed = apply.error instanceof ApiError ? apply.error.message : data.error;
 
   return (
     <div
       role="status"
       className={cn(
-        "border-b px-5 py-2.5 flex items-center gap-3 flex-wrap",
+        "shrink-0 border-b px-5 py-2.5 flex items-center gap-3 flex-wrap",
         security ? "bg-fail-soft border-fail/25" : "bg-accent-soft border-accent/20",
       )}
     >
@@ -55,37 +51,11 @@ export function UpdateBanner() {
             <a href={latest.url} target="_blank" rel="noreferrer" className="text-accent hover:underline">
               Release notes
             </a>
-            {failed ? <span className="text-fail"> · {failed}</span> : null}
+            {data.error ? <span className="text-fail"> · {data.error}</span> : null}
           </>
         )}
       </div>
-      {!data.running && !data.restarting ? (
-        confirming ? (
-          <div className="flex items-center gap-2 flex-wrap">
-            <span className="text-[12.5px] text-ink-2">
-              Ferrum restarts for a few seconds; your applications keep running.
-            </span>
-            <Button size="sm" variant="ghost" onClick={() => setConfirming(false)}>
-              Not now
-            </Button>
-            <Button
-              size="sm"
-              variant={security ? "danger" : "primary"}
-              disabled={apply.isPending}
-              onClick={async () => {
-                await apply.mutateAsync().catch(() => undefined);
-                setConfirming(false);
-              }}
-            >
-              Update now
-            </Button>
-          </div>
-        ) : (
-          <Button size="sm" variant={security ? "danger" : "primary"} onClick={() => setConfirming(true)}>
-            {failed ? "Try again" : "Update"}
-          </Button>
-        )
-      ) : null}
+      {!data.running && !data.restarting ? <UpdateAction security={security} error={data.error} /> : null}
     </div>
   );
 }

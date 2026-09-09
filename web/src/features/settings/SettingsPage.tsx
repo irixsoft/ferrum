@@ -30,6 +30,7 @@ import { useShell } from "@/shells/useShell";
 import { useTheme, type Theme } from "@/lib/theme";
 import { PageTitle } from "@/components/PageTitle";
 import { Handoff } from "@/components/Handoff";
+import { UpdateAction } from "@/components/UpdateAction";
 import { Card, CardBody, CardFoot, CardHeader } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
 import { Badge } from "@/components/ui/Badge";
@@ -536,9 +537,14 @@ function Updates() {
         title="Updates"
         hint="Checked daily against the latest release on GitHub"
         action={
-          <Button size="sm" disabled={check.isPending || update.running} onClick={() => check.mutate()}>
-            {check.isPending ? "Checking…" : "Check now"}
-          </Button>
+          <>
+            {update.available && latest && !update.running && !update.restarting ? (
+              <UpdateAction security={latest.security} error={update.error} />
+            ) : null}
+            <Button size="sm" disabled={check.isPending || update.running} onClick={() => check.mutate()}>
+              {check.isPending ? "Checking…" : "Check now"}
+            </Button>
+          </>
         }
       />
       <CardBody>

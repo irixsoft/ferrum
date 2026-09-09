@@ -2,6 +2,8 @@ import { Link, useRouterState } from "@tanstack/react-router";
 import type { ReactNode } from "react";
 import { ChevronLeft } from "lucide-react";
 import { Mark } from "@/components/Brand";
+import { ConnectionBanner } from "@/components/ConnectionBanner";
+import { UpdateBanner } from "@/components/UpdateBanner";
 import { ThemeToggle } from "@/components/ThemeToggle";
 import { DeployRail } from "@/components/DeployLadder";
 import { NAV } from "@/components/nav";
@@ -21,6 +23,8 @@ export function MobileShell({ children }: { children: ReactNode }) {
   return (
     <div className="min-h-dvh flex flex-col bg-canvas">
       <header className="sticky top-0 z-40 bg-canvas/90 backdrop-blur border-b border-line pt-safe">
+        <ConnectionBanner />
+        <UpdateBanner />
         <div className="h-13 flex items-center gap-2 px-4">
           {isDetail ? (
             <Link
