@@ -7,6 +7,7 @@ use support::signed_in;
 async fn requesting_redis_from_an_app_injects_redis_url() {
     let (h, cookie) = signed_in().await;
     h.create_app("ledger", &cookie).await;
+    h.platform.set_active("ferrum-redis-ledger");
     let res = h
         .post_with_cookie("/api/apps/ledger/redis", "", &cookie)
         .await;
@@ -49,6 +50,7 @@ async fn requesting_redis_from_an_app_injects_redis_url() {
 async fn memory_is_taken_from_the_body_and_checked() {
     let (h, cookie) = signed_in().await;
     h.create_app("ledger", &cookie).await;
+    h.platform.set_active("ferrum-redis-ledger");
     let tiny = h
         .post_with_cookie("/api/apps/ledger/redis", r#"{"maxmemory_mb":4}"#, &cookie)
         .await;
@@ -70,6 +72,7 @@ async fn memory_is_taken_from_the_body_and_checked() {
 async fn releasing_redis_removes_the_url_and_the_unit() {
     let (h, cookie) = signed_in().await;
     h.create_app("ledger", &cookie).await;
+    h.platform.set_active("ferrum-redis-ledger");
     h.post_with_cookie("/api/apps/ledger/redis", "", &cookie)
         .await;
     let res = h
@@ -94,6 +97,7 @@ async fn releasing_redis_removes_the_url_and_the_unit() {
 async fn deleting_the_app_removes_its_redis_but_keeps_the_database() {
     let (h, cookie) = signed_in().await;
     h.create_app("ledger", &cookie).await;
+    h.platform.set_active("ferrum-redis-ledger");
     h.platform.set_postgres_major(18);
     h.post_with_cookie(
         "/api/databases",
@@ -124,6 +128,7 @@ async fn deleting_the_app_removes_its_redis_but_keeps_the_database() {
 async fn a_host_that_refuses_redis_answers_with_the_reason() {
     let (h, cookie) = signed_in().await;
     h.create_app("ledger", &cookie).await;
+    h.platform.set_active("ferrum-redis-ledger");
     h.platform.fail_next("service enable-now ferrum-redis");
     let res = h
         .post_with_cookie("/api/apps/ledger/redis", "", &cookie)

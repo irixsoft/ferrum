@@ -1,0 +1,38 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT a.slug AS \"slug!\", r.password AS \"password!\", r.maxmemory_mb AS \"maxmemory_mb!\",\n                  p.port AS \"port!\"\n           FROM redis_instances r\n           JOIN apps a ON a.id = r.app_id\n           JOIN app_ports p ON p.app_id = r.app_id AND p.name = ?\n           ORDER BY a.slug",
+  "describe": {
+    "columns": [
+      {
+        "name": "slug!",
+        "ordinal": 0,
+        "type_info": "Text"
+      },
+      {
+        "name": "password!",
+        "ordinal": 1,
+        "type_info": "Text"
+      },
+      {
+        "name": "maxmemory_mb!",
+        "ordinal": 2,
+        "type_info": "Integer"
+      },
+      {
+        "name": "port!",
+        "ordinal": 3,
+        "type_info": "Integer"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "e01596c04cd8dbb93842dae23610d9059324c7ab69862df79d7db017c7625546"
+}

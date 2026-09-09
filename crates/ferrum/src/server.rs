@@ -263,6 +263,11 @@ pub async fn serve(data_dir: &Path) -> anyhow::Result<()> {
             Err(e) => tracing::warn!(error = %e, "refreshing the panel vhost"),
         }
     }
+    match ferrum_core::redis::refresh(&state, deps.platform.as_ref()).await {
+        Ok(0) => {}
+        Ok(n) => tracing::info!(instances = n, "redis configuration refreshed"),
+        Err(e) => tracing::warn!(error = %e, "refreshing the redis configuration"),
+    }
     let app_state = AppState::new(state.clone(), deps);
     ferrum_core::certs::spawn_sweeper(
         state.clone(),

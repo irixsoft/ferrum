@@ -18,6 +18,7 @@ pub fn ensure_installed(platform: &dyn Platform, codename: &str) -> anyhow::Resu
     platform.add_apt_repo(REPO_NAME, REDIS_KEY_URL, &redis_repo_line(codename))?;
     platform.service(ServiceAction::Mask, REDIS_DISTRO_UNIT)?;
     platform.install_packages(&[PACKAGE])?;
+    platform.set_sysctl(super::OVERCOMMIT.0, super::OVERCOMMIT.1)?;
     Ok(())
 }
 
@@ -45,7 +46,11 @@ mod tests {
             .iter()
             .position(|c| c == "install_packages redis")
             .unwrap();
-        assert!(repo < mask && mask < pkg, "{calls:#?}");
+        let sysctl = calls
+            .iter()
+            .position(|c| c == "set_sysctl vm.overcommit_memory 1")
+            .unwrap();
+        assert!(repo < mask && mask < pkg && pkg < sysctl, "{calls:#?}");
     }
 
     #[test]
@@ -55,5 +60,6 @@ mod tests {
         ensure_installed(&p, "noble").unwrap();
         assert!(p.calls_matching("install_packages").is_empty());
         assert!(p.calls_matching("add_apt_repo").is_empty());
+        assert!(p.calls_matching("set_sysctl").is_empty());
     }
 }

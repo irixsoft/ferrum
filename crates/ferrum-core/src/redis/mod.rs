@@ -12,6 +12,7 @@ use serde::Serialize;
 use std::path::{Path, PathBuf};
 
 pub const PORT_NAME: &str = "redis";
+pub const OVERCOMMIT: (&str, &str) = ("vm.overcommit_memory", "1");
 pub const DEFAULT_MAXMEMORY_MB: u32 = 64;
 pub const MAXMEMORY_RANGE: std::ops::RangeInclusive<u32> = 16..=16_384;
 
@@ -73,7 +74,7 @@ pub fn render_conf(slug: &str, port: u16, password: &str, maxmemory_mb: u32) -> 
     c.push_str(&format!("maxmemory {maxmemory_mb}mb\n"));
     c.push_str("maxmemory-policy noeviction\n");
     c.push_str("appendonly yes\n");
-    c.push_str("appendonlydir appendonlydir\n");
+    c.push_str("appenddirname appendonlydir\n");
     c.push_str("save \"\"\n");
     c
 }
@@ -214,8 +215,55 @@ fn provision(
     platform.chown_tree(&dir, &user_name(slug))?;
     platform.write_file(&unit_path(slug), &render_unit(slug), 0o644)?;
     platform.service(ServiceAction::DaemonReload, "")?;
-    platform.service(ServiceAction::EnableNow, &unit_name(slug))?;
+    let unit = unit_name(slug);
+    platform.service(ServiceAction::EnableNow, &unit)?;
+    if !platform.service_is_active(&unit) {
+        let tail = platform
+            .journal_tail(&unit, 10)
+            .map(|lines| {
+                lines
+                    .into_iter()
+                    .map(|l| l.message)
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            })
+            .unwrap_or_default();
+        anyhow::bail!("Redis did not start:\n{tail}");
+    }
     Ok(())
+}
+
+/// A conf that differs from what this build renders is rewritten and its unit restarted.
+pub async fn refresh(state: &State, platform: &dyn Platform) -> anyhow::Result<usize> {
+    if !installed(platform) {
+        return Ok(0);
+    }
+    platform.set_sysctl(OVERCOMMIT.0, OVERCOMMIT.1)?;
+    let rows = sqlx::query!(
+        r#"SELECT a.slug AS "slug!", r.password AS "password!", r.maxmemory_mb AS "maxmemory_mb!",
+                  p.port AS "port!"
+           FROM redis_instances r
+           JOIN apps a ON a.id = r.app_id
+           JOIN app_ports p ON p.app_id = r.app_id AND p.name = ?
+           ORDER BY a.slug"#,
+        PORT_NAME
+    )
+    .fetch_all(&state.pool)
+    .await?;
+    let mut rewritten = 0;
+    for r in rows {
+        let password = secrets::decrypt(&state.key, &r.password)?;
+        let wanted = render_conf(&r.slug, r.port as u16, &password, r.maxmemory_mb as u32);
+        let path = conf_path(&r.slug);
+        if platform.read_file(&path)?.as_deref() == Some(wanted.as_str()) {
+            continue;
+        }
+        platform.write_file(&path, &wanted, 0o600)?;
+        platform.chown(&path, &user_name(&r.slug))?;
+        platform.service(ServiceAction::Restart, &unit_name(&r.slug))?;
+        rewritten += 1;
+    }
+    Ok(rewritten)
 }
 
 fn remove_from_host(platform: &dyn Platform, slug: &str) {
@@ -281,7 +329,7 @@ mod tests {
             "maxmemory 64mb",
             "maxmemory-policy noeviction",
             "appendonly yes",
-            "appendonlydir appendonlydir",
+            "appenddirname appendonlydir",
             "dir /var/lib/ferrum/redis/ledger",
             "supervised systemd",
             "daemonize no",
@@ -294,6 +342,7 @@ mod tests {
                 "missing {line}\n{conf}"
             );
         }
+        assert!(!conf.contains("appendonlydir appendonlydir"));
     }
 
     #[test]
@@ -319,10 +368,16 @@ mod tests {
         assert_eq!(url(20001, "pw"), "redis://:pw@127.0.0.1:20001/0");
     }
 
+    fn platform() -> FakePlatform {
+        let p = FakePlatform::new();
+        p.set_active("ferrum-redis-ledger");
+        p
+    }
+
     #[tokio::test]
     async fn requesting_redis_reserves_a_port_writes_the_files_and_starts_the_unit() {
         let (_d, state) = state().await;
-        let p = FakePlatform::new();
+        let p = platform();
         let app = apps::create(&state, new_app("ledger", &[("/", "main", false)]))
             .await
             .unwrap();
@@ -393,9 +448,85 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn releasing_redis_stops_removes_and_frees_the_port() {
+    async fn a_unit_that_dies_after_starting_fails_the_request_with_its_journal() {
         let (_d, state) = state().await;
         let p = FakePlatform::new();
+        let app = apps::create(&state, new_app("ledger", &[("/", "main", false)]))
+            .await
+            .unwrap();
+        p.journal(
+            "ferrum-redis-ledger",
+            &[
+                (4, "Unresolved Configuration(s) Detected:"),
+                (4, ">>> 'appendonlydir appendonlydir'"),
+            ],
+        );
+        let e = request(&state, &p, &app, 64).await.unwrap_err().to_string();
+        assert!(e.starts_with("Redis did not start:\n"), "{e}");
+        assert!(e.contains(">>> 'appendonlydir appendonlydir'"), "{e}");
+        assert!(for_app(&state, &app.id).await.unwrap().is_none());
+        assert!(p.removed("/etc/systemd/system/ferrum-redis-ledger.service"));
+        let ports: i64 = sqlx::query_scalar("SELECT count(*) FROM app_ports WHERE name = 'redis'")
+            .fetch_one(&state.pool)
+            .await
+            .unwrap();
+        assert_eq!(ports, 0);
+    }
+
+    #[tokio::test]
+    async fn a_refresh_rewrites_only_a_conf_that_differs_and_restarts_its_unit() {
+        let (_d, state) = state().await;
+        let p = platform();
+        p.write_file(Path::new(REDIS_SERVER), "", 0o755).unwrap();
+        let app = apps::create(&state, new_app("ledger", &[("/", "main", false)]))
+            .await
+            .unwrap();
+        request(&state, &p, &app, 64).await.unwrap();
+        assert_eq!(refresh(&state, &p).await.unwrap(), 0);
+        assert!(p.calls_matching("service restart").is_empty());
+        assert!(
+            p.calls()
+                .contains(&"set_sysctl vm.overcommit_memory 1".to_string()),
+            "{:#?}",
+            p.calls()
+        );
+
+        let stale = p
+            .written("/var/lib/ferrum/redis/ledger/redis.conf")
+            .unwrap()
+            .replace("appenddirname appendonlydir", "appendonlydir appendonlydir");
+        p.write_file(&conf_path("ledger"), &stale, 0o600).unwrap();
+        assert_eq!(refresh(&state, &p).await.unwrap(), 1);
+        let calls = p.calls();
+        let write = calls
+            .iter()
+            .rposition(|c| c == "write_file /var/lib/ferrum/redis/ledger/redis.conf 600")
+            .unwrap();
+        let chown = position(
+            &calls,
+            "chown /var/lib/ferrum/redis/ledger/redis.conf ferrum-ledger",
+        );
+        let restart = position(&calls, "service restart ferrum-redis-ledger");
+        assert!(write < chown && chown < restart, "{calls:#?}");
+        assert!(
+            p.written("/var/lib/ferrum/redis/ledger/redis.conf")
+                .unwrap()
+                .contains("appenddirname appendonlydir\n")
+        );
+    }
+
+    #[tokio::test]
+    async fn a_refresh_leaves_a_host_without_redis_alone() {
+        let (_d, state) = state().await;
+        let p = FakePlatform::new();
+        assert_eq!(refresh(&state, &p).await.unwrap(), 0);
+        assert!(p.calls_matching("set_sysctl").is_empty());
+    }
+
+    #[tokio::test]
+    async fn releasing_redis_stops_removes_and_frees_the_port() {
+        let (_d, state) = state().await;
+        let p = platform();
         let app = apps::create(&state, new_app("ledger", &[("/", "main", false)]))
             .await
             .unwrap();
@@ -418,7 +549,7 @@ mod tests {
     #[tokio::test]
     async fn deprovisioning_an_app_takes_its_redis_with_it() {
         let (_d, state) = state().await;
-        let p = FakePlatform::new();
+        let p = platform();
         let app = apps::create(&state, new_app("ledger", &[("/", "main", false)]))
             .await
             .unwrap();
@@ -434,7 +565,7 @@ mod tests {
     #[tokio::test]
     async fn an_app_update_keeps_the_redis_port_and_a_route_cannot_claim_its_name() {
         let (_d, state) = state().await;
-        let p = FakePlatform::new();
+        let p = platform();
         let app = apps::create(&state, new_app("ledger", &[("/", "main", false)]))
             .await
             .unwrap();

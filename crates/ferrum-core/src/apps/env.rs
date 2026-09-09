@@ -417,6 +417,7 @@ mod tests {
             .await
             .unwrap();
         postgres::link(&state, &app.id, "analytics").await.unwrap();
+        p.set_active("ferrum-redis-ledger");
         let instance = redis::request(&state, &p, &app, 64).await.unwrap();
         let managed = managed_for(&state, &app).await.unwrap();
         assert_eq!(

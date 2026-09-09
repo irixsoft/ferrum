@@ -252,6 +252,7 @@ mod tests {
         postgres::link(&state, &app.id, "ledger_prod")
             .await
             .unwrap();
+        p.set_active("ferrum-redis-ledger");
         redis::request(&state, &p, &app, 64).await.unwrap();
         github::save(&state, github::tests::sample()).await.unwrap();
 
