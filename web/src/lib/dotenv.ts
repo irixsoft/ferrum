@@ -75,8 +75,15 @@ function unescape(body: string, quote: string): string {
   );
 }
 
-export function routePortKeys(routes: Array<{ port_name: string }>): string[] {
-  return routes.map((r) => (r.port_name === "main" ? "PORT" : `${r.port_name.toUpperCase()}_PORT`));
+export interface PortedProcess {
+  name: string;
+  port?: number | boolean | null;
+}
+
+export function processPortKeys(processes: PortedProcess[]): string[] {
+  return processes
+    .filter((p) => p.port !== undefined && p.port !== null && p.port !== false)
+    .map((p) => `${p.name.toUpperCase()}_PORT`);
 }
 
 export function isManagedKey(key: string, managed: string[]): boolean {
