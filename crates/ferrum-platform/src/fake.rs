@@ -249,6 +249,10 @@ impl FakePlatform {
         self.inner.lock().unwrap().active.push(unit.to_string());
     }
 
+    pub fn set_inactive(&self, unit: &str) {
+        self.inner.lock().unwrap().active.retain(|u| u != unit);
+    }
+
     pub fn written(&self, path: &str) -> Option<String> {
         self.inner.lock().unwrap().files.get(path).cloned()
     }
