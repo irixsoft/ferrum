@@ -277,6 +277,7 @@ export interface InstalledToolchain {
   path: string;
   size_bytes: number;
   installed_at: string;
+  used_by: string[];
 }
 
 export interface Runtimes {
@@ -316,6 +317,61 @@ export interface PostgresStatus {
   installing: boolean;
   error: string | null;
   tunnel: string;
+  tunnel_user: string;
+}
+
+export type EventKind =
+  | "deploy_refused"
+  | "deploy_failed"
+  | "deploy_live"
+  | "broke_on_its_own"
+  | "update_available"
+  | "package_dropped"
+  | "port_removed"
+  | "role_kept"
+  | "processes_changed";
+
+export interface FerrumEvent {
+  id: string;
+  kind: EventKind;
+  app_id: string | null;
+  subject: string;
+  sentence: string;
+  link: string | null;
+  created_at: string;
+  read_at: string | null;
+}
+
+export type PushPref = "deploy_failed" | "deploy_live" | "broke" | "update";
+
+export interface PushPrefs {
+  enabled: Record<PushPref, boolean>;
+}
+
+export interface PushDevice {
+  id: string;
+  created_at: string;
+  last_ok_at: string | null;
+}
+
+export interface DnsProvider {
+  id: string;
+  name: string;
+  kind: "cloudflare" | "route53";
+  created_at: string;
+}
+
+export interface HelpTopic {
+  slug: string;
+  title: string;
+  body?: string;
+}
+
+export interface DatabaseRole {
+  name: string;
+  env_label: string;
+  connection_limit: number;
+  owner: boolean;
 }
 
 export interface RedisInstance {

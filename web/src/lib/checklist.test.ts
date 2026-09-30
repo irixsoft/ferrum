@@ -50,7 +50,7 @@ describe("rows", () => {
           },
         ],
       },
-      postgres: { installed: true, major: 18, installing: false, error: null, tunnel: "" },
+      postgres: { installed: true, major: 18, installing: false, error: null, tunnel: "", tunnel_user: "ubuntu" },
       security: security(true),
       users: [user("saeed", 2), user("other", 0)],
       me: { kind: "user", name: "saeed", read_only: false },

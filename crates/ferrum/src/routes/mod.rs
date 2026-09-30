@@ -10,6 +10,7 @@ pub mod host;
 pub mod logs;
 pub mod me;
 pub mod nginx;
+pub mod notifications;
 pub mod runtimes;
 pub mod security;
 pub mod sessions;

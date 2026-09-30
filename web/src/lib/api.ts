@@ -113,6 +113,14 @@ export const keys = {
   github: ["github"] as const,
   githubRepos: ["github", "repos"] as const,
   runtimes: ["runtimes"] as const,
+  events: ["events"] as const,
+  unread: ["events", "unread"] as const,
+  pushPrefs: ["push", "prefs"] as const,
+  pushDevices: ["push", "devices"] as const,
+  dnsProviders: ["dns-providers"] as const,
+  help: ["help"] as const,
+  helpTopic: (slug: string) => ["help", slug] as const,
+  roles: (name: string) => ["databases", name, "roles"] as const,
 };
 
 export function useMe(enabled = true) {
