@@ -146,7 +146,15 @@ mod tests {
         for ok in ["ubuntu", "_svc", "deploy-1", &"a".repeat(32)] {
             assert!(valid_tunnel_user(ok), "{ok}");
         }
-        for bad in ["", "Ubuntu", "1root", "-x", "me@box", "a b", &"a".repeat(33)] {
+        for bad in [
+            "",
+            "Ubuntu",
+            "1root",
+            "-x",
+            "me@box",
+            "a b",
+            &"a".repeat(33),
+        ] {
             assert!(!valid_tunnel_user(bad), "{bad}");
         }
     }

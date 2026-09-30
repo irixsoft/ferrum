@@ -79,7 +79,11 @@ async fn status_of(app: &AppState) -> ApiResult<Status> {
     };
     let hostname = setup::hostname(&app.db).await?.unwrap_or_default();
     let tunnel_user = setup::tunnel_user(&app.db).await?.unwrap_or_default();
-    let login = if tunnel_user.is_empty() { "<user>" } else { &tunnel_user };
+    let login = if tunnel_user.is_empty() {
+        "<user>"
+    } else {
+        &tunnel_user
+    };
     Ok(Status {
         installed: present.is_some(),
         major: pinned.or(present),

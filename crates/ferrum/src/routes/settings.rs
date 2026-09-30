@@ -4,8 +4,8 @@ use crate::server::AppState;
 use axum::extract::State as Extract;
 use axum::http::StatusCode;
 use axum::{Json, Router, routing::get, routing::put};
-use ferrum_core::{host, setup};
 use ferrum_core::settings::{self, BuildLimits, SettingsError};
+use ferrum_core::{host, setup};
 use serde::{Deserialize, Serialize};
 
 pub fn router() -> Router<AppState> {
