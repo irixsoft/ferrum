@@ -43,7 +43,7 @@ import type {
   User,
   VersionInfo,
 } from "@/types/api";
-import type { FerrumEvent, PushDevice, PushPref, PushPrefs } from "@/types/api";
+import type { FerrumEvent, HelpTopic, PushDevice, PushPref, PushPrefs } from "@/types/api";
 
 export class ApiError extends Error {
   readonly status: number;
@@ -138,6 +138,23 @@ export function useVersion() {
   return useQuery({
     queryKey: keys.version,
     queryFn: () => request<VersionInfo>("/version"),
+    staleTime: Infinity,
+  });
+}
+
+export function useHelp() {
+  return useQuery({
+    queryKey: keys.help,
+    queryFn: () => request<HelpTopic[]>("/help"),
+    staleTime: Infinity,
+  });
+}
+
+export function useHelpTopic(slug: string | undefined) {
+  return useQuery({
+    queryKey: keys.helpTopic(slug ?? ""),
+    queryFn: () => request<HelpTopic>(`/help/${slug}`),
+    enabled: Boolean(slug),
     staleTime: Infinity,
   });
 }

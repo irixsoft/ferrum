@@ -100,6 +100,49 @@ fn names(tools: &[Value]) -> Vec<&str> {
 }
 
 #[tokio::test]
+async fn the_help_topics_are_resources_a_read_only_token_can_read() {
+    let (h, _cookie) = signed_in().await;
+    let token = h.machine_token(true).await;
+    let init = mcp(&h, &token, &initialize()).await;
+    assert!(init.json["result"]["capabilities"]["resources"].is_object());
+
+    let listed = mcp(&h, &token, &rpc(2, "resources/list", json!({}))).await;
+    assert_eq!(listed.status, StatusCode::OK, "{}", listed.text);
+    let resources = listed.json["result"]["resources"].as_array().unwrap();
+    assert!(resources.len() >= 10, "{resources:#?}");
+    assert_eq!(resources[0]["uri"], "ferrum://help/ferrum-toml");
+    assert_eq!(resources[0]["name"], "ferrum-toml");
+    assert_eq!(resources[0]["title"], "ferrum.toml");
+    assert_eq!(resources[0]["mimeType"], "text/markdown");
+
+    let read = mcp(
+        &h,
+        &token,
+        &rpc(
+            3,
+            "resources/read",
+            json!({ "uri": "ferrum://help/processes" }),
+        ),
+    )
+    .await;
+    assert_eq!(read.status, StatusCode::OK, "{}", read.text);
+    let text = read.json["result"]["contents"][0]["text"].as_str().unwrap();
+    assert!(text.starts_with("# Processes"), "{text}");
+    assert_eq!(
+        read.json["result"]["contents"][0]["uri"],
+        "ferrum://help/processes"
+    );
+
+    let missing = mcp(
+        &h,
+        &token,
+        &rpc(4, "resources/read", json!({ "uri": "ferrum://help/nope" })),
+    )
+    .await;
+    assert!(missing.json["error"].is_object(), "{}", missing.text);
+}
+
+#[tokio::test]
 async fn the_endpoint_takes_a_bearer_token_and_the_panel_hostname_only() {
     let (h, cookie) = signed_in().await;
     let token = h.machine_token(false).await;

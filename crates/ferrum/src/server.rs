@@ -225,6 +225,7 @@ fn router(state: AppState) -> Router {
         .merge(crate::routes::update::router())
         .merge(crate::routes::notifications::router())
         .merge(crate::routes::dns_providers::router())
+        .merge(crate::routes::help::router())
         .route_layer(axum::middleware::from_fn_with_state(
             state.clone(),
             crate::auth::require_caller,

@@ -7,6 +7,7 @@ pub mod dns_providers;
 pub mod error;
 pub mod github;
 pub mod health;
+pub mod help;
 pub mod host;
 pub mod logs;
 pub mod me;

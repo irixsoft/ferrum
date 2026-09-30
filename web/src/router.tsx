@@ -17,6 +17,7 @@ import { AppDetailPage } from "@/features/apps/AppDetailPage";
 import { DatabasesPage } from "@/features/databases/DatabasesPage";
 import { SystemPage } from "@/features/system/SystemPage";
 import { SettingsPage } from "@/features/settings/SettingsPage";
+import { HelpPage } from "@/features/help/HelpPage";
 
 const ENROLL = "/enroll/";
 
@@ -105,6 +106,21 @@ const settingsRoute = createRoute({
   component: SettingsPage,
 });
 
+const helpRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/help",
+  component: HelpPage,
+});
+
+const helpTopicRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/help/$topic",
+  component: function HelpTopicRoute() {
+    const { topic } = helpTopicRoute.useParams();
+    return <HelpPage topic={topic} />;
+  },
+});
+
 const routeTree = rootRoute.addChildren([
   enrollRoute,
   dashboardRoute,
@@ -114,6 +130,8 @@ const routeTree = rootRoute.addChildren([
   databasesRoute,
   systemRoute,
   settingsRoute,
+  helpRoute,
+  helpTopicRoute,
 ]);
 
 export const router = createRouter({

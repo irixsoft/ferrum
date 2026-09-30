@@ -36,7 +36,11 @@ async fn read(
         .await?
         .ok_or_else(|| ApiError::not_found(AppError::NotFound.to_string()))?;
     let source = source(request.source.as_deref())?;
-    let process = process_of(&found, request.process.as_deref())?;
+    let process = if source == Source::App {
+        process_of(&found, request.process.as_deref())?
+    } else {
+        String::new()
+    };
     let lines = request.lines.unwrap_or(DEFAULT_LINES);
     let follow = request
         .follow

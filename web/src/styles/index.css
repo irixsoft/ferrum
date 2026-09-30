@@ -217,6 +217,69 @@
   }
 }
 
+.help-prose {
+  font-size: 14px;
+  line-height: 1.65;
+  color: var(--color-ink-2);
+}
+.help-prose h1 {
+  font-family: var(--font-display);
+  font-size: 26px;
+  line-height: 1.1;
+  color: var(--color-ink);
+  margin-bottom: 14px;
+}
+.help-prose h2 {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--color-ink);
+  margin: 26px 0 8px;
+}
+.help-prose p,
+.help-prose ul,
+.help-prose ol {
+  margin: 0 0 12px;
+}
+.help-prose ul,
+.help-prose ol {
+  padding-left: 20px;
+}
+.help-prose li {
+  margin: 4px 0;
+}
+.help-prose li > ul {
+  margin: 4px 0 0;
+}
+.help-prose code {
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  padding: 1px 5px;
+  border-radius: 6px;
+  background: var(--color-inset);
+  color: var(--color-ink);
+}
+.help-prose pre {
+  margin: 0 0 14px;
+  padding: 12px 14px;
+  border: 1px solid var(--color-line);
+  border-radius: 12px;
+  background: var(--color-inset);
+  overflow-x: auto;
+}
+.help-prose pre code {
+  padding: 0;
+  background: none;
+  font-size: 12.5px;
+  line-height: 1.55;
+}
+.help-prose strong {
+  color: var(--color-ink);
+  font-weight: 600;
+}
+.help-prose em {
+  font-style: italic;
+}
+
 .uplot,
 .uplot * {
   font-family: var(--font-sans) !important;

@@ -9,4 +9,4 @@ export const NAV = [
   { to: "/settings", label: "Settings", icon: Settings, foot: true },
 ] as const;
 
-export const HELP = { label: "Help", icon: CircleHelp } as const;
+export const HELP = { to: "/help", label: "Help", icon: CircleHelp } as const;
