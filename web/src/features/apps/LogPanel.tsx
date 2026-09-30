@@ -5,7 +5,7 @@ import { Card, CardBody, CardFoot, CardHeader } from "@/components/ui/Card";
 import { Badge } from "@/components/ui/Badge";
 import { Button } from "@/components/ui/Button";
 import { Segmented } from "@/components/ui/Segmented";
-import type { AppLogLine, LogLevel, LogSource } from "@/types/api";
+import type { AppLogLine, LogLevel, LogSource, Process } from "@/types/api";
 
 const LINES = 200;
 const KEEP = 2000;
@@ -18,12 +18,16 @@ const TONE: Record<LogLevel, string> = {
 
 const clock = (iso: string) => (iso ? iso.slice(11, 19) : "");
 
-/** The app log follows journald over SSE; nginx logs are read as a tail on request. */
-export function LogPanel({ slug, hasProcess }: { slug: string; hasProcess: boolean }) {
+/** The app log follows one process's journal over SSE; nginx logs are read as a tail on request. */
+export function LogPanel({ slug, processes }: { slug: string; processes: Pick<Process, "name" | "kind">[] }) {
+  const commands = processes.filter((p) => p.kind === "command").map((p) => p.name);
+  const hasProcess = commands.length > 0;
   const [source, setSource] = useState<LogSource>(hasProcess ? "app" : "access");
+  const [chosen, setChosen] = useState<string | null>(commands[0] ?? null);
+  const process = chosen !== null && commands.includes(chosen) ? chosen : (commands[0] ?? null);
   const [following, setFollowing] = useState(hasProcess);
   const live = source === "app" && following;
-  const tail = useAppLogs(slug, source, LINES, !live);
+  const tail = useAppLogs(slug, source, source === "app" ? process : null, LINES, !live);
   const [lines, setLines] = useState<AppLogLine[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [pinned, setPinned] = useState(true);
@@ -36,6 +40,7 @@ export function LogPanel({ slug, hasProcess }: { slug: string; hasProcess: boole
     setError(null);
     followAppLog(
       slug,
+      process,
       LINES,
       (line) => setLines((prev) => (prev.length >= KEEP ? [...prev.slice(-KEEP + 1), line] : [...prev, line])),
       controller.signal,
@@ -44,7 +49,7 @@ export function LogPanel({ slug, hasProcess }: { slug: string; hasProcess: boole
       setError(e instanceof ApiError ? e.message : String(e));
     });
     return () => controller.abort();
-  }, [slug, live]);
+  }, [slug, live, process]);
 
   useEffect(() => {
     if (!live && tail.data) setLines(tail.data);
@@ -70,26 +75,50 @@ export function LogPanel({ slug, hasProcess }: { slug: string; hasProcess: boole
           </span>
         }
         hint={
-          source === "app"
-            ? `journalctl -u ferrum-app-${slug} --follow`
-            : `/var/log/nginx/ferrum-${slug}.${source}.log`
+          <span className="break-all">
+            {source === "app"
+              ? `journalctl -u ferrum-app-${slug}-${process} --follow`
+              : `/var/log/nginx/ferrum-${slug}.${source}.log`}
+          </span>
         }
         action={
-          <>
-            {source === "app" ? (
-              <Button size="sm" variant="ghost" onClick={() => setFollowing((f) => !f)}>
-                {following ? "Pause" : "Follow"}
-              </Button>
-            ) : (
-              <Button size="sm" variant="ghost" disabled={tail.isFetching} onClick={() => tail.refetch()}>
-                Reload
-              </Button>
-            )}
-            <Segmented value={source} onChange={setSource} options={options} />
-          </>
+          source === "app" ? (
+            <Button size="sm" variant="ghost" onClick={() => setFollowing((f) => !f)}>
+              {following ? "Pause" : "Follow"}
+            </Button>
+          ) : (
+            <Button size="sm" variant="ghost" disabled={tail.isFetching} onClick={() => tail.refetch()}>
+              Reload
+            </Button>
+          )
         }
       />
-      <CardBody>
+      <CardBody className="grid gap-3">
+        <div className="flex items-center gap-2 flex-wrap">
+          <Segmented value={source} onChange={setSource} options={options} />
+          {source === "app" && commands.length > 1 ? (
+            commands.length > 3 ? (
+              <select
+                value={process ?? ""}
+                onChange={(e) => setChosen(e.target.value)}
+                aria-label="Process"
+                className="h-9 px-3 bg-inset border border-line-strong rounded-control font-mono text-[13px] text-ink"
+              >
+                {commands.map((name) => (
+                  <option key={name} value={name}>
+                    {name}
+                  </option>
+                ))}
+              </select>
+            ) : (
+              <Segmented
+                value={process ?? ""}
+                onChange={setChosen}
+                options={commands.map((name) => ({ value: name, label: name }))}
+              />
+            )
+          ) : null}
+        </div>
         <div
           ref={box}
           onScroll={(e) => {
