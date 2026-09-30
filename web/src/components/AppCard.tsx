@@ -4,10 +4,10 @@ import type { App } from "@/types/api";
 import { RuntimeMark } from "./RuntimeMark";
 import { StatusPill } from "./StatusPill";
 import { ago } from "@/lib/utils";
+import { limitsLine } from "@/lib/processes";
 
 export function AppCard({ app }: { app: App }) {
   const primary = app.domains[0];
-  const isStatic = app.runtime === "static";
 
   return (
     <Link
@@ -31,11 +31,7 @@ export function AppCard({ app }: { app: App }) {
         </span>
       </div>
 
-      <p className="mt-4 text-[12.5px] text-ink-4">
-        {isStatic
-          ? "Served by nginx from disk — no process, no memory limit."
-          : `Up to ${app.memory_mb} MB and ${app.cpu_percent}% CPU.`}
-      </p>
+      <p className="mt-4 text-[12.5px] text-ink-4">{limitsLine(app.processes, app.cpu_percent)}</p>
 
       <div className="mt-4 pt-3 border-t border-line flex items-center justify-between gap-2">
         <span className="text-[12.5px] text-ink-4 truncate">
