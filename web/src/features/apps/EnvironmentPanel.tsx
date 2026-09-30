@@ -1,7 +1,7 @@
 import { useRef, useState } from "react";
 import { Plus, Upload, X } from "lucide-react";
 import { ApiError, useSetEnv } from "@/lib/api";
-import { describeImport, importDotenv, parseDotenv, routePortKeys } from "@/lib/dotenv";
+import { describeImport, importDotenv, parseDotenv, processPortKeys, type PortedProcess } from "@/lib/dotenv";
 import { Card, CardBody, CardFoot, CardHeader } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
 import { Badge } from "@/components/ui/Badge";
@@ -54,18 +54,18 @@ export function blankRow(): EnvRow {
 export function ImportEnv({
   rows,
   managed,
-  routes,
+  processes,
   onImport,
 }: {
   rows: EnvRow[];
   managed: string[];
-  routes: Array<{ port_name: string }>;
+  processes: PortedProcess[];
   onImport: (rows: EnvRow[], note: string) => void;
 }) {
   const picker = useRef<HTMLInputElement>(null);
   const pick = async (file: File | null) => {
     if (!file) return;
-    const result = importDotenv(rows, parseDotenv(await file.text()), [...managed, ...routePortKeys(routes)]);
+    const result = importDotenv(rows, parseDotenv(await file.text()), [...managed, ...processPortKeys(processes)]);
     onImport(result.rows, describeImport(file.name, result));
     if (picker.current) picker.current.value = "";
   };
@@ -145,12 +145,12 @@ export function EnvironmentPanel({
   slug,
   entries,
   managed,
-  routes,
+  processes,
 }: {
   slug: string;
   entries: EnvEntry[];
   managed: string[];
-  routes: Array<{ port_name: string }>;
+  processes: PortedProcess[];
 }) {
   const [rows, setRows] = useState<EnvRow[]>(() => rowsFromEntries(entries));
   const [dirty, setDirty] = useState(false);
@@ -188,7 +188,7 @@ export function EnvironmentPanel({
             <ImportEnv
               rows={rows}
               managed={managed}
-              routes={routes}
+              processes={processes}
               onImport={(next, text) => {
                 change(next);
                 setNote(text);
@@ -214,9 +214,10 @@ export function EnvironmentPanel({
       <CardFoot>
         <span>
           Your variables are set for the build too, so the <Code>NEXT_PUBLIC_*</Code> and{" "}
-          <Code>VITE_*</Code> values you enter reach the client bundle. Ferrum itself adds only{" "}
-          <Code>PORT</Code> and <Code>HOST</Code>. Import a .env to fill the rows; nothing is saved
-          until you click Save.
+          <Code>VITE_*</Code> values you enter reach the client bundle. <Code>PORT</Code> is set per
+          process, each listening process is also named as <Code>NAME_PORT</Code>, and{" "}
+          <Code>HOST</Code> is always <Code>127.0.0.1</Code>. Import a .env to fill the rows; nothing
+          is saved until you click Save.
         </span>
         <Button size="sm" variant="primary" disabled={!dirty || save.isPending} onClick={submit}>
           Save

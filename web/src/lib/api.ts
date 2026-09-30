@@ -265,10 +265,14 @@ export function useMetrics(scope: string, range: MetricRange) {
   });
 }
 
-export function useAppLogs(slug: string, source: LogSource, lines = 200, enabled = true) {
+const logQuery = (process: string | null, lines: number) =>
+  `lines=${lines}${process ? `&process=${encodeURIComponent(process)}` : ""}`;
+
+/** `process` names the command process whose journal the app log reads; nginx logs ignore it. */
+export function useAppLogs(slug: string, source: LogSource, process: string | null, lines = 200, enabled = true) {
   return useQuery({
-    queryKey: keys.logs(slug, source),
-    queryFn: () => request<AppLogLine[]>(`/apps/${slug}/logs?source=${source}&lines=${lines}`),
+    queryKey: [...keys.logs(slug, source), process] as const,
+    queryFn: () => request<AppLogLine[]>(`/apps/${slug}/logs?source=${source}&${logQuery(process, lines)}`),
     enabled,
   });
 }
@@ -560,8 +564,8 @@ export function useRetryCertificate(slug: string) {
 }
 
 export function useRestartApp(slug: string) {
-  return useInvalidating([keys.apps, keys.app(slug)], () =>
-    request<void>(`/apps/${slug}/restart`, { method: "POST" }),
+  return useInvalidating([keys.apps, keys.app(slug)], (process?: string) =>
+    request<void>(`/apps/${slug}/restart`, process ? body({ process }) : { method: "POST" }),
   );
 }
 
@@ -715,12 +719,13 @@ export async function followCommandLog(
 /** The last lines, then live ones from journald; ends only when `signal` aborts. */
 export async function followAppLog(
   slug: string,
+  process: string | null,
   lines: number,
   onLine: (line: AppLogLine) => void,
   signal?: AbortSignal,
 ): Promise<void> {
   await readFrames(
-    `/apps/${slug}/logs?follow=1&lines=${lines}`,
+    `/apps/${slug}/logs?follow=1&${logQuery(process, lines)}`,
     (event, data) => {
       if (event === "line") onLine(JSON.parse(data) as AppLogLine);
     },
