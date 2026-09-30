@@ -234,8 +234,7 @@ fn provision(
     Ok(())
 }
 
-/// A conf that differs from what this build renders is rewritten with its unit stopped, then
-/// started again. One instance failing is reported as an event and the rest carry on.
+/// A differing conf is rewritten with its unit stopped; one instance failing never stops the rest.
 pub async fn refresh(state: &State, platform: &dyn Platform) -> anyhow::Result<usize> {
     if !installed(platform) {
         return Ok(0);
