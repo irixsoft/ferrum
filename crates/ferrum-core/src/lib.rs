@@ -5,6 +5,7 @@ pub mod credentials;
 pub mod deploy;
 pub mod detect;
 pub mod dns;
+pub mod dns_providers;
 pub mod enrollment;
 pub mod events;
 pub mod github;

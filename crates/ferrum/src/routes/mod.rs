@@ -3,6 +3,7 @@ pub mod auth;
 pub mod commands;
 pub mod databases;
 pub mod deploys;
+pub mod dns_providers;
 pub mod error;
 pub mod github;
 pub mod health;

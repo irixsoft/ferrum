@@ -396,6 +396,24 @@ export interface DnsProvider {
   created_at: string;
 }
 
+export type DomainJob = "serve" | "redirect";
+
+/** A name Ferrum answers for: served by one process, or redirected to another served name. */
+export interface Domain {
+  domain: string;
+  job: DomainJob;
+  /** The process for a served name; the target name for a redirect. */
+  target: string;
+  primary: boolean;
+  wildcard: boolean;
+  dns_provider_id: string | null;
+}
+
+/** A bare string is a served name pointing at `web`; the first one sent is primary. */
+export type DomainInput =
+  | string
+  | { domain: string; job?: DomainJob; target?: string; primary?: boolean; dns_provider_id?: string | null };
+
 export interface HelpTopic {
   slug: string;
   title: string;
