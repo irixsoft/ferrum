@@ -4,6 +4,7 @@ use crate::server::AppState;
 use axum::extract::{Path, Query, State as Extract};
 use axum::response::sse::{Event, Sse};
 use axum::{Json, Router, routing::get};
+use ferrum_core::apps;
 use ferrum_core::runtime::toolchain::{self, Progress, Toolchain};
 use ferrum_core::runtime::{self, RuntimeKind, Target, bun, dotnet, node};
 use serde::{Deserialize, Serialize};
@@ -21,8 +22,15 @@ pub fn router() -> Router<AppState> {
 
 #[derive(Serialize)]
 struct Runtimes {
-    installed: Vec<Toolchain>,
+    installed: Vec<Installed>,
     dotnet_channels: Vec<&'static str>,
+}
+
+#[derive(Serialize)]
+struct Installed {
+    #[serde(flatten)]
+    toolchain: Toolchain,
+    used_by: Vec<String>,
 }
 
 #[derive(Deserialize)]
@@ -41,8 +49,21 @@ fn kind(name: &str) -> ApiResult<RuntimeKind> {
 }
 
 async fn list(Extract(app): Extract<AppState>, _: Caller) -> ApiResult<Json<Runtimes>> {
+    let apps = apps::list(&app.db).await?;
+    let installed = toolchain::installed(&app.db)
+        .await?
+        .into_iter()
+        .map(|toolchain| Installed {
+            used_by: apps
+                .iter()
+                .filter(|a| a.toolchain == toolchain.kind && a.runtime_version == toolchain.version)
+                .map(|a| a.slug.clone())
+                .collect(),
+            toolchain,
+        })
+        .collect();
     Ok(Json(Runtimes {
-        installed: toolchain::installed(&app.db).await?,
+        installed,
         dotnet_channels: dotnet::CHANNELS.to_vec(),
     }))
 }
