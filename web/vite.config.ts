@@ -11,6 +11,9 @@ export default defineConfig({
     react(),
     tailwindcss(),
     VitePWA({
+      strategies: "injectManifest",
+      srcDir: "src",
+      filename: "sw.ts",
       registerType: "prompt",
       includeAssets: ["favicon.ico", "apple-touch-icon.png", "icon.svg"],
       manifest: {
@@ -29,14 +32,8 @@ export default defineConfig({
           { src: "/pwa-maskable-512.png", sizes: "512x512", type: "image/png", purpose: "maskable" },
         ],
       },
-      workbox: {
+      injectManifest: {
         globPatterns: ["**/*.{js,css,html,svg,png,ico,woff,woff2}"],
-        // A cached API response would write secrets to disk. Never cache the API.
-        navigateFallbackDenylist: [/^\/api/, /^\/mcp/],
-        runtimeCaching: [
-          { urlPattern: /^\/api\//, handler: "NetworkOnly" },
-          { urlPattern: /^\/mcp/, handler: "NetworkOnly" },
-        ],
       },
       devOptions: { enabled: false },
     }),
