@@ -54,6 +54,7 @@ struct Status {
     installing: bool,
     error: Option<String>,
     tunnel: String,
+    tunnel_user: String,
 }
 
 #[derive(Deserialize)]
@@ -77,12 +78,15 @@ async fn status_of(app: &AppState) -> ApiResult<Status> {
         Install::Failed(e) => (false, Some(e.clone())),
     };
     let hostname = setup::hostname(&app.db).await?.unwrap_or_default();
+    let tunnel_user = setup::tunnel_user(&app.db).await?.unwrap_or_default();
+    let login = if tunnel_user.is_empty() { "<user>" } else { &tunnel_user };
     Ok(Status {
         installed: present.is_some(),
         major: pinned.or(present),
         installing,
         error,
-        tunnel: postgres::tunnel_command(&hostname),
+        tunnel: postgres::tunnel_command(&hostname, login),
+        tunnel_user,
     })
 }
 

@@ -4,7 +4,7 @@ use crate::server::AppState;
 use axum::extract::State as Extract;
 use axum::http::StatusCode;
 use axum::{Json, Router, routing::get, routing::put};
-use ferrum_core::host;
+use ferrum_core::{host, setup};
 use ferrum_core::settings::{self, BuildLimits, SettingsError};
 use serde::{Deserialize, Serialize};
 
@@ -12,6 +12,27 @@ pub fn router() -> Router<AppState> {
     Router::new()
         .route("/api/settings/builds", get(builds).put(set_builds))
         .route("/api/settings/checklist", put(set_checklist))
+        .route("/api/settings/tunnel-user", put(set_tunnel_user))
+}
+
+#[derive(Deserialize)]
+struct TunnelUser {
+    user: String,
+}
+
+async fn set_tunnel_user(
+    Extract(app): Extract<AppState>,
+    _: Caller,
+    Json(body): Json<TunnelUser>,
+) -> ApiResult<StatusCode> {
+    let user = body.user.trim();
+    if !setup::valid_tunnel_user(user) {
+        return Err(ApiError::bad_request(
+            "An SSH login is 1 to 32 lowercase letters, digits, - or _, starting with a letter or _.",
+        ));
+    }
+    setup::set_tunnel_user(&app.db, user).await?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 #[derive(Deserialize)]

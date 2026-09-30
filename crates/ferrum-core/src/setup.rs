@@ -3,6 +3,7 @@ use crate::state::State;
 const STAGE_SETTING: &str = "setup.stage";
 const HOSTNAME_SETTING: &str = "setup.hostname";
 const EMAIL_SETTING: &str = "setup.email";
+const TUNNEL_USER_SETTING: &str = "setup.tunnel_user";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Stage {
@@ -69,6 +70,22 @@ pub async fn set_email(state: &State, email: &str) -> anyhow::Result<()> {
     state.set_setting(EMAIL_SETTING, email).await
 }
 
+pub async fn tunnel_user(state: &State) -> anyhow::Result<Option<String>> {
+    state.get_setting(TUNNEL_USER_SETTING).await
+}
+
+pub async fn set_tunnel_user(state: &State, user: &str) -> anyhow::Result<()> {
+    state.set_setting(TUNNEL_USER_SETTING, user).await
+}
+
+pub fn valid_tunnel_user(user: &str) -> bool {
+    let mut bytes = user.bytes();
+    let first_ok = matches!(bytes.next(), Some(b'a'..=b'z' | b'_'));
+    first_ok
+        && user.len() <= 32
+        && bytes.all(|b| matches!(b, b'a'..=b'z' | b'0'..=b'9' | b'_' | b'-'))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -121,6 +138,16 @@ mod tests {
             Stage::Complete,
         ] {
             assert_eq!(Stage::from_rank(s.rank()), s);
+        }
+    }
+
+    #[test]
+    fn a_tunnel_user_is_a_login_name() {
+        for ok in ["ubuntu", "_svc", "deploy-1", &"a".repeat(32)] {
+            assert!(valid_tunnel_user(ok), "{ok}");
+        }
+        for bad in ["", "Ubuntu", "1root", "-x", "me@box", "a b", &"a".repeat(33)] {
+            assert!(!valid_tunnel_user(bad), "{bad}");
         }
     }
 

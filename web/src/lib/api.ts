@@ -585,6 +585,12 @@ export function useSetBuildLimits() {
   );
 }
 
+export function useSetTunnelUser() {
+  return useInvalidating(keys.postgres, (user: string) =>
+    request<void>("/settings/tunnel-user", body({ user }, "PUT")),
+  );
+}
+
 export function useCheckForUpdate() {
   return useInvalidating(keys.update, () => request<UpdateStatus>("/update/check", { method: "POST" }));
 }

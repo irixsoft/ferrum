@@ -38,6 +38,7 @@ pub async fn run(opts: SetupOpts) -> anyhow::Result<()> {
 
     let hostname = resolve_hostname(&state, &opts).await?;
     let email = resolve_email(&state, &opts).await?;
+    remember_tunnel_user(&state).await?;
     let swap_mb = decide_swap(&platform, &opts)?;
     setup::advance(&state, Stage::HostnameSet).await?;
 
@@ -181,6 +182,16 @@ async fn resolve_hostname(state: &State, opts: &SetupOpts) -> anyhow::Result<Str
     };
     setup::set_hostname(state, &hostname).await?;
     Ok(hostname)
+}
+
+async fn remember_tunnel_user(state: &State) -> anyhow::Result<()> {
+    if setup::tunnel_user(state).await?.is_some() {
+        return Ok(());
+    }
+    match std::env::var("SUDO_USER") {
+        Ok(user) if setup::valid_tunnel_user(&user) => setup::set_tunnel_user(state, &user).await,
+        _ => Ok(()),
+    }
 }
 
 async fn resolve_email(state: &State, opts: &SetupOpts) -> anyhow::Result<String> {

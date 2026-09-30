@@ -25,8 +25,9 @@ async fn postgres_is_installed_in_the_background_once_and_the_status_says_so() {
     assert_eq!(before.json["major"], serde_json::Value::Null);
     assert_eq!(
         before.json["tunnel"],
-        "ssh -L 5432:127.0.0.1:5432 root@panel.example.com"
+        "ssh -L 5432:127.0.0.1:5432 <user>@panel.example.com"
     );
+    assert_eq!(before.json["tunnel_user"], "");
     assert!(before.json.get("extensions").is_none(), "{}", before.json);
 
     let started = h
