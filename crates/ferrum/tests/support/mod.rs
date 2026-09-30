@@ -153,26 +153,27 @@ pub fn new_app_json(slug: &str) -> String {
         "runtime": "node",
         "toolchain": "node",
         "runtime_version": "22.11.0",
-        "commands": { "install": "bun install --frozen-lockfile", "build": "bun run build", "start": "bun run start" },
-        "routes": [{ "path": "/", "port_name": "main" }],
+        "commands": { "install": "bun install --frozen-lockfile", "build": "bun run build" },
+        "processes": [{ "name": "web", "start": "bun run start" }],
+        "routes": [{ "path": "/", "process": "web" }],
         "domains": [format!("{slug}.example.com")],
     })
     .to_string()
 }
 
-/// A static site needs no unit and no health check, so its deploy ends at the swap.
+/// A folder app needs no unit and no health check, so its deploy ends at the swap.
 pub fn static_app_json(slug: &str) -> String {
     serde_json::json!({
         "slug": slug,
         "name": slug,
         "repository": "irixsoft/ledger",
         "git_ref": "main",
-        "runtime": "static",
+        "runtime": "node",
         "toolchain": "node",
         "runtime_version": "22.11.0",
         "commands": { "install": "bun install --frozen-lockfile", "build": "bun run build" },
-        "output_dir": "dist",
-        "routes": [{ "path": "/", "port_name": "main" }],
+        "processes": [{ "name": "web", "static_dir": "dist", "port": false }],
+        "routes": [{ "path": "/", "process": "web" }],
         "domains": [format!("{slug}.example.com")],
     })
     .to_string()
@@ -361,7 +362,6 @@ impl Harness {
             RuntimeKind::Node => "bin/node",
             RuntimeKind::Bun => "bun",
             RuntimeKind::Dotnet => "dotnet",
-            RuntimeKind::Static => unreachable!(),
         };
         std::fs::create_dir_all(dir.join(binary).parent().unwrap()).unwrap();
         std::fs::write(dir.join(binary), "#!").unwrap();
@@ -393,7 +393,7 @@ impl Harness {
     /// The allocator hands out 20000 first, which is never where a test's listener is.
     pub async fn force_port(&self, slug: &str, port: u16) {
         sqlx::query(
-            "UPDATE app_ports SET port = ? WHERE name = 'main' AND app_id = (SELECT id FROM apps WHERE slug = ?)",
+            "UPDATE app_ports SET port = ? WHERE name = 'web' AND app_id = (SELECT id FROM apps WHERE slug = ?)",
         )
         .bind(port as i64)
         .bind(slug)

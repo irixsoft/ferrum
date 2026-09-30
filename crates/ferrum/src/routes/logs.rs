@@ -19,6 +19,7 @@ pub fn router() -> Router<AppState> {
 #[serde(default)]
 struct Request {
     source: Option<String>,
+    process: Option<String>,
     lines: Option<u32>,
     follow: Option<String>,
 }
@@ -35,13 +36,14 @@ async fn read(
         .await?
         .ok_or_else(|| ApiError::not_found(AppError::NotFound.to_string()))?;
     let source = source(request.source.as_deref())?;
+    let process = process_of(&found, request.process.as_deref())?;
     let lines = request.lines.unwrap_or(DEFAULT_LINES);
     let follow = request
         .follow
         .as_deref()
         .is_some_and(|f| f == "1" || f == "true");
     if !follow {
-        let tail = logs::tail(app.platform.as_ref(), &found, source, lines)?;
+        let tail = logs::tail(app.platform.as_ref(), &found, &process, source, lines)?;
         return Ok(Json(tail).into_response());
     }
     if source != Source::App {
@@ -49,16 +51,36 @@ async fn read(
             "Only the application log can be followed; nginx logs are read as a tail.",
         ));
     }
-    if !found.runtime.has_process() {
-        return Err(ApiError::bad_request(
-            "A static site has no process and no application log.",
-        ));
-    }
-    let rx = logs::follow(app.platform.clone(), &found, lines);
+    let rx = logs::follow(app.platform.clone(), &found, &process, lines);
     let stream = ReceiverStream::new(rx).map(|line| line_event(&line));
     Ok(Sse::new(stream)
         .keep_alive(KeepAlive::default())
         .into_response())
+}
+
+/// The named command process, else the first one; a folder-only app has no application log.
+fn process_of(app: &apps::App, wanted: Option<&str>) -> ApiResult<String> {
+    match wanted {
+        Some(name) => match app.process(name) {
+            Some(p) if p.is_command() => Ok(p.name.clone()),
+            Some(_) => Err(ApiError::bad_request(format!(
+                "{name} is a folder and has no application log."
+            ))),
+            None => Err(ApiError::not_found(format!(
+                "{} has no process named {name}.",
+                app.slug
+            ))),
+        },
+        None => app
+            .command_processes()
+            .next()
+            .map(|p| p.name.clone())
+            .ok_or_else(|| {
+                ApiError::bad_request(
+                    "This application only serves folders and has no application log.",
+                )
+            }),
+    }
 }
 
 pub(crate) fn source(name: Option<&str>) -> ApiResult<Source> {

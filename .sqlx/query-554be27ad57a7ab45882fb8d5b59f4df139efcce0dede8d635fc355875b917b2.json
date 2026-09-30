@@ -1,0 +1,62 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT p.name AS \"name!\", p.start, p.dir AS \"dir!\", p.has_port AS \"has_port!: bool\",\n                  p.health_path, p.static_dir, p.memory_mb AS \"memory_mb!\", o.port AS \"port?: i64\"\n           FROM app_processes p\n           LEFT JOIN app_ports o ON o.app_id = p.app_id AND o.name = p.name\n           WHERE p.app_id = ? ORDER BY p.position, p.name",
+  "describe": {
+    "columns": [
+      {
+        "name": "name!",
+        "ordinal": 0,
+        "type_info": "Text"
+      },
+      {
+        "name": "start",
+        "ordinal": 1,
+        "type_info": "Text"
+      },
+      {
+        "name": "dir!",
+        "ordinal": 2,
+        "type_info": "Text"
+      },
+      {
+        "name": "has_port!: bool",
+        "ordinal": 3,
+        "type_info": "Integer"
+      },
+      {
+        "name": "health_path",
+        "ordinal": 4,
+        "type_info": "Text"
+      },
+      {
+        "name": "static_dir",
+        "ordinal": 5,
+        "type_info": "Text"
+      },
+      {
+        "name": "memory_mb!",
+        "ordinal": 6,
+        "type_info": "Integer"
+      },
+      {
+        "name": "port?: i64",
+        "ordinal": 7,
+        "type_info": "Integer"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false,
+      true,
+      false,
+      false,
+      true,
+      true,
+      false,
+      false
+    ]
+  },
+  "hash": "554be27ad57a7ab45882fb8d5b59f4df139efcce0dede8d635fc355875b917b2"
+}

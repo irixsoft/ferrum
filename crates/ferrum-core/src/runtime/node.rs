@@ -2,6 +2,7 @@ use super::{
     ArchiveFormat, Commands, Detection, Health, Mirrors, PackageManager, Phase, Runtime,
     RuntimeKind, Source, Target, path_with, semver_like, version_prefix,
 };
+use crate::apps::processes::NewProcess;
 use crate::detect::RepoTree;
 use anyhow::Context;
 use ferrum_platform::Arch;
@@ -234,10 +235,9 @@ impl Runtime for Node {
             commands: Commands {
                 install: Some(pm.install(locked).to_string()),
                 build: has_build.then(|| pm.run("build")),
-                start,
                 migrate,
             },
-            output_dir: None,
+            processes: start.iter().map(|s| NewProcess::web(s, None)).collect(),
             health: Health::default(),
             package_manager: Some(pm),
         })
@@ -329,7 +329,7 @@ mod tests {
             Some("bun install --frozen-lockfile")
         );
         assert_eq!(d.commands.build.as_deref(), Some("bun run build"));
-        assert_eq!(d.commands.start.as_deref(), Some("bun run start"));
+        assert_eq!(d.start(), Some("bun run start"));
         assert_eq!(d.version.as_deref(), Some("22"));
         assert_eq!(d.confidence, 90);
         assert!(
@@ -418,7 +418,7 @@ mod tests {
         ]);
         let d = Node.detect(&tree).unwrap();
         assert!(d.confidence <= 40);
-        assert!(d.commands.start.is_none());
+        assert!(d.start().is_none());
     }
 
     #[test]

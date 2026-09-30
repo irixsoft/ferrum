@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO app_processes (app_id, name, start, dir, has_port, health_path, static_dir, memory_mb, position)\n             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 9
+    },
+    "nullable": []
+  },
+  "hash": "176471477c79f40e15b25a7a1fc3b2be57ea8753d377a003802d9fe8fe5cbd30"
+}

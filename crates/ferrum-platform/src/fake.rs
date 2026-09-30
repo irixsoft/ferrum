@@ -21,6 +21,7 @@ struct Inner {
     links: HashMap<String, String>,
     fail_next: Option<String>,
     active: Vec<String>,
+    dead: Vec<String>,
     users: HashSet<String>,
     clone_files: Vec<(String, String)>,
     cpu_flags: Vec<String>,
@@ -249,6 +250,13 @@ impl FakePlatform {
         self.inner.lock().unwrap().active.push(unit.to_string());
     }
 
+    /// A unit that exits right after every start, so it never reads as active.
+    pub fn set_dead(&self, unit: &str) {
+        let mut inner = self.inner.lock().unwrap();
+        inner.dead.push(unit.to_string());
+        inner.active.retain(|u| u != unit);
+    }
+
     pub fn written(&self, path: &str) -> Option<String> {
         self.inner.lock().unwrap().files.get(path).cloned()
     }
@@ -381,7 +389,22 @@ impl Platform for FakePlatform {
     }
 
     fn service(&self, action: ServiceAction, unit: &str) -> Result<(), PlatformError> {
-        self.record(format!("service {} {unit}", action.as_str()))
+        self.record(format!("service {} {unit}", action.as_str()))?;
+        let mut inner = self.inner.lock().unwrap();
+        match action {
+            ServiceAction::Start
+            | ServiceAction::EnableNow
+            | ServiceAction::Restart
+            | ServiceAction::ReloadOrRestart => {
+                if !inner.active.iter().any(|u| u == unit) && !inner.dead.iter().any(|u| u == unit)
+                {
+                    inner.active.push(unit.to_string());
+                }
+            }
+            ServiceAction::Stop | ServiceAction::DisableNow => inner.active.retain(|u| u != unit),
+            _ => {}
+        }
+        Ok(())
     }
 
     fn service_is_active(&self, unit: &str) -> bool {

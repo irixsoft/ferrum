@@ -40,8 +40,10 @@ pub struct DeployId {
 pub struct AppLogs {
     /// The application's slug.
     pub slug: String,
-    /// `app` for the process's journal, `access` or `error` for nginx. Default `app`.
+    /// `app` for a process's journal, `access` or `error` for nginx. Default `app`.
     pub source: Option<String>,
+    /// Which process's journal; default the first process.
+    pub process: Option<String>,
     /// How many lines from the end. Default 200, at most 2000.
     pub lines: Option<u32>,
 }
@@ -132,10 +134,19 @@ impl Ferrum {
             async {
                 let found = apps::find(&self.state, &args.slug).await?;
                 let source = logs::source(args.source.as_deref())?;
+                let process = match &args.process {
+                    Some(name) => name.clone(),
+                    None => found
+                        .command_processes()
+                        .next()
+                        .map(|p| p.name.clone())
+                        .unwrap_or_else(|| "web".into()),
+                };
                 let lines = args.lines.unwrap_or(DEFAULT_LINES).clamp(1, MAX_LINES);
                 Ok::<_, ApiError>(ferrum_core::logs::tail(
                     self.state.platform.as_ref(),
                     &found,
+                    &process,
                     source,
                     lines,
                 )?)

@@ -37,7 +37,6 @@ struct Resolved {
 
 fn kind(name: &str) -> ApiResult<RuntimeKind> {
     RuntimeKind::parse(name)
-        .filter(|k| k.installs_toolchain())
         .ok_or_else(|| ApiError::not_found(format!("{name} is not a runtime Ferrum installs.")))
 }
 
@@ -64,7 +63,6 @@ async fn resolve(
         RuntimeKind::Node => node::resolve(&app.http, &app.mirrors.node_index_url(), wanted).await,
         RuntimeKind::Bun => bun::resolve(&app.github, wanted).await,
         RuntimeKind::Dotnet => Ok(dotnet::channel(wanted)),
-        RuntimeKind::Static => unreachable!("filtered by kind()"),
     }
     .map_err(|e| ApiError::bad_request(format!("{e:#}")))?;
     Ok(Json(Resolved { version }))

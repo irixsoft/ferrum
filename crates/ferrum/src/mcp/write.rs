@@ -3,6 +3,7 @@ use crate::routes::error::ApiError;
 use crate::routes::{apps, databases, deploys, nginx};
 use ferrum_core::apps::AppChanges;
 use ferrum_core::apps::env::EnvChange;
+use ferrum_core::apps::processes::NewProcess;
 use ferrum_core::deploy::Trigger;
 use ferrum_core::postgres::NewDatabase;
 use ferrum_core::settings::{self, SettingsError};
@@ -35,13 +36,6 @@ pub struct Custom {
     pub slug: String,
     /// The whole custom directives file, included inside the app's server block.
     pub custom: String,
-}
-
-#[derive(Deserialize, schemars::JsonSchema)]
-#[schemars(crate = "rmcp::schemars")]
-pub struct Slug {
-    /// The application's slug.
-    pub slug: String,
 }
 
 #[derive(Deserialize, schemars::JsonSchema)]
@@ -88,10 +82,21 @@ pub struct AddDomain {
 
 #[derive(Deserialize, schemars::JsonSchema)]
 #[schemars(crate = "rmcp::schemars")]
+pub struct RestartApp {
+    /// The application's slug.
+    pub slug: String,
+    /// One process to restart; leave it out to restart every process.
+    pub process: Option<String>,
+}
+
+#[derive(Deserialize, schemars::JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
 pub struct Limits {
     /// An application's slug to change its own limits; leave it out to change the build limits.
     pub slug: Option<String>,
-    /// The application's memory limit in MB.
+    /// The process whose memory limit changes; leave it out to set every process.
+    pub process: Option<String>,
+    /// The memory limit in MB for the named process, or for every process.
     pub memory_mb: Option<u32>,
     /// The application's CPU quota in percent of one core.
     pub cpu_percent: Option<u32>,
@@ -162,7 +167,7 @@ impl Ferrum {
 
     #[tool(
         name = "restart_app",
-        description = "Restart an application's systemd unit now; refused for a static site, during a deploy, or before the first deploy.",
+        description = "Restart one of an application's processes, or all of them, now; refused for a folder, during a deploy, or before the first deploy.",
         annotations(
             read_only_hint = false,
             destructive_hint = false,
@@ -170,12 +175,16 @@ impl Ferrum {
             open_world_hint = false
         )
     )]
-    async fn restart_app(&self, Parameters(args): Parameters<Slug>) -> ToolResult {
+    async fn restart_app(&self, Parameters(args): Parameters<RestartApp>) -> ToolResult {
         finish(
             async {
                 let found = apps::find(&self.state, &args.slug).await?;
-                apps::restart_unit(&self.state, &found).await?;
-                Ok::<_, ApiError>(serde_json::json!({ "slug": found.slug, "restarted": true }))
+                apps::restart_unit(&self.state, &found, args.process.as_deref()).await?;
+                Ok::<_, ApiError>(serde_json::json!({
+                    "slug": found.slug,
+                    "process": args.process,
+                    "restarted": true
+                }))
             }
             .await,
         )
@@ -283,7 +292,7 @@ impl Ferrum {
 
     #[tool(
         name = "adjust_resource_limits",
-        description = "With a slug, set that application's memory_mb and cpu_percent and rewrite its unit; without one, set the build memory and the build and migrate timeouts for the next deploy.",
+        description = "With a slug, set memory_mb for one process (or every process) and cpu_percent for the application and rewrite its units; without one, set the build memory and the build and migrate timeouts for the next deploy.",
         annotations(
             read_only_hint = false,
             destructive_hint = false,
@@ -304,12 +313,43 @@ impl Ferrum {
                 if build_limits {
                     return Ok(refusal(APP_LIMITS_ONLY));
                 }
-                let changes = AppChanges {
-                    memory_mb: args.memory_mb,
-                    cpu_percent: args.cpu_percent,
-                    ..AppChanges::default()
-                };
-                finish(apps::apply(&self.state, &slug, changes).await)
+                finish(
+                    async {
+                        let found = apps::find(&self.state, &slug).await?;
+                        let processes = match args.memory_mb {
+                            Some(memory) => {
+                                if let Some(name) = &args.process
+                                    && found.process(name).is_none()
+                                {
+                                    return Err(ApiError::not_found(format!(
+                                        "{slug} has no process named {name}."
+                                    )));
+                                }
+                                Some(
+                                    found
+                                        .processes
+                                        .iter()
+                                        .map(|p| {
+                                            let mut np = NewProcess::from(p);
+                                            if args.process.as_deref().is_none_or(|n| n == p.name) {
+                                                np.memory_mb = Some(memory);
+                                            }
+                                            np
+                                        })
+                                        .collect(),
+                                )
+                            }
+                            None => None,
+                        };
+                        let changes = AppChanges {
+                            processes,
+                            cpu_percent: args.cpu_percent,
+                            ..AppChanges::default()
+                        };
+                        apps::apply(&self.state, &slug, changes).await
+                    }
+                    .await,
+                )
             }
             None => {
                 if app_limits {

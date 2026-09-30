@@ -275,7 +275,7 @@ mod tests {
         assert_eq!(var("ADMIN_EMAIL").as_deref(), Some("root@example.com"));
         assert_eq!(
             var("PORT").as_deref(),
-            Some(&app.routes[0].port.to_string()[..])
+            Some(&app.main_port().unwrap().to_string()[..])
         );
         assert_eq!(
             var("HOME").as_deref(),

@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT domain AS \"domain!\" FROM app_domains WHERE app_id = ? ORDER BY position",
+  "query": "SELECT domain AS \"domain!\" FROM app_domains WHERE app_id = ? ORDER BY primary_domain DESC, position",
   "describe": {
     "columns": [
       {
@@ -16,5 +16,5 @@
       false
     ]
   },
-  "hash": "755f8fa43f796ec14d07e83926eff4e14761aded4a59e0970e5e725cc2b1ecd1"
+  "hash": "8eb3aba74f1a8c4638c91ab52dde0756c2258c8599e30f339124985d9d2fdfef"
 }

@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO apps (id, slug, name, repository, git_ref, tracking, root, runtime, toolchain,\n                           runtime_version, install_cmd, build_cmd, migrate_cmd, startup_budget_secs,\n                           cpu_percent, pause_for_migrations, follow_repo_file)\n         VALUES (?, ?, ?, ?, ?, 'releases', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 16
+    },
+    "nullable": []
+  },
+  "hash": "1edf107a2556b9c54701914f2d4009c868debd9156b64d0c6a97054d1de37fa1"
+}

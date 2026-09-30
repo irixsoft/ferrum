@@ -1,4 +1,4 @@
-use super::{App, AppError, Route};
+use super::{App, AppError};
 pub use crate::detect::env_hints::EnvHint;
 use crate::secrets::{self, Key};
 use crate::state::State;
@@ -61,12 +61,17 @@ pub fn valid_key(key: &str) -> Result<(), AppError> {
     }
 }
 
+/// Every process with a port is named in the shared env as `<NAME>_PORT`; `PORT` itself is set
+/// per unit, so each program sees only its own.
 pub fn port_var(name: &str) -> String {
-    if name == "main" {
-        "PORT".to_string()
-    } else {
-        format!("{}_PORT", name.to_ascii_uppercase())
-    }
+    format!("{}_PORT", name.to_ascii_uppercase())
+}
+
+/// The variables Ferrum sets that a user variable may never shadow.
+pub fn reserved_keys(ports: &[(String, u16)]) -> Vec<String> {
+    let mut keys = vec!["PORT".to_string(), "HOST".to_string()];
+    keys.extend(ports.iter().map(|(name, _)| port_var(name)));
+    keys
 }
 
 pub async fn set(state: &State, app_id: &str, key: &str, value: &str) -> anyhow::Result<()> {
@@ -268,36 +273,32 @@ pub async fn entries(state: &State, app_id: &str) -> anyhow::Result<Vec<Entry>> 
     Ok(entries)
 }
 
-/// Everything the env file carries, in its order. A managed key wins over a user variable of
-/// the same name.
+/// Everything the env file carries, in its order. A managed or reserved key wins over a user
+/// variable of the same name. `ports` is each port process with its port.
 pub fn pairs(
     vars: &[(String, String)],
     managed: &Managed,
-    routes: &[Route],
+    ports: &[(String, u16)],
 ) -> Vec<(String, String)> {
     let managed = managed.pairs();
+    let reserved = reserved_keys(ports);
     let mut out: Vec<(String, String)> = vars
         .iter()
-        .filter(|(key, _)| !managed.iter().any(|(m, _)| m == key))
+        .filter(|(key, _)| !managed.iter().any(|(m, _)| m == key) && !reserved.contains(key))
         .chain(managed.iter())
         .cloned()
         .collect();
-    let mut seen = Vec::new();
-    for route in routes {
-        if seen.contains(&route.port_name) {
-            continue;
-        }
-        seen.push(route.port_name.clone());
-        out.push((port_var(&route.port_name), route.port.to_string()));
+    for (name, port) in ports {
+        out.push((port_var(name), port.to_string()));
     }
     out.push(("HOST".into(), HOST.into()));
     out
 }
 
 /// systemd's `EnvironmentFile=` dialect: no expansion, but an unquoted backslash is an escape.
-pub fn render(vars: &[(String, String)], managed: &Managed, routes: &[Route]) -> String {
+pub fn render(vars: &[(String, String)], managed: &Managed, ports: &[(String, u16)]) -> String {
     let mut out = String::new();
-    for (key, value) in pairs(vars, managed, routes) {
+    for (key, value) in pairs(vars, managed, ports) {
         out.push_str(&key);
         out.push('=');
         out.push_str(&quote(&value));
@@ -329,38 +330,41 @@ fn quote(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::apps::tests::{new_app, route, state};
+    use crate::apps::tests::{new_app, state};
+
+    fn ports(list: &[(&str, u16)]) -> Vec<(String, u16)> {
+        list.iter().map(|(n, p)| (n.to_string(), *p)).collect()
+    }
 
     #[test]
-    fn env_renders_user_vars_then_ports_and_quotes_nothing_it_does_not_have_to() {
-        let routes = vec![
-            route("/", "main", 20000, false),
-            route("/ws", "ws", 20001, true),
-        ];
+    fn env_renders_user_vars_then_every_process_port_and_quotes_nothing_it_does_not_have_to() {
         let out = render(
             &[
                 ("DATABASE_URL".into(), "postgres://x".into()),
                 ("GREETING".into(), "hello world".into()),
             ],
             &Managed::default(),
-            &routes,
+            &ports(&[("web", 20000), ("ws", 20001)]),
         );
         assert_eq!(
             out,
-            "DATABASE_URL=postgres://x\nGREETING=\"hello world\"\nPORT=20000\nWS_PORT=20001\nHOST=127.0.0.1\n"
+            "DATABASE_URL=postgres://x\nGREETING=\"hello world\"\nWEB_PORT=20000\nWS_PORT=20001\nHOST=127.0.0.1\n"
         );
     }
 
     #[test]
-    fn a_shared_port_name_is_written_once() {
-        let routes = vec![
-            route("/", "main", 20000, false),
-            route("/api", "main", 20000, false),
-        ];
-        assert_eq!(
-            render(&[], &Managed::default(), &routes),
-            "PORT=20000\nHOST=127.0.0.1\n"
+    fn a_user_variable_cannot_shadow_a_port_or_the_host() {
+        let out = render(
+            &[
+                ("PORT".into(), "80".into()),
+                ("WEB_PORT".into(), "81".into()),
+                ("HOST".into(), "0.0.0.0".into()),
+                ("KEEP".into(), "1".into()),
+            ],
+            &Managed::default(),
+            &ports(&[("web", 20000)]),
         );
+        assert_eq!(out, "KEEP=1\nWEB_PORT=20000\nHOST=127.0.0.1\n");
     }
 
     #[test]
@@ -375,11 +379,11 @@ mod tests {
         let out = render(
             &[("APP_KEY".into(), "x".into())],
             &managed,
-            &[route("/", "main", 20000, false)],
+            &ports(&[("web", 20000)]),
         );
         assert_eq!(
             out,
-            "APP_KEY=x\nDATABASE_URL=postgres://a:b@127.0.0.1:5432/ledger_prod\nREDIS_URL=redis://:pw@127.0.0.1:20001/0\nPORT=20000\nHOST=127.0.0.1\n"
+            "APP_KEY=x\nDATABASE_URL=postgres://a:b@127.0.0.1:5432/ledger_prod\nREDIS_URL=redis://:pw@127.0.0.1:20001/0\nWEB_PORT=20000\nHOST=127.0.0.1\n"
         );
         assert_eq!(managed.keys(), vec!["DATABASE_URL", "REDIS_URL"]);
     }
@@ -461,10 +465,14 @@ mod tests {
     }
 
     #[test]
-    fn port_names_become_uppercase_variables() {
-        assert_eq!(port_var("main"), "PORT");
+    fn process_names_become_uppercase_port_variables() {
+        assert_eq!(port_var("web"), "WEB_PORT");
         assert_eq!(port_var("ws"), "WS_PORT");
         assert_eq!(port_var("admin_ui"), "ADMIN_UI_PORT");
+        assert_eq!(
+            reserved_keys(&[("web".into(), 1)]),
+            vec!["PORT", "HOST", "WEB_PORT"]
+        );
     }
 
     #[tokio::test]

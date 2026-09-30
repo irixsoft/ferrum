@@ -217,7 +217,8 @@ async fn creating_an_app_provisions_it_and_returns_never_deployed() {
         .await;
     assert_eq!(res.status, StatusCode::CREATED, "{}", res.json);
     assert_eq!(res.json["slug"], "ledger");
-    assert!(res.json["routes"][0]["port"].as_u64().unwrap() >= 20000);
+    assert!(res.json["processes"][0]["port"].as_u64().unwrap() >= 20000);
+    assert_eq!(res.json["processes"][0]["kind"], "command");
     assert!(
         h.platform
             .calls()
@@ -306,17 +307,23 @@ async fn updating_an_app_reprovisions_it() {
     let res = h
         .patch_with_cookie(
             "/api/apps/ledger",
-            r#"{"memory_mb":1024,"routes":[{"path":"/","port_name":"main"},{"path":"/ws","port_name":"ws","websocket":true}]}"#,
+            r#"{"processes":[{"name":"web","start":"bun run start","memory_mb":1024},{"name":"ws","start":"bun run ws"}],"routes":[{"path":"/","process":"web"},{"path":"/ws","process":"ws","websocket":true}]}"#,
             &cookie,
         )
         .await;
     assert_eq!(res.status, StatusCode::OK, "{}", res.json);
-    assert_eq!(res.json["memory_mb"], 1024);
+    assert_eq!(res.json["processes"][0]["memory_mb"], 1024);
+    assert_eq!(res.json["processes"][1]["name"], "ws");
     let unit = h
         .platform
-        .written("/etc/systemd/system/ferrum-app-ledger.service")
+        .written("/etc/systemd/system/ferrum-app-ledger-web.service")
         .unwrap();
     assert!(unit.contains("MemoryMax=1024M"));
+    assert!(
+        h.platform
+            .written("/etc/systemd/system/ferrum-app-ledger-ws.service")
+            .is_some()
+    );
     let vhost = h
         .platform
         .written("/etc/nginx/conf.d/ferrum-ledger.conf")
@@ -324,7 +331,11 @@ async fn updating_an_app_reprovisions_it() {
     assert!(vhost.contains("location /ws {"));
 
     let bad = h
-        .patch_with_cookie("/api/apps/ledger", r#"{"memory_mb":1}"#, &cookie)
+        .patch_with_cookie(
+            "/api/apps/ledger",
+            r#"{"processes":[{"name":"web","start":"bun run start","memory_mb":1}]}"#,
+            &cookie,
+        )
         .await;
     assert_eq!(bad.status, StatusCode::BAD_REQUEST);
 }

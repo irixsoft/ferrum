@@ -1,5 +1,5 @@
 use super::{HOST, INTERVAL, Sample, cpu, now, prune, record};
-use crate::apps::{self, unit::unit_name};
+use crate::apps;
 use crate::state::State;
 use ferrum_platform::{Platform, ProcStat};
 use std::collections::HashMap;
@@ -70,27 +70,38 @@ impl Sampler {
         record(&self.state, HOST, &sample).await
     }
 
+    /// One sample per app: its processes' memory added up, their CPU shares added up.
     async fn sample_apps(&mut self) -> anyhow::Result<()> {
         let at = now();
         for app in apps::list(&self.state).await? {
-            if !app.runtime.has_process() {
+            let mut memory = 0;
+            let mut peak = 0;
+            let mut cpu_pct = 0.0;
+            let mut ready = false;
+            for process in app.command_processes() {
+                let unit = process.unit_name(&app.slug);
+                let Some(stats) = self.platform.cgroup_stats(&unit)? else {
+                    self.units.remove(&unit);
+                    continue;
+                };
+                let seen = Instant::now();
+                memory += stats.memory_current;
+                peak += stats.memory_peak;
+                if let Some((prev_usec, prev_at)) =
+                    self.units.insert(unit, (stats.cpu_usage_usec, seen))
+                {
+                    cpu_pct += cpu::cgroup_percent(prev_usec, stats.cpu_usage_usec, seen - prev_at);
+                    ready = true;
+                }
+            }
+            if !ready {
                 continue;
             }
-            let unit = unit_name(&app.slug);
-            let Some(stats) = self.platform.cgroup_stats(&unit)? else {
-                self.units.remove(&unit);
-                continue;
-            };
-            let seen = Instant::now();
-            let Some((prev_usec, prev_at)) = self.units.insert(unit, (stats.cpu_usage_usec, seen))
-            else {
-                continue;
-            };
             let sample = Sample {
                 at,
-                cpu_pct: cpu::cgroup_percent(prev_usec, stats.cpu_usage_usec, seen - prev_at),
-                memory_bytes: stats.memory_current,
-                memory_peak_bytes: Some(stats.memory_peak),
+                cpu_pct,
+                memory_bytes: memory,
+                memory_peak_bytes: Some(peak),
                 disk_used_bytes: None,
                 net_rx_bytes: None,
                 net_tx_bytes: None,
@@ -130,11 +141,10 @@ mod tests {
             .await
             .unwrap();
         let mut docs = new_app("docs", &[("/", "main", false)]);
-        docs.runtime = crate::runtime::RuntimeKind::Static;
-        docs.output_dir = Some("dist".into());
+        docs.processes = vec![crate::apps::processes::NewProcess::folder("web", "dist")];
         apps::create(&state, docs).await.unwrap();
         platform.set_cgroup(
-            "ferrum-app-ledger",
+            "ferrum-app-ledger-web",
             CgroupStats {
                 memory_current: 90_000_000,
                 memory_peak: 120_000_000,
@@ -154,7 +164,7 @@ mod tests {
         });
         platform.set_net(1500, 2000);
         platform.set_cgroup(
-            "ferrum-app-ledger",
+            "ferrum-app-ledger-web",
             CgroupStats {
                 memory_current: 95_000_000,
                 memory_peak: 125_000_000,
@@ -183,7 +193,7 @@ mod tests {
         );
         assert!(series(&state, HOST, 3600, 60).await.unwrap().t.len() == 1);
 
-        platform.clear_cgroup("ferrum-app-ledger");
+        platform.clear_cgroup("ferrum-app-ledger-web");
         sampler.tick().await.unwrap();
         assert_eq!(
             latest(&state, &app.id).await.unwrap().unwrap().at,

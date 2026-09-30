@@ -11,6 +11,7 @@ pub mod github;
 pub mod host;
 pub mod http;
 pub mod logs;
+pub mod manifest;
 pub mod metrics;
 pub mod nginx;
 pub mod postgres;

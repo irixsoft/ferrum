@@ -270,6 +270,11 @@ pub async fn serve(data_dir: &Path) -> anyhow::Result<()> {
         Ok(n) => tracing::info!(instances = n, "redis configuration refreshed"),
         Err(e) => tracing::warn!(error = %e, "refreshing the redis configuration"),
     }
+    match ferrum_core::apps::provision::migrate_units(&state, deps.platform.as_ref()).await {
+        Ok(0) => {}
+        Ok(n) => tracing::info!(apps = n, "app units moved to one per process"),
+        Err(e) => tracing::warn!(error = %e, "moving app units to one per process"),
+    }
     let app_state = AppState::new(state.clone(), deps);
     ferrum_core::certs::spawn_sweeper(
         state.clone(),

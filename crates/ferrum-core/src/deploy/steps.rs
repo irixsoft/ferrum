@@ -3,10 +3,11 @@ use super::run::{CPU_WEIGHT, Ctx, DISK_MIN_BYTES, IO_WEIGHT};
 use super::{
     Commit, Deploy, DeployState, Outcome, Trigger, env_scan, log, maintenance, short, snapshots,
 };
-use crate::apps::provision::{app_dir, user_name, write_env};
-use crate::apps::unit::unit_name;
-use crate::apps::{App, env, packages};
+use crate::apps::provision::{self, app_dir, user_name, write_env};
+use crate::apps::{self, App, env, packages};
+use crate::events::{self, Kind};
 use crate::github::commits;
+use crate::manifest::{self, Manifest};
 use crate::runtime::toolchain;
 use crate::runtime::{Phase, RuntimeKind};
 use crate::{postgres, runtime as rt};
@@ -27,6 +28,8 @@ pub struct Job {
     release_dir: Option<PathBuf>,
     swapped: bool,
     maintenance_on: bool,
+    stopped_all: bool,
+    refused: bool,
     previous: Option<Release>,
 }
 
@@ -39,6 +42,8 @@ impl Job {
             release_dir: None,
             swapped: false,
             maintenance_on: false,
+            stopped_all: false,
+            refused: false,
             previous: None,
         }
     }
@@ -61,6 +66,11 @@ impl Job {
         self.command_step(DeployState::InstallingDeps, "install")
             .await?;
         self.command_step(DeployState::Building, "build").await?;
+        let dir = self
+            .release_dir
+            .clone()
+            .expect("cloned before reading the manifest");
+        self.manifest_step(&dir).await?;
         self.migration_steps().await?;
         let dir = self.release_dir.clone().expect("cloned before swapping");
         let release = releases::record(
@@ -137,12 +147,91 @@ impl Job {
             )
             .await?;
         }
+        let target_dir = PathBuf::from(&target.dir);
+        self.manifest_step(&target_dir).await?;
         self.tail(target).await
     }
 
-    /// Swap, restart, health, lift maintenance; shared by a build and a rollback.
+    /// The tag's own description of the app, applied when the app follows its file. A file
+    /// that names a process a domain or path still needs refuses the deploy before anything
+    /// is touched.
+    async fn manifest_step(&mut self, release_dir: &Path) -> anyhow::Result<()> {
+        if !self.app.follow_repo_file {
+            return Ok(());
+        }
+        let work = work_dir(release_dir, &self.app.root);
+        let found = manifest::read_dir(self.ctx.platform.as_ref(), &work);
+        let manifest = match found {
+            Ok(Some(manifest)) => manifest,
+            Ok(None) => {
+                self.say(
+                    "No ferrum.toml or Procfile in this tag; the configuration stays as it is",
+                )
+                .await?;
+                return Ok(());
+            }
+            Err(e) => return self.refuse(format!("{e:#}")).await,
+        };
+        if let Some(reason) = self.missing_target(&manifest) {
+            return self.refuse(reason).await;
+        }
+        let applied = match apps::apply_manifest(&self.ctx.state, &self.app, &manifest).await {
+            Ok(applied) => applied,
+            Err(e) => {
+                return self
+                    .refuse(format!(
+                        "{} was not accepted: {e:#}",
+                        manifest.source.file_name()
+                    ))
+                    .await;
+            }
+        };
+        self.say(&describe_manifest(&manifest, &applied)).await?;
+        self.app = applied;
+        write_env(&self.ctx.state, self.ctx.platform.as_ref(), &self.app).await?;
+        Ok(())
+    }
+
+    /// A served domain or a stored path pointing at a process the file no longer names.
+    fn missing_target(&self, manifest: &Manifest) -> Option<String> {
+        if !manifest.states_processes() {
+            return None;
+        }
+        let named = |name: &str| manifest.processes.iter().any(|p| p.name == name);
+        for route in &self.app.routes {
+            if !named(&route.process)
+                && !manifest.routes.iter().any(|r| r.path == route.path)
+                && route.path != "/"
+            {
+                return Some(format!(
+                    "The tag has no process named {}, which the path {} points at.",
+                    route.process, route.path
+                ));
+            }
+        }
+        None
+    }
+
+    async fn refuse(&mut self, reason: String) -> anyhow::Result<()> {
+        self.refused = true;
+        events::emit(
+            &self.ctx.state,
+            Kind::DeployRefused,
+            Some(&self.app.id),
+            &self.app.slug,
+            &format!("{}: deploy refused. {reason}", self.app.slug),
+            Some(&format!("/apps/{}?tab=deploys", self.app.slug)),
+        )
+        .await;
+        bail!("{reason}")
+    }
+
+    /// Swap, units, restart, health, lift maintenance; shared by a build and a rollback.
     async fn tail(&mut self, release: Release) -> anyhow::Result<Outcome> {
         self.swap_step(&release).await?;
+        if let Err(reason) = self.units_step().await {
+            return self.recover(format!("{reason:#}"), &release).await;
+        }
         if let Err(reason) = self.restart_step().await {
             return self.recover(format!("{reason:#}"), &release).await;
         }
@@ -160,6 +249,20 @@ impl Job {
         .await?;
         self.say(&format!("Live at {}", short(&release.commit_sha)))
             .await?;
+        events::emit(
+            &self.ctx.state,
+            Kind::DeployLive,
+            Some(&self.app.id),
+            &self.app.slug,
+            &format!(
+                "{} is live at {} ({}).",
+                self.app.slug,
+                short(&release.commit_sha),
+                release.git_ref
+            ),
+            Some(&format!("/apps/{}", self.app.slug)),
+        )
+        .await;
         let protect: Vec<&str> = self.previous.iter().map(|r| r.id.as_str()).collect();
         releases::prune(
             &self.ctx.state,
@@ -176,6 +279,9 @@ impl Job {
         let reason = format!("{error:#}");
         let _ = self.say(&format!("✗ {reason}")).await;
         self.lift_maintenance().await;
+        if self.stopped_all {
+            self.start_all().await;
+        }
         if let Some(dir) = &self.release_dir
             && !self.swapped
         {
@@ -189,7 +295,28 @@ impl Job {
             None,
         )
         .await?;
+        if !self.refused {
+            events::emit(
+                &self.ctx.state,
+                Kind::DeployFailed,
+                Some(&self.app.id),
+                &self.app.slug,
+                &format!("{}: deploy failed. {reason}", self.app.slug),
+                Some(&format!("/apps/{}?tab=deploys", self.app.slug)),
+            )
+            .await;
+        }
         Ok(Outcome::Failed)
+    }
+
+    async fn start_all(&mut self) {
+        for process in self.app.command_processes() {
+            let _ = self
+                .ctx
+                .platform
+                .service(ServiceAction::Start, &process.unit_name(&self.app.slug));
+        }
+        self.stopped_all = false;
     }
 
     async fn clone_step(&mut self) -> anyhow::Result<()> {
@@ -295,7 +422,7 @@ impl Job {
         };
         let stored = env::keys(&self.ctx.state, &self.app.id).await?;
         let mut managed = env::managed_for(&self.ctx.state, &self.app).await?.keys();
-        managed.extend(self.app.routes.iter().map(|r| env::port_var(&r.port_name)));
+        managed.extend(env::reserved_keys(&self.app.ports()));
         let findings = env_scan::unset(&referenced, &stored, &managed);
         if findings.is_empty() {
             return Ok(());
@@ -384,6 +511,20 @@ impl Job {
                 unlisted.join(", ")
             ))
             .await?;
+            for package in &unlisted {
+                events::emit(
+                    &self.ctx.state,
+                    Kind::PackageDropped,
+                    Some(&self.app.id),
+                    package,
+                    &format!(
+                        "{} no longer lists {package} in its Aptfile. It is still installed; uninstall it from the app's page if nothing else needs it.",
+                        self.app.slug
+                    ),
+                    Some(&format!("/apps/{}?tab=configuration", self.app.slug)),
+                )
+                .await;
+            }
         }
         let resolved: Vec<String> = self
             .app
@@ -487,6 +628,18 @@ impl Job {
         self.enter(DeployState::MaintenanceOn).await?;
         maintenance::on(self.ctx.platform.as_ref(), &self.app.slug)?;
         self.maintenance_on = true;
+        if self.app.current_release_id.is_some() {
+            for process in self.app.command_processes() {
+                let unit = process.unit_name(&self.app.slug);
+                self.ctx
+                    .platform
+                    .service(ServiceAction::Stop, &unit)
+                    .with_context(|| format!("stopping {}", process.name))?;
+            }
+            self.stopped_all = true;
+            self.say("Every process is stopped until the migration is through")
+                .await?;
+        }
         Ok(())
     }
 
@@ -504,65 +657,114 @@ impl Job {
         Ok(())
     }
 
-    async fn restart_step(&mut self) -> anyhow::Result<()> {
-        if !self.app.runtime.has_process() {
-            return self
-                .skip(DeployState::Restarting, "static site, nothing to restart")
-                .await;
-        }
-        self.enter(DeployState::Restarting).await?;
-        let action = if self.previous.is_some() {
-            ServiceAction::Restart
-        } else {
-            ServiceAction::EnableNow
-        };
-        self.ctx
-            .platform
-            .service(action, &unit_name(&self.app.slug))
-            .context("starting the unit")?;
+    /// Every process gets its unit for this release, and the site follows the paths.
+    async fn units_step(&mut self) -> anyhow::Result<()> {
+        provision::write_units(&self.ctx.state, self.ctx.platform.as_ref(), &self.app)
+            .await
+            .context("writing the units")?;
+        provision::refresh_vhost(self.ctx.platform.as_ref(), &self.app)?;
         Ok(())
     }
 
-    /// `None` when healthy; otherwise the sentence for the deploy.
+    async fn restart_step(&mut self) -> anyhow::Result<()> {
+        let units: Vec<(String, String)> = self
+            .app
+            .command_processes()
+            .map(|p| (p.name.clone(), p.unit_name(&self.app.slug)))
+            .collect();
+        if units.is_empty() {
+            return self
+                .skip(DeployState::Restarting, "folders only, nothing to restart")
+                .await;
+        }
+        self.enter(DeployState::Restarting).await?;
+        for (name, unit) in units {
+            let action = if self.ctx.platform.service_is_active(&unit) {
+                ServiceAction::Restart
+            } else {
+                ServiceAction::EnableNow
+            };
+            self.ctx
+                .platform
+                .service(action, &unit)
+                .with_context(|| format!("starting {name}"))?;
+        }
+        self.stopped_all = false;
+        Ok(())
+    }
+
+    /// `None` when every process is healthy; otherwise the sentence for the deploy. A port
+    /// process answers its health path within the budget; a worker is still running after
+    /// the settle time.
     async fn health_step(&mut self) -> anyhow::Result<Option<String>> {
-        if !self.app.runtime.has_process() {
-            self.skip(DeployState::HealthChecking, "static site, nothing to check")
-                .await?;
+        let processes: Vec<_> = self.app.command_processes().cloned().collect();
+        if processes.is_empty() {
+            self.skip(
+                DeployState::HealthChecking,
+                "folders only, nothing to check",
+            )
+            .await?;
             return Ok(None);
         }
         self.enter(DeployState::HealthChecking).await?;
-        let port = self.app.main_port().context("the app has no port")?;
-        let url = format!("http://127.0.0.1:{port}{}", self.app.health.path);
-        let budget = Duration::from_secs(self.app.health.startup_budget_secs as u64);
-        let started = Instant::now();
-        loop {
-            let answer = self.ctx.http.get(&url).timeout(HEALTH_TIMEOUT).send().await;
-            if let Ok(res) = answer
-                && (res.status().is_success() || res.status().is_redirection())
-            {
+        let budget = Duration::from_secs(self.app.startup_budget_secs as u64);
+        for process in &processes {
+            let Some(port) = process.port else {
+                continue;
+            };
+            let path = process.health_path.clone().unwrap_or_else(|| "/".into());
+            let url = format!("http://127.0.0.1:{port}{path}");
+            let started = Instant::now();
+            loop {
+                let answer = self.ctx.http.get(&url).timeout(HEALTH_TIMEOUT).send().await;
+                if let Ok(res) = answer
+                    && (res.status().is_success() || res.status().is_redirection())
+                {
+                    self.say(&format!(
+                        "{} healthy after {}s ({path} answered {})",
+                        process.name,
+                        started.elapsed().as_secs(),
+                        res.status().as_u16()
+                    ))
+                    .await?;
+                    break;
+                }
+                if started.elapsed() >= budget {
+                    return Ok(Some(format!(
+                        "The health check at {path} for {} did not pass within {}s.",
+                        process.name, self.app.startup_budget_secs
+                    )));
+                }
+                tokio::time::sleep(self.ctx.health_interval).await;
+            }
+        }
+        let workers: Vec<_> = processes.iter().filter(|p| p.port.is_none()).collect();
+        if !workers.is_empty() {
+            tokio::time::sleep(self.ctx.settle).await;
+            for process in workers {
+                let unit = process.unit_name(&self.app.slug);
+                if !self.ctx.platform.service_is_active(&unit) {
+                    return Ok(Some(format!(
+                        "The process {} stopped within {}s of starting.",
+                        process.name,
+                        self.ctx.settle.as_secs()
+                    )));
+                }
                 self.say(&format!(
-                    "Healthy after {}s ({} answered {})",
-                    started.elapsed().as_secs(),
-                    self.app.health.path,
-                    res.status().as_u16()
+                    "{} still running after {}s",
+                    process.name,
+                    self.ctx.settle.as_secs()
                 ))
                 .await?;
-                return Ok(None);
             }
-            if started.elapsed() >= budget {
-                return Ok(Some(format!(
-                    "The health check at {} did not pass within {}s.",
-                    self.app.health.path, self.app.health.startup_budget_secs
-                )));
-            }
-            tokio::time::sleep(self.ctx.health_interval).await;
         }
+        Ok(None)
     }
 
-    /// The previous release is present and built, so repointing and restarting is enough.
+    /// The previous release is present and built, so repointing, rewriting the units for
+    /// what that release describes, and restarting is enough.
     async fn recover(&mut self, reason: String, attempted: &Release) -> anyhow::Result<Outcome> {
         self.say(&format!("✗ {reason}")).await?;
-        let unit = unit_name(&self.app.slug);
         let previous = self
             .previous
             .clone()
@@ -573,7 +775,21 @@ impl Job {
                     .platform
                     .symlink_swap(Path::new(&previous.dir), &releases::current_link(&self.app))?;
                 releases::set_current(&self.ctx.state, &self.app.id, Some(&previous.id)).await?;
-                self.ctx.platform.service(ServiceAction::Restart, &unit)?;
+                self.reapply_previous(&previous).await;
+                let _ =
+                    provision::write_units(&self.ctx.state, self.ctx.platform.as_ref(), &self.app)
+                        .await;
+                let _ = provision::refresh_vhost(self.ctx.platform.as_ref(), &self.app);
+                for process in self.app.command_processes() {
+                    let unit = process.unit_name(&self.app.slug);
+                    let action = if self.ctx.platform.service_is_active(&unit) {
+                        ServiceAction::Restart
+                    } else {
+                        ServiceAction::EnableNow
+                    };
+                    self.ctx.platform.service(action, &unit)?;
+                }
+                self.stopped_all = false;
                 self.say(&format!("Rolled back to {}", short(&previous.commit_sha)))
                     .await?;
                 (
@@ -582,9 +798,15 @@ impl Job {
                 )
             }
             None => {
-                let _ = self.ctx.platform.service(ServiceAction::Stop, &unit);
+                for process in self.app.command_processes() {
+                    let _ = self
+                        .ctx
+                        .platform
+                        .service(ServiceAction::Stop, &process.unit_name(&self.app.slug));
+                }
+                self.stopped_all = false;
                 releases::set_current(&self.ctx.state, &self.app.id, None).await?;
-                self.say("No earlier release to fall back to; the unit is stopped")
+                self.say("No earlier release to fall back to; every process is stopped")
                     .await?;
                 (Outcome::Failed, reason)
             }
@@ -598,7 +820,31 @@ impl Job {
             Some(&attempted.id),
         )
         .await?;
+        events::emit(
+            &self.ctx.state,
+            Kind::DeployFailed,
+            Some(&self.app.id),
+            &self.app.slug,
+            &format!("{}: deploy failed. {reason}", self.app.slug),
+            Some(&format!("/apps/{}?tab=deploys", self.app.slug)),
+        )
+        .await;
         Ok(outcome)
+    }
+
+    /// The previous release's own file decides its processes again; a file that will not
+    /// apply leaves the current list, which still names units that exist.
+    async fn reapply_previous(&mut self, previous: &Release) {
+        if !self.app.follow_repo_file {
+            return;
+        }
+        let work = work_dir(Path::new(&previous.dir), &self.app.root);
+        if let Ok(Some(manifest)) = manifest::read_dir(self.ctx.platform.as_ref(), &work)
+            && let Ok(applied) = apps::apply_manifest(&self.ctx.state, &self.app, &manifest).await
+        {
+            self.app = applied;
+            let _ = write_env(&self.ctx.state, self.ctx.platform.as_ref(), &self.app).await;
+        }
     }
 
     async fn maintenance_off_step(&mut self) -> anyhow::Result<()> {
@@ -767,11 +1013,13 @@ pub async fn command_env(
 ) -> anyhow::Result<Vec<(String, String)>> {
     let kind = match phase {
         Phase::Build => app.toolchain,
-        Phase::Run if app.runtime.has_process() => app.runtime,
-        Phase::Run => app.toolchain,
+        Phase::Run => app.runtime,
     };
     let toolchain_dir = ctx.toolchains.dir(app.toolchain, &app.runtime_version);
     let mut env = rt::by_kind(kind).env_for(phase, &toolchain_dir, app.main_port());
+    if let Some(port) = app.main_port() {
+        env.push(("PORT".into(), port.to_string()));
+    }
     if let Some(extra) = toolchain::extra_for(&ctx.state, &ctx.toolchains, app).await?
         && let Some(path) = env.iter_mut().find(|(k, _)| k == "PATH")
     {
@@ -797,8 +1045,35 @@ pub async fn command_env(
     }
     let vars = env::all(&ctx.state, &app.id).await?;
     let managed = env::managed_for(&ctx.state, app).await?;
-    env.extend(env::pairs(&vars, &managed, &app.routes));
+    env.extend(env::pairs(&vars, &managed, &app.ports()));
     Ok(dedup_last(env))
+}
+
+/// One deploy log line for what the file changed.
+fn describe_manifest(manifest: &Manifest, applied: &App) -> String {
+    let file = manifest.source.file_name();
+    if !manifest.states_processes() {
+        return format!("{file} read; it names no processes, so the list stays as it is");
+    }
+    let processes: Vec<String> = applied
+        .processes
+        .iter()
+        .map(|p| match (p.port, p.static_dir()) {
+            (Some(port), _) => format!("{} (port {port})", p.name),
+            (None, Some(_)) => format!("{} (folder)", p.name),
+            (None, None) => p.name.clone(),
+        })
+        .collect();
+    let paths: Vec<String> = applied
+        .routes
+        .iter()
+        .map(|r| format!("{} → {}", r.path, r.process))
+        .collect();
+    format!(
+        "{file}: processes {}; paths {}",
+        processes.join(", "),
+        paths.join(", ")
+    )
 }
 
 /// A sentence for an exit that is not success, or `None` for status 0.

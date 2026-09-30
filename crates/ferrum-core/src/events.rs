@@ -152,7 +152,7 @@ async fn insert(
     )
     .execute(&state.pool)
     .await?;
-    Ok(by_id(state, &id).await?)
+    by_id(state, &id).await
 }
 
 pub async fn by_id(state: &State, id: &str) -> anyhow::Result<Option<Event>> {
@@ -236,7 +236,11 @@ mod tests {
         assert!(again.is_none());
         assert_eq!(unread_count(&s).await.unwrap(), 1);
         mark_all_read(&s).await.unwrap();
-        assert!(emit(&s, Kind::PackageDropped, None, "ffmpeg", "dropped", None).await.is_some());
+        assert!(
+            emit(&s, Kind::PackageDropped, None, "ffmpeg", "dropped", None)
+                .await
+                .is_some()
+        );
     }
 
     #[tokio::test]
@@ -244,8 +248,24 @@ mod tests {
         let mut s = state().await;
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
         s.events_tx = Some(tx);
-        emit(&s, Kind::DeployLive, None, "ledger", "Live at abc123", Some("/apps/ledger")).await;
-        emit(&s, Kind::DeployLive, None, "ledger", "Live at abc123", Some("/apps/ledger")).await;
+        emit(
+            &s,
+            Kind::DeployLive,
+            None,
+            "ledger",
+            "Live at abc123",
+            Some("/apps/ledger"),
+        )
+        .await;
+        emit(
+            &s,
+            Kind::DeployLive,
+            None,
+            "ledger",
+            "Live at abc123",
+            Some("/apps/ledger"),
+        )
+        .await;
         assert_eq!(unread_count(&s).await.unwrap(), 2);
         assert_eq!(rx.recv().await.unwrap().sentence, "Live at abc123");
         let listed = list(&s, 10, true).await.unwrap();

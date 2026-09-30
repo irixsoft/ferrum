@@ -27,6 +27,8 @@ pub struct Ctx {
     pub build_timeout: Duration,
     pub migrate_timeout: Duration,
     pub health_interval: Duration,
+    /// How long a process without a port must stay up after starting to count as healthy.
+    pub settle: Duration,
 }
 
 impl Ctx {
@@ -49,6 +51,7 @@ impl Ctx {
             build_timeout: Duration::from_secs(settings::DEFAULT_BUILD_SECS),
             migrate_timeout: Duration::from_secs(settings::DEFAULT_MIGRATE_SECS),
             health_interval: Duration::from_secs(1),
+            settle: Duration::from_secs(10),
         }
     }
 
@@ -83,8 +86,9 @@ pub async fn run(ctx: &Ctx, deploy_id: &str) -> anyhow::Result<Outcome> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::apps::processes::NewProcess;
     use crate::apps::tests::{new_app, state};
-    use crate::apps::{self, App, NewApp, NewRoute, provision};
+    use crate::apps::{self, App, NewApp, provision};
     use crate::deploy::tests::commit;
     use crate::deploy::{Commit, DeployState, StepStatus, Trigger, create, log, releases};
     use crate::postgres;
@@ -142,6 +146,7 @@ mod tests {
             Store::at("/var/lib/ferrum/runtimes"),
         );
         ctx.health_interval = Duration::from_millis(20);
+        ctx.settle = Duration::from_millis(30);
         ctx
     }
 
@@ -153,10 +158,10 @@ mod tests {
         tweak: impl FnOnce(&mut NewApp),
     ) -> App {
         let mut new = new_app(slug, &[("/", "main", false)]);
-        new.health.startup_budget_secs = 5;
+        new.startup_budget_secs = 5;
         tweak(&mut new);
         let app = apps::create(state, new).await.unwrap();
-        sqlx::query("UPDATE app_ports SET port = ? WHERE app_id = ? AND name = 'main'")
+        sqlx::query("UPDATE app_ports SET port = ? WHERE app_id = ? AND name = 'web'")
             .bind(port as i64)
             .bind(&app.id)
             .execute(&state.pool)
@@ -220,7 +225,7 @@ mod tests {
             c.starts_with("symlink_swap /var/lib/ferrum/apps/ledger/releases/")
                 && c.ends_with(" /var/lib/ferrum/apps/ledger/current")
         });
-        let start = position(&calls, |c| c == "service enable-now ferrum-app-ledger");
+        let start = position(&calls, |c| c == "service enable-now ferrum-app-ledger-web");
         assert!(
             clone < checkout
                 && checkout < scrub
@@ -302,14 +307,21 @@ mod tests {
             ("node_modules/pg/index.js", "process.env.PGHOST"),
         ]);
         let health = Health::serve(200).await;
+        let ws_health = Health::serve(200).await;
         let app = provisioned(&state, &p, "ledger", health.port, |new| {
-            new.routes.push(NewRoute {
-                path: "/ws".into(),
-                port_name: "ws".into(),
-                websocket: true,
+            new.processes.push(NewProcess {
+                name: "ws".into(),
+                start: Some("bun run ws".into()),
+                ..NewProcess::default()
             });
         })
         .await;
+        sqlx::query("UPDATE app_ports SET port = ? WHERE app_id = ? AND name = 'ws'")
+            .bind(ws_health.port as i64)
+            .bind(&app.id)
+            .execute(&state.pool)
+            .await
+            .unwrap();
         apps::env::set(&state, &app.id, "STRIPE_KEY", "sk")
             .await
             .unwrap();
@@ -615,7 +627,7 @@ mod tests {
         let swap = position(&calls, |c| {
             c.starts_with("symlink_swap /var/lib/ferrum/apps/ledger/releases/")
         });
-        let start = position(&calls, |c| c == "service enable-now ferrum-app-ledger");
+        let start = position(&calls, |c| c == "service enable-now ferrum-app-ledger-web");
         let lift = position(&calls, |c| {
             c == "remove_file /var/lib/ferrum/apps/ledger/maintenance"
         });
@@ -842,7 +854,7 @@ mod tests {
         assert_eq!(
             calls
                 .iter()
-                .filter(|c| *c == "service restart ferrum-app-ledger")
+                .filter(|c| *c == "service restart ferrum-app-ledger-web")
                 .count(),
             2
         );
@@ -865,7 +877,7 @@ mod tests {
         assert!(d.failure_reason.unwrap().contains("did not pass within 5s"));
         assert!(
             p.calls()
-                .contains(&"service stop ferrum-app-ledger".to_string())
+                .contains(&"service stop ferrum-app-ledger-web".to_string())
         );
         assert_eq!(
             apps::by_slug(&state, "ledger")
@@ -882,8 +894,7 @@ mod tests {
         let (_d, state) = state().await;
         let p = Arc::new(FakePlatform::new());
         let app = provisioned(&state, &p, "docs", 20998, |new| {
-            new.runtime = RuntimeKind::Static;
-            new.output_dir = Some("dist".into());
+            new.processes = vec![NewProcess::folder("web", "dist")];
         })
         .await;
         let before = p.calls().len();
@@ -894,6 +905,199 @@ mod tests {
         assert_eq!(d.steps[9].status, StepStatus::Skipped);
         assert_eq!(d.steps[10].status, StepStatus::Skipped);
         assert!(p.link("/var/lib/ferrum/apps/docs/current").is_some());
+    }
+
+    #[tokio::test]
+    async fn a_manifest_with_two_processes_writes_two_units_and_checks_each() {
+        let (_d, state) = state().await;
+        let p = Arc::new(FakePlatform::new());
+        p.serve_clone(&[(
+            "ferrum.toml",
+            "[processes.web]\nstart = \"bun run serve\"\nhealth = \"/up\"\n[processes.jobs]\nstart = \"bun run jobs\"\n",
+        )]);
+        let health = Health::serve(200).await;
+        let app = provisioned(&state, &p, "ledger", health.port, |new| {
+            new.follow_repo_file = true;
+        })
+        .await;
+        let ctx = ctx(&state, &p);
+        let (outcome, d) = deploy(&ctx, &app, "abc1234").await;
+        assert_eq!(outcome, Outcome::Live, "{:?}", d.failure_reason);
+
+        let web = p
+            .written("/etc/systemd/system/ferrum-app-ledger-web.service")
+            .unwrap();
+        assert!(
+            web.contains("ExecStart=/bin/sh -c 'bun run serve'"),
+            "{web}"
+        );
+        let jobs = p
+            .written("/etc/systemd/system/ferrum-app-ledger-jobs.service")
+            .unwrap();
+        assert!(
+            jobs.contains("ExecStart=/bin/sh -c 'bun run jobs'"),
+            "{jobs}"
+        );
+        assert!(!jobs.contains("PORT="));
+        let calls = p.calls();
+        assert!(calls.contains(&"service enable-now ferrum-app-ledger-web".to_string()));
+        assert!(calls.contains(&"service enable-now ferrum-app-ledger-jobs".to_string()));
+        let text: Vec<String> = log::lines(&state, &d.id, 0)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|l| l.text)
+            .collect();
+        assert!(
+            text.iter().any(|l| l.starts_with("ferrum.toml: processes")),
+            "{text:#?}"
+        );
+        assert!(
+            text.iter()
+                .any(|l| l == "web healthy after 0s (/up answered 200)"),
+            "{text:#?}"
+        );
+        assert!(
+            text.iter()
+                .any(|l| l.starts_with("jobs still running after")),
+            "{text:#?}"
+        );
+        let stored = apps::by_slug(&state, "ledger").await.unwrap().unwrap();
+        assert_eq!(stored.processes.len(), 2);
+        assert_eq!(
+            stored.process("web").unwrap().health_path.as_deref(),
+            Some("/up")
+        );
+        assert_eq!(
+            stored.port_of("web"),
+            Some(health.port),
+            "the web port survives the manifest"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_worker_that_dies_within_the_settle_time_fails_the_deploy() {
+        let (_d, state) = state().await;
+        let p = Arc::new(FakePlatform::new());
+        p.serve_clone(&[(
+            "ferrum.toml",
+            "[processes.web]\nstart = \"bun run start\"\n[processes.jobs]\nstart = \"bun run jobs\"\n",
+        )]);
+        p.set_dead("ferrum-app-ledger-jobs");
+        let health = Health::serve(200).await;
+        let app = provisioned(&state, &p, "ledger", health.port, |new| {
+            new.follow_repo_file = true;
+        })
+        .await;
+        let ctx = ctx(&state, &p);
+        let (outcome, d) = deploy(&ctx, &app, "abc1234").await;
+        assert_eq!(outcome, Outcome::Failed);
+        assert!(
+            d.failure_reason
+                .as_deref()
+                .unwrap()
+                .starts_with("The process jobs stopped within"),
+            "{:?}",
+            d.failure_reason
+        );
+        assert!(
+            p.calls()
+                .contains(&"service stop ferrum-app-ledger-web".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn a_tag_that_drops_a_process_a_path_points_at_is_refused_before_anything_is_touched() {
+        let (_d, state) = state().await;
+        let p = Arc::new(FakePlatform::new());
+        p.serve_clone(&[(
+            "ferrum.toml",
+            "[processes.web]\nstart = \"bun run start\"\n",
+        )]);
+        let health = Health::serve(200).await;
+        let app = provisioned(&state, &p, "ledger", health.port, |new| {
+            new.follow_repo_file = true;
+            new.processes.push(NewProcess {
+                name: "realtime".into(),
+                start: Some("bun run rt".into()),
+                ..NewProcess::default()
+            });
+            new.routes.push(crate::apps::NewRoute {
+                path: "/live".into(),
+                process: "realtime".into(),
+                websocket: true,
+            });
+        })
+        .await;
+        let ctx = ctx(&state, &p);
+        let (outcome, d) = deploy(&ctx, &app, "abc1234").await;
+        assert_eq!(outcome, Outcome::Failed);
+        assert_eq!(
+            d.failure_reason.as_deref(),
+            Some("The tag has no process named realtime, which the path /live points at.")
+        );
+        assert!(
+            !p.calls()
+                .iter()
+                .any(|c| c.starts_with("symlink_swap") && c.ends_with("/current")),
+            "nothing was switched"
+        );
+        let stored = apps::by_slug(&state, "ledger").await.unwrap().unwrap();
+        assert_eq!(stored.processes.len(), 2, "the stored list is untouched");
+        let events = crate::events::list(&state, 10, true).await.unwrap();
+        assert_eq!(events[0].kind, "deploy_refused");
+        assert_eq!(events[0].subject, "ledger");
+    }
+
+    #[tokio::test]
+    async fn a_procfile_is_honoured_when_there_is_no_ferrum_toml() {
+        let (_d, state) = state().await;
+        let p = Arc::new(FakePlatform::new());
+        p.serve_clone(&[(
+            "Procfile",
+            "web: bun run serve\nworker: bun run worker\nrelease: bun run migrate\n",
+        )]);
+        let health = Health::serve(200).await;
+        let app = provisioned(&state, &p, "ledger", health.port, |new| {
+            new.follow_repo_file = true;
+        })
+        .await;
+        let ctx = ctx(&state, &p);
+        let (outcome, d) = deploy(&ctx, &app, "abc1234").await;
+        assert_eq!(outcome, Outcome::Live, "{:?}", d.failure_reason);
+        let web = p
+            .written("/etc/systemd/system/ferrum-app-ledger-web.service")
+            .unwrap();
+        assert!(web.contains("bun run serve"));
+        assert!(
+            p.written("/etc/systemd/system/ferrum-app-ledger-worker.service")
+                .is_some()
+        );
+        let stored = apps::by_slug(&state, "ledger").await.unwrap().unwrap();
+        assert_eq!(stored.commands.migrate.as_deref(), Some("bun run migrate"));
+    }
+
+    #[tokio::test]
+    async fn an_app_that_does_not_follow_its_file_ignores_it() {
+        let (_d, state) = state().await;
+        let p = Arc::new(FakePlatform::new());
+        p.serve_clone(&[(
+            "ferrum.toml",
+            "[processes.web]\nstart = \"bun run other\"\n[processes.jobs]\nstart = \"bun run jobs\"\n",
+        )]);
+        let health = Health::serve(200).await;
+        let app = provisioned(&state, &p, "ledger", health.port, |_| {}).await;
+        let ctx = ctx(&state, &p);
+        let (outcome, d) = deploy(&ctx, &app, "abc1234").await;
+        assert_eq!(outcome, Outcome::Live, "{:?}", d.failure_reason);
+        assert!(
+            p.written("/etc/systemd/system/ferrum-app-ledger-jobs.service")
+                .is_none()
+        );
+        let web = p
+            .written("/etc/systemd/system/ferrum-app-ledger-web.service")
+            .unwrap();
+        assert!(web.contains("bun run start"), "{web}");
     }
 
     #[tokio::test]
@@ -937,7 +1141,7 @@ mod tests {
         assert_eq!(
             p.calls()
                 .iter()
-                .filter(|c| *c == "service restart ferrum-app-ledger")
+                .filter(|c| *c == "service restart ferrum-app-ledger-web")
                 .count(),
             6
         );
@@ -1037,13 +1241,14 @@ mod tests {
                 first.dir
             )
         });
-        let restart = position(&calls, |c| c == "service restart ferrum-app-ledger");
+        let stop = position(&calls, |c| c == "service stop ferrum-app-ledger-web");
+        let restart = position(&calls, |c| c == "service enable-now ferrum-app-ledger-web");
         let lift = position(&calls, |c| {
             c == "remove_file /var/lib/ferrum/apps/ledger/maintenance"
         });
         assert!(
-            pause < restore && restore < swap && swap < restart && restart < lift,
-            "{calls:#?}"
+            pause < stop && stop < restore && restore < swap && swap < restart && restart < lift,
+            "the process is down while the snapshot loads: {calls:#?}"
         );
         let d = by_id(&state, &rollback.id).await.unwrap().unwrap();
         assert_eq!(d.release_id.as_deref(), Some(first.id.as_str()));

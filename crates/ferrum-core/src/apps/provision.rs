@@ -1,12 +1,13 @@
-use super::unit::{render_unit, unit_name, unit_path};
+use super::processes::{legacy_unit_name, legacy_unit_path, unit_path, unit_prefix};
+use super::unit::render_unit;
 use super::vhost::{custom_path, render_vhost, vhost_path};
 use super::{App, env};
 use crate::deploy::maintenance;
 use crate::runtime::toolchain::{self, Store};
 use crate::state::State;
-use crate::{APPS_DIR, acme, nginx, redis};
+use crate::{APPS_DIR, acme, apps, nginx, redis};
 use anyhow::Context;
-use ferrum_platform::ubuntu::NGINX_UNIT;
+use ferrum_platform::ubuntu::{NGINX_UNIT, SYSTEMD_UNIT_DIR};
 use ferrum_platform::{Platform, ServiceAction};
 use std::path::{Path, PathBuf};
 
@@ -43,20 +44,7 @@ pub async fn provision(state: &State, platform: &dyn Platform, app: &App) -> any
         platform.chown(&path, &user)?;
     }
     write_env(state, platform, app).await?;
-
-    if app.runtime.has_process() {
-        let store = Store::default();
-        let extra = toolchain::extra_for(state, &store, app).await?;
-        let unit = render_unit(
-            app,
-            &store.dir(app.toolchain, &app.runtime_version),
-            extra.as_deref(),
-        )?;
-        platform.write_file(&unit_path(&app.slug), &unit, 0o644)?;
-    } else {
-        platform.remove_file(&unit_path(&app.slug))?;
-    }
-    platform.service(ServiceAction::DaemonReload, "")?;
+    write_units(state, platform, app).await?;
 
     let custom = custom_path(&app.slug);
     if !platform.file_exists(&custom) {
@@ -66,6 +54,77 @@ pub async fn provision(state: &State, platform: &dyn Platform, app: &App) -> any
     nginx::replace_and_reload(platform, &vhost_path(&app.slug), &render_for(platform, app))
         .context("nginx refused the generated site configuration")?;
     Ok(())
+}
+
+/// One unit per command process; a unit for a process the app no longer has is stopped and
+/// removed, the pre-process unit `ferrum-app-<slug>` included. Ends with a daemon reload.
+pub async fn write_units(state: &State, platform: &dyn Platform, app: &App) -> anyhow::Result<()> {
+    let store = Store::default();
+    let extra = toolchain::extra_for(state, &store, app).await?;
+    let toolchain_dir = store.dir(app.toolchain, &app.runtime_version);
+    let mut wanted = Vec::new();
+    for process in app.command_processes() {
+        let unit = render_unit(app, process, &toolchain_dir, extra.as_deref())?;
+        let path = unit_path(&app.slug, &process.name);
+        platform.write_file(&path, &unit, 0o644)?;
+        wanted.push(path);
+    }
+    let stale = stale_units(platform, app, &wanted)?;
+    for path in &stale {
+        let name = path
+            .file_stem()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let _ = platform.service(ServiceAction::Stop, &name);
+        let _ = platform.service(ServiceAction::Disable, &name);
+        platform.remove_file(path)?;
+    }
+    if !wanted.is_empty() || !stale.is_empty() {
+        platform.service(ServiceAction::DaemonReload, "")?;
+    }
+    Ok(())
+}
+
+fn stale_units(
+    platform: &dyn Platform,
+    app: &App,
+    wanted: &[PathBuf],
+) -> anyhow::Result<Vec<PathBuf>> {
+    let prefix = unit_prefix(&app.slug);
+    let mut stale: Vec<PathBuf> = platform
+        .list_dir(Path::new(SYSTEMD_UNIT_DIR))
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|name| name.starts_with(&prefix) && name.ends_with(".service"))
+        .map(|name| Path::new(SYSTEMD_UNIT_DIR).join(name))
+        .filter(|path| !wanted.contains(path))
+        .collect();
+    let legacy = legacy_unit_path(&app.slug);
+    if platform.file_exists(&legacy) {
+        stale.push(legacy);
+    }
+    Ok(stale)
+}
+
+/// Brings every app from the one-unit layout to a unit per process, once, at daemon start.
+/// A unit that was running comes back as the app's processes.
+pub async fn migrate_units(state: &State, platform: &dyn Platform) -> anyhow::Result<usize> {
+    let mut migrated = 0;
+    for app in apps::list(state).await? {
+        let legacy = legacy_unit_path(&app.slug);
+        if !platform.file_exists(&legacy) {
+            continue;
+        }
+        let was_active = platform.service_is_active(&legacy_unit_name(&app.slug));
+        write_units(state, platform, &app).await?;
+        if was_active {
+            for process in app.command_processes() {
+                platform.service(ServiceAction::EnableNow, &process.unit_name(&app.slug))?;
+            }
+        }
+        migrated += 1;
+    }
+    Ok(migrated)
 }
 
 /// Rewrites a site whose file no longer matches what its certificates call for. A site that is
@@ -98,7 +157,11 @@ pub async fn write_env(state: &State, platform: &dyn Platform, app: &App) -> any
     let vars = env::all(state, &app.id).await?;
     let managed = env::managed_for(state, app).await?;
     let env_path = app_dir(&app.slug).join("shared/.env");
-    platform.write_file(&env_path, &env::render(&vars, &managed, &app.routes), 0o600)?;
+    platform.write_file(
+        &env_path,
+        &env::render(&vars, &managed, &app.ports()),
+        0o600,
+    )?;
     platform.chown(&env_path, &user_name(&app.slug))?;
     Ok(())
 }
@@ -109,10 +172,15 @@ pub async fn reprovision(state: &State, platform: &dyn Platform, app: &App) -> a
 
 pub async fn deprovision(state: &State, platform: &dyn Platform, app: &App) -> anyhow::Result<()> {
     redis::release(state, platform, app).await?;
-    let unit = unit_name(&app.slug);
-    let _ = platform.service(ServiceAction::Stop, &unit);
-    let _ = platform.service(ServiceAction::Disable, &unit);
-    platform.remove_file(&unit_path(&app.slug))?;
+    for unit in stale_units(platform, app, &[])? {
+        let name = unit
+            .file_stem()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let _ = platform.service(ServiceAction::Stop, &name);
+        let _ = platform.service(ServiceAction::Disable, &name);
+        platform.remove_file(&unit)?;
+    }
     platform.service(ServiceAction::DaemonReload, "")?;
 
     platform.remove_file(&vhost_path(&app.slug))?;
@@ -128,6 +196,7 @@ pub async fn deprovision(state: &State, platform: &dyn Platform, app: &App) -> a
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::apps::processes::NewProcess;
     use crate::apps::tests::{new_app, state};
     use crate::apps::{by_slug, create};
     use ferrum_platform::FakePlatform;
@@ -162,7 +231,7 @@ mod tests {
         );
         let unit = position(
             &calls,
-            "write_file /etc/systemd/system/ferrum-app-ledger.service 644",
+            "write_file /etc/systemd/system/ferrum-app-ledger-web.service 644",
         );
         let reload = position(&calls, "service daemon-reload ");
         let vhost = position(
@@ -214,7 +283,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn the_env_file_is_owned_by_the_app_user_and_contains_the_ports() {
+    async fn the_env_file_is_owned_by_the_app_user_and_names_every_port_process() {
         let (_d, state) = state().await;
         let platform = FakePlatform::new();
         let app = create(
@@ -231,10 +300,59 @@ mod tests {
         let contents = platform
             .written("/var/lib/ferrum/apps/ledger/shared/.env")
             .unwrap();
-        assert!(contents.contains(&format!("PORT={}\n", app.routes[0].port)));
-        assert!(contents.contains(&format!("WS_PORT={}\n", app.routes[1].port)));
+        assert!(contents.contains(&format!("WEB_PORT={}\n", app.port_of("web").unwrap())));
+        assert!(contents.contains(&format!("WS_PORT={}\n", app.port_of("ws").unwrap())));
         assert!(contents.contains("HOST=127.0.0.1\n"));
+        assert!(!contents.contains("\nPORT="), "PORT belongs to each unit");
         assert!(contents.starts_with("SECRET=hunter2\n"));
+        let web = platform
+            .written("/etc/systemd/system/ferrum-app-ledger-web.service")
+            .unwrap();
+        assert!(web.contains(&format!(
+            "Environment=PORT={}\n",
+            app.port_of("web").unwrap()
+        )));
+        let ws = platform
+            .written("/etc/systemd/system/ferrum-app-ledger-ws.service")
+            .unwrap();
+        assert!(ws.contains(&format!(
+            "Environment=PORT={}\n",
+            app.port_of("ws").unwrap()
+        )));
+    }
+
+    #[tokio::test]
+    async fn a_process_the_app_no_longer_has_loses_its_unit() {
+        let (_d, state) = state().await;
+        let platform = FakePlatform::new();
+        let app = create(
+            &state,
+            new_app("ledger", &[("/", "main", false), ("/ws", "ws", true)]),
+        )
+        .await
+        .unwrap();
+        provision(&state, &platform, &app).await.unwrap();
+        let only_web = crate::apps::update(
+            &state,
+            "ledger",
+            crate::apps::AppChanges {
+                processes: Some(vec![NewProcess::web("bun run start", None)]),
+                routes: Some(vec![crate::apps::NewRoute::main()]),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        provision(&state, &platform, &only_web).await.unwrap();
+        let calls = platform.calls();
+        assert!(calls.contains(&"service stop ferrum-app-ledger-ws".to_string()));
+        assert!(calls.contains(&"service disable ferrum-app-ledger-ws".to_string()));
+        assert!(platform.removed("/etc/systemd/system/ferrum-app-ledger-ws.service"));
+        assert!(
+            platform
+                .written("/etc/systemd/system/ferrum-app-ledger-web.service")
+                .is_some()
+        );
     }
 
     #[tokio::test]
@@ -262,7 +380,7 @@ mod tests {
             contents.starts_with("DATABASE_URL=postgres://ledger_prod:"),
             "{contents}"
         );
-        assert!(contents.contains("@127.0.0.1:5432/ledger_prod\nPORT="));
+        assert!(contents.contains("@127.0.0.1:5432/ledger_prod\nWEB_PORT="));
     }
 
     #[tokio::test]
@@ -336,30 +454,74 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_static_app_gets_no_unit_and_a_leftover_one_is_removed() {
+    async fn a_folder_app_gets_no_unit_and_a_leftover_one_is_removed() {
         let (_d, state) = state().await;
         let platform = FakePlatform::new();
         let mut new = new_app("docs", &[("/", "main", false)]);
-        new.runtime = crate::runtime::RuntimeKind::Static;
-        new.output_dir = Some("dist".into());
+        new.processes = vec![NewProcess::folder("web", "dist")];
         let app = create(&state, new).await.unwrap();
+        platform
+            .write_file(
+                Path::new("/etc/systemd/system/ferrum-app-docs.service"),
+                "[Unit]",
+                0o644,
+            )
+            .unwrap();
         provision(&state, &platform, &app).await.unwrap();
         assert!(
             platform
-                .written("/etc/systemd/system/ferrum-app-docs.service")
+                .written("/etc/systemd/system/ferrum-app-docs-web.service")
                 .is_none()
         );
-        assert!(
-            platform
-                .calls()
-                .contains(&"remove_file /etc/systemd/system/ferrum-app-docs.service".to_string())
-        );
+        assert!(platform.removed("/etc/systemd/system/ferrum-app-docs.service"));
         assert!(
             platform
                 .written("/etc/nginx/conf.d/ferrum-docs.conf")
                 .unwrap()
                 .contains("root /var/lib/ferrum/apps/docs/current/dist;")
         );
+    }
+
+    #[tokio::test]
+    async fn the_one_unit_layout_is_migrated_once_and_a_running_app_comes_back() {
+        let (_d, state) = state().await;
+        let platform = FakePlatform::new();
+        let app = create(&state, new_app("ledger", &[("/", "main", false)]))
+            .await
+            .unwrap();
+        create(&state, new_app("idle", &[("/", "main", false)]))
+            .await
+            .unwrap();
+        platform
+            .write_file(
+                Path::new("/etc/systemd/system/ferrum-app-ledger.service"),
+                "[Unit]",
+                0o644,
+            )
+            .unwrap();
+        platform.set_active("ferrum-app-ledger");
+        assert_eq!(migrate_units(&state, &platform).await.unwrap(), 1);
+        let calls = platform.calls();
+        let stop = position(&calls, "service stop ferrum-app-ledger");
+        let write = position(
+            &calls,
+            "write_file /etc/systemd/system/ferrum-app-ledger-web.service 644",
+        );
+        let reload = position(&calls, "service daemon-reload ");
+        let start = position(&calls, "service enable-now ferrum-app-ledger-web");
+        assert!(
+            write < stop && stop < reload && reload < start,
+            "{calls:#?}"
+        );
+        assert!(platform.removed("/etc/systemd/system/ferrum-app-ledger.service"));
+        assert!(
+            platform
+                .written("/etc/systemd/system/ferrum-app-idle-web.service")
+                .is_none(),
+            "an app without the old unit is left alone"
+        );
+        assert_eq!(migrate_units(&state, &platform).await.unwrap(), 0);
+        let _ = app;
     }
 
     #[tokio::test]
@@ -384,22 +546,27 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn deprovisioning_removes_the_unit_the_vhost_the_user_and_the_directory() {
+    async fn deprovisioning_removes_every_unit_the_vhost_the_user_and_the_directory() {
         let (_d, state) = state().await;
         let platform = FakePlatform::new();
-        let app = create(&state, new_app("ledger", &[("/", "main", false)]))
-            .await
-            .unwrap();
+        let app = create(
+            &state,
+            new_app("ledger", &[("/", "main", false), ("/ws", "ws", true)]),
+        )
+        .await
+        .unwrap();
         provision(&state, &platform, &app).await.unwrap();
         deprovision(&state, &platform, &app).await.unwrap();
 
         let calls = platform.calls();
-        assert!(calls.contains(&"service stop ferrum-app-ledger".to_string()));
-        assert!(platform.removed("/etc/systemd/system/ferrum-app-ledger.service"));
+        assert!(calls.contains(&"service stop ferrum-app-ledger-web".to_string()));
+        assert!(calls.contains(&"service stop ferrum-app-ledger-ws".to_string()));
+        assert!(platform.removed("/etc/systemd/system/ferrum-app-ledger-web.service"));
+        assert!(platform.removed("/etc/systemd/system/ferrum-app-ledger-ws.service"));
         assert!(platform.removed("/etc/nginx/conf.d/ferrum-ledger.conf"));
         assert!(calls.contains(&"remove_system_user ferrum-ledger".to_string()));
         assert!(calls.contains(&"remove_tree /var/lib/ferrum/apps/ledger".to_string()));
-        let stop = position(&calls, "service stop ferrum-app-ledger");
+        let stop = position(&calls, "service stop ferrum-app-ledger-web");
         let user = position(&calls, "remove_system_user ferrum-ledger");
         let tree = position(&calls, "remove_tree /var/lib/ferrum/apps/ledger");
         assert!(stop < user && user < tree, "{calls:#?}");

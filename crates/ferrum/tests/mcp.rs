@@ -227,7 +227,7 @@ async fn the_read_tools_answer_what_the_routes_answer_and_leak_no_secret() {
     h.force_port("ledger", health.port).await;
     h.platform
         .script_run("bun run build", &["Compiled"], Exit::Code(0));
-    h.platform.set_active("ferrum-app-ledger");
+    h.platform.set_active("ferrum-app-ledger-web");
     let live = h
         .post_with_cookie("/api/apps/ledger/deploys", "", &cookie)
         .await;
@@ -388,7 +388,7 @@ async fn the_read_tools_answer_what_the_routes_answer_and_leak_no_secret() {
 }
 
 const CUSTOM: &str = "/etc/nginx/ferrum-custom/ledger.conf";
-const UNIT: &str = "/etc/systemd/system/ferrum-app-ledger.service";
+const UNIT: &str = "/etc/systemd/system/ferrum-app-ledger-web.service";
 
 #[tokio::test]
 async fn the_write_tools_change_the_box_the_way_the_routes_do() {
@@ -442,7 +442,7 @@ async fn the_write_tools_change_the_box_the_way_the_routes_do() {
     h.force_port("ledger", health.port).await;
     h.platform
         .script_run("bun run build", &["Compiled"], Exit::Code(0));
-    h.platform.set_active("ferrum-app-ledger");
+    h.platform.set_active("ferrum-app-ledger-web");
     let early = call(&h, &token, "restart_app", json!({ "slug": "ledger" })).await;
     assert!(error_text(&early).contains("not been deployed"), "{early}");
 
@@ -591,7 +591,10 @@ async fn the_write_tools_change_the_box_the_way_the_routes_do() {
         json!({ "slug": "ledger", "memory_mb": 768 }),
     )
     .await;
-    assert_eq!(app_limits["structuredContent"]["memory_mb"], 768);
+    assert_eq!(
+        app_limits["structuredContent"]["processes"][0]["memory_mb"],
+        768
+    );
     assert!(h.platform.written(UNIT).unwrap().contains("MemoryMax=768M"));
     let build_limits = call(
         &h,

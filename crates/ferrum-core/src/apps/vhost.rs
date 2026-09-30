@@ -133,19 +133,33 @@ fn body(app: &App) -> String {
     let _ = writeln!(out, "    include {};\n", custom_path(&app.slug).display());
     out.push_str(&maintenance(app));
 
-    if !app.runtime.has_process() {
-        let root = app_dir(&app.slug)
-            .join("current")
-            .join(app.output_dir.as_deref().unwrap_or("dist"));
-        let _ = writeln!(out, "    root {};", root.display());
-        out.push_str("    index index.html;\n\n");
-        out.push_str("    location / {\n        try_files $uri $uri/ /index.html;\n    }\n");
-        return out;
-    }
-
     let mut routes: Vec<_> = app.routes.iter().collect();
     routes.sort_by_key(|r| (r.path.len(), r.path.clone()));
     for route in routes {
+        let Some(process) = app.process(&route.process) else {
+            continue;
+        };
+        if let Some(static_dir) = process.static_dir() {
+            let root = app_dir(&app.slug).join("current").join(static_dir);
+            if route.path == "/" {
+                let _ = writeln!(out, "    root {};", root.display());
+                out.push_str("    index index.html;\n\n");
+                out.push_str(
+                    "    location / {\n        try_files $uri $uri/ /index.html;\n    }\n",
+                );
+            } else {
+                let prefix = route.path.trim_end_matches('/');
+                let _ = write!(
+                    out,
+                    "    location {prefix}/ {{\n        alias {root}/;\n        try_files $uri $uri/ {prefix}/index.html;\n    }}\n",
+                    root = root.display(),
+                );
+            }
+            continue;
+        }
+        let Some(port) = process.port else {
+            continue;
+        };
         let timeout = if route.websocket {
             WEBSOCKET_TIMEOUT
         } else {
@@ -168,7 +182,6 @@ fn body(app: &App) -> String {
     }}
 ",
             path = route.path,
-            port = route.port,
         );
     }
     out
@@ -177,16 +190,13 @@ fn body(app: &App) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::apps::tests::{app, route};
-    use crate::runtime::RuntimeKind;
+    use crate::apps::tests::{app, folder, process, route};
 
     #[test]
-    fn the_vhost_proxies_each_route_to_its_own_port_and_raises_the_websocket_timeout() {
+    fn the_vhost_proxies_each_route_to_its_process_port_and_raises_the_websocket_timeout() {
         let mut a = app("ledger");
-        a.routes = vec![
-            route("/", "main", 20000, false),
-            route("/ws", "ws", 20001, true),
-        ];
+        a.processes = vec![process("web", 20000), process("ws", 20001)];
+        a.routes = vec![route("/", "web", false), route("/ws", "ws", true)];
         let v = render_vhost(
             &a,
             &["ledger.example.com".into()],
@@ -284,14 +294,34 @@ mod tests {
     }
 
     #[test]
-    fn a_static_app_serves_current_output_dir_with_a_spa_fallback() {
+    fn a_folder_process_serves_current_output_dir_with_a_spa_fallback() {
         let mut a = app("docs");
-        a.runtime = RuntimeKind::Static;
-        a.output_dir = Some("dist".into());
+        a.processes = vec![folder("web", "dist")];
         let v = render_vhost(&a, &["docs.example.com".into()], &[]);
         assert!(v.contains("root /var/lib/ferrum/apps/docs/current/dist;"));
         assert!(v.contains("try_files $uri $uri/ /index.html;"));
         assert!(!v.contains("proxy_pass"));
+    }
+
+    #[test]
+    fn a_folder_process_under_a_path_is_aliased_beside_the_api() {
+        let mut a = app("shop");
+        a.processes = vec![process("web", 20000), folder("admin", "apps/admin/dist")];
+        a.routes = vec![route("/", "web", false), route("/admin", "admin", false)];
+        let v = render_vhost(&a, &["shop.example.com".into()], &[]);
+        assert!(v.contains("proxy_pass http://127.0.0.1:20000;"));
+        assert!(v.contains("location /admin/ {"));
+        assert!(v.contains("alias /var/lib/ferrum/apps/shop/current/apps/admin/dist/;"));
+        assert!(v.contains("try_files $uri $uri/ /admin/index.html;"));
+    }
+
+    #[test]
+    fn a_route_to_a_worker_or_an_unknown_process_renders_nothing() {
+        let mut a = app("ledger");
+        a.routes = vec![route("/", "web", false), route("/jobs", "jobs", false)];
+        let v = render_vhost(&a, &["ledger.example.com".into()], &[]);
+        assert_eq!(v.matches("location /").count(), 2, "{v}");
+        assert!(!v.contains("location /jobs"));
     }
 
     #[test]
@@ -325,8 +355,7 @@ mod tests {
             blocks
         );
         let mut s = app("docs");
-        s.runtime = RuntimeKind::Static;
-        s.output_dir = Some("dist".into());
+        s.processes = vec![folder("web", "dist")];
         let plain = render_vhost(&s, &["docs.example.com".into()], &[]);
         assert!(plain.contains("access_log /var/log/nginx/ferrum-docs.access.log;"));
     }

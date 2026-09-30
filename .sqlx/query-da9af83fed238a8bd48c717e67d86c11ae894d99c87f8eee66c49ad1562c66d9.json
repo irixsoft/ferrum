@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO app_routes (app_id, path, port_name, process, websocket) VALUES (?, ?, ?, ?, ?)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 5
+    },
+    "nullable": []
+  },
+  "hash": "da9af83fed238a8bd48c717e67d86c11ae894d99c87f8eee66c49ad1562c66d9"
+}

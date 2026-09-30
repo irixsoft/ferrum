@@ -1,15 +1,16 @@
 pub mod env_hints;
 
 use crate::github::Api;
-use crate::runtime::{self, Detection, RuntimeKind, node};
+use crate::manifest::{self, Manifest};
+use crate::runtime::{self, Detection, node, static_site};
 use crate::state::State;
 use env_hints::EnvHint;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use std::collections::HashMap;
 
 pub const TOO_LARGE: &str = "The repository tree is too large to inspect. Set the root directory to the application's folder, or fill in the settings by hand.";
 
-const WANTED: [&str; 17] = [
+const WANTED: [&str; 18] = [
     "package.json",
     ".nvmrc",
     ".node-version",
@@ -17,6 +18,7 @@ const WANTED: [&str; 17] = [
     "global.json",
     "Aptfile",
     "ferrum.toml",
+    "Procfile",
     "README.md",
     ".env.example",
     ".env.sample",
@@ -131,20 +133,6 @@ fn glob_matches(glob: &str, path: &str) -> bool {
     rest.is_empty()
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(default)]
-pub struct FerrumToml {
-    pub runtime: Option<RuntimeKind>,
-    pub version: Option<String>,
-    pub install: Option<String>,
-    pub build: Option<String>,
-    pub start: Option<String>,
-    pub migrate: Option<String>,
-    pub output_dir: Option<String>,
-    pub health_path: Option<String>,
-    pub packages: Vec<String>,
-}
-
 /// Why the repository looks like it needs a database, if it does.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 pub struct Wants {
@@ -155,7 +143,7 @@ pub struct Wants {
 #[derive(Debug, Clone, Serialize)]
 pub struct Detected {
     pub candidates: Vec<Detection>,
-    pub ferrum_toml: Option<FerrumToml>,
+    pub manifest: Option<Manifest>,
     pub aptfile: Vec<String>,
     pub aptfile_rejected: Vec<String>,
     pub wants: Wants,
@@ -211,15 +199,14 @@ pub fn detect(tree: &RepoTree) -> Detected {
     let mut candidates: Vec<Detection> = runtime::all()
         .iter()
         .filter_map(|r| r.detect(tree))
+        .chain(static_site::detect(tree))
         .collect();
     candidates.sort_by_key(|c| std::cmp::Reverse(c.confidence));
 
     let (aptfile, aptfile_rejected) = aptfile(tree);
     Detected {
         candidates,
-        ferrum_toml: tree
-            .read("ferrum.toml")
-            .and_then(|t| toml::from_str(t).ok()),
+        manifest: manifest::read(tree),
         aptfile,
         aptfile_rejected,
         wants: wants(tree),
@@ -384,7 +371,7 @@ mod tests {
     }
 
     #[test]
-    fn ferrum_toml_prefills_without_needing_every_key() {
+    fn a_manifest_in_the_tree_is_read_without_needing_every_key() {
         let tree = RepoTree::from_files(&[
             (
                 "ferrum.toml",
@@ -393,10 +380,12 @@ mod tests {
             ("package.json", "{}"),
         ]);
         let found = detect(&tree);
-        let toml = found.ferrum_toml.unwrap();
-        assert_eq!(toml.runtime, Some(RuntimeKind::Bun));
-        assert_eq!(toml.start.as_deref(), Some("bun run src/main.ts"));
-        assert!(toml.build.is_none());
+        let manifest = found.manifest.unwrap();
+        assert_eq!(
+            manifest.processes[0].start.as_deref(),
+            Some("bun run src/main.ts")
+        );
+        assert!(manifest.commands.build.is_none());
     }
 
     #[test]
@@ -407,7 +396,7 @@ mod tests {
             ("package-lock.json", ""),
         ]);
         let found = detect(&tree);
-        assert_eq!(found.candidates[0].kind, RuntimeKind::Static);
+        assert_eq!(found.candidates[0].output_dir(), Some("dist"));
         assert!(
             found
                 .candidates

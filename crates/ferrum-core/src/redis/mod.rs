@@ -383,7 +383,7 @@ mod tests {
             .unwrap();
         let instance = request(&state, &p, &app, 64).await.unwrap();
         assert!(ports::RANGE.contains(&instance.port));
-        assert_ne!(instance.port, app.routes[0].port);
+        assert_ne!(Some(instance.port), app.main_port());
         assert!(instance.created_at.ends_with('Z'));
         let calls = p.calls();
         let conf = position(
@@ -454,6 +454,7 @@ mod tests {
         let app = apps::create(&state, new_app("ledger", &[("/", "main", false)]))
             .await
             .unwrap();
+        p.set_dead("ferrum-redis-ledger");
         p.journal(
             "ferrum-redis-ledger",
             &[
@@ -574,7 +575,7 @@ mod tests {
             &state,
             "ledger",
             apps::AppChanges {
-                memory_mb: Some(1024),
+                cpu_percent: Some(200),
                 ..apps::AppChanges::default()
             },
         )
@@ -588,9 +589,14 @@ mod tests {
             &state,
             "ledger",
             apps::AppChanges {
+                processes: Some(vec![crate::apps::processes::NewProcess {
+                    name: "redis".into(),
+                    start: Some("bun run start".into()),
+                    ..Default::default()
+                }]),
                 routes: Some(vec![apps::NewRoute {
                     path: "/".into(),
-                    port_name: "redis".into(),
+                    process: "redis".into(),
                     websocket: false,
                 }]),
                 ..apps::AppChanges::default()
