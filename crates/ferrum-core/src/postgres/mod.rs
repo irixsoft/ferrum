@@ -107,8 +107,8 @@ pub fn url(name: &str, role: &str, password: &str) -> String {
     format!("postgres://{role}:{password}@127.0.0.1:{PG_PORT}/{name}")
 }
 
-pub fn tunnel_command(hostname: &str) -> String {
-    format!("ssh -L {PG_PORT}:127.0.0.1:{PG_PORT} root@{hostname}")
+pub fn tunnel_command(hostname: &str, user: &str) -> String {
+    format!("ssh -L {PG_PORT}:127.0.0.1:{PG_PORT} {user}@{hostname}")
 }
 
 /// The first linked database is `DATABASE_URL`; the rest are named after themselves.
@@ -439,8 +439,8 @@ pub(crate) mod tests {
             "postgres://ledger_prod:pw@127.0.0.1:5432/ledger_prod"
         );
         assert_eq!(
-            tunnel_command("panel.example.com"),
-            "ssh -L 5432:127.0.0.1:5432 root@panel.example.com"
+            tunnel_command("panel.example.com", "ubuntu"),
+            "ssh -L 5432:127.0.0.1:5432 ubuntu@panel.example.com"
         );
         assert_eq!(env_key(0, "ledger_prod"), "DATABASE_URL");
         assert_eq!(env_key(1, "analytics"), "ANALYTICS_DATABASE_URL");

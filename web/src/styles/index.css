@@ -287,3 +287,12 @@
 .u-legend {
   display: none;
 }
+
+/* Unlayered so it beats text-size utilities: below 16px iOS zooms the page on focus. */
+@media (max-width: 640px) {
+  input,
+  select,
+  textarea {
+    font-size: 16px;
+  }
+}

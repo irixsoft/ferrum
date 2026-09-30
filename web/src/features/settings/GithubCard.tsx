@@ -62,7 +62,10 @@ export function GithubCard() {
                   value={organization}
                   onChange={(e) => setOrganization(e.target.value)}
                   placeholder="organisation"
-                  className={`${INPUT} w-48`}
+                  autoCapitalize="none"
+                  autoCorrect="off"
+                  spellCheck={false}
+                  className={`${INPUT} flex-1 min-w-0 basis-40 sm:max-w-60`}
                 />
                 <Button
                   variant={hasPersonal ? "primary" : "ghost"}
@@ -71,7 +74,7 @@ export function GithubCard() {
                 >
                   Connect an organisation
                 </Button>
-                <span className="text-[12.5px] text-ink-4">
+                <span className="basis-full text-[12.5px] text-ink-4">
                   Registers a private App owned by the organisation. You need to be one of its owners.
                 </span>
               </div>
@@ -137,7 +140,7 @@ function Connected({ connection }: { connection: GithubConnection }) {
             stop. <strong className="text-ink">The App itself keeps existing on GitHub</strong> with
             the access you gave it, until you delete it there.
           </p>
-          <div className="flex gap-2">
+          <div className="flex gap-2 flex-wrap">
             <Button
               variant="danger"
               onClick={() => disconnect.mutate(connection.app_id)}

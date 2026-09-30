@@ -41,7 +41,7 @@ export function DataCard({ app }: { app: AppDetail }) {
   return (
     <Card>
       <CardHeader title="Data" hint="Linked databases and Redis, injected into the env file" />
-      <CardBody className="grid gap-4">
+      <CardBody className="grid grid-cols-1 gap-4">
         <div>
           <p className="text-[13px] text-ink-3 mb-1.5">PostgreSQL</p>
           {app.databases.length === 0 ? (
@@ -49,11 +49,11 @@ export function DataCard({ app }: { app: AppDetail }) {
           ) : (
             <ul className="divide-y divide-line">
               {app.databases.map((db, i) => (
-                <li key={db} className="py-2 flex items-center gap-2">
-                  <Link to="/databases">
-                    <Code>{db}</Code>
+                <li key={db} className="py-2 flex flex-wrap items-center gap-x-2 gap-y-1">
+                  <Link to="/databases" className="min-w-0 max-w-full">
+                    <Code className="break-all">{db}</Code>
                   </Link>
-                  <span className="font-mono text-[12px] text-ink-4 truncate">
+                  <span className="font-mono text-[12px] text-ink-4 truncate min-w-0">
                     {i === 0 ? "DATABASE_URL" : `${db.toUpperCase()}_DATABASE_URL`}
                   </span>
                   <Button

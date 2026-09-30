@@ -48,11 +48,11 @@ export function DashboardPage() {
       />
 
       <div className="grid gap-4 lg:grid-cols-12">
-        <div className="lg:col-span-12 empty:hidden">
+        <div className="lg:col-span-12 min-w-0 empty:hidden">
           <Checklist host={host} />
         </div>
 
-        <div className="lg:col-span-7">
+        <div className="lg:col-span-7 min-w-0">
           {deploy ? (
             <Card>
               <CardHeader
@@ -100,11 +100,11 @@ export function DashboardPage() {
                 ) : (
                   <ul className="divide-y divide-line">
                     {finished.map((d) => (
-                      <li key={d.id} className="py-2 flex items-center gap-3 text-[13px]">
-                        <Link to="/apps/$slug" params={{ slug: d.app_slug }} className="text-ink hover:underline shrink-0">
+                      <li key={d.id} className="py-2 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-[13px]">
+                        <Link to="/apps/$slug" params={{ slug: d.app_slug }} className="text-ink hover:underline min-w-0 truncate">
                           {d.app_slug}
                         </Link>
-                        <span className="font-mono text-[12.5px] text-ink-3 truncate">
+                        <span className="font-mono text-[12.5px] text-ink-3 min-w-0 truncate order-last basis-full sm:order-none sm:basis-0 sm:flex-1">
                           {d.commit_sha?.slice(0, 7) ?? d.git_ref}
                           {d.commit_message ? ` ${d.commit_message}` : ""}
                         </span>
@@ -124,7 +124,7 @@ export function DashboardPage() {
           )}
         </div>
 
-        <div className="lg:col-span-5">
+        <div className="lg:col-span-5 min-w-0">
           <Card>
             <CardHeader
               title="Services"
@@ -158,12 +158,12 @@ export function DashboardPage() {
           </Card>
         </div>
 
-        <div className="lg:col-span-12">
-          <div className="flex items-end justify-between mb-3 mt-2">
-            <h2 className="font-display text-[22px] text-ink">
+        <div className="lg:col-span-12 min-w-0">
+          <div className="flex items-end justify-between gap-3 mb-3 mt-2">
+            <h2 className="font-display text-[22px] text-ink min-w-0">
               {apps.length} apps on this box
             </h2>
-            <Link to="/apps" className="text-[13px] text-ink-3 hover:text-ink">
+            <Link to="/apps" className="text-[13px] text-ink-3 hover:text-ink shrink-0">
               See all
             </Link>
           </div>
@@ -174,7 +174,7 @@ export function DashboardPage() {
           </div>
         </div>
 
-        <div className="lg:col-span-12">
+        <div className="lg:col-span-12 min-w-0">
           <HostMetrics />
         </div>
       </div>

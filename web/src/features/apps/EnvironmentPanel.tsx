@@ -94,7 +94,9 @@ export function EnvRows({
     <>
       {managed.map((key) => (
         <div key={key} className="flex items-center gap-2 h-9">
-          <span className={`${INPUT} w-56 flex items-center opacity-70`}>{key}</span>
+          <span className={`${INPUT} w-32 sm:w-56 shrink-0 flex items-center opacity-70`}>
+            <span className="truncate">{key}</span>
+          </span>
           <span className={`${INPUT} flex-1 min-w-0 flex items-center text-ink-4`}>••••••••</span>
           <Badge tone="accent" className="shrink-0">
             set by Ferrum
@@ -111,7 +113,7 @@ export function EnvRows({
             disabled={row.stored || row.source !== null}
             onChange={(e) => update(i, { ...row, key: e.target.value.toUpperCase() })}
             placeholder="KEY"
-            className={`${INPUT} w-56 disabled:opacity-70`}
+            className={`${INPUT} w-32 sm:w-56 shrink-0 disabled:opacity-70`}
           />
           <input
             value={row.value ?? ""}

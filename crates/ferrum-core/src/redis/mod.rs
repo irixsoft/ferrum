@@ -4,6 +4,7 @@ pub use install::{ensure_installed, installed};
 
 use crate::apps::provision::user_name;
 use crate::apps::{App, ports};
+use crate::events::{self, Kind};
 use crate::state::State;
 use crate::{REDIS_DIR, secret, secrets, time};
 use ferrum_platform::ubuntu::{REDIS_SERVER, SYSTEMD_UNIT_DIR};
@@ -233,15 +234,15 @@ fn provision(
     Ok(())
 }
 
-/// A conf that differs from what this build renders is rewritten and its unit restarted.
+/// A differing conf is rewritten with its unit stopped; one instance failing never stops the rest.
 pub async fn refresh(state: &State, platform: &dyn Platform) -> anyhow::Result<usize> {
     if !installed(platform) {
         return Ok(0);
     }
     platform.set_sysctl(OVERCOMMIT.0, OVERCOMMIT.1)?;
     let rows = sqlx::query!(
-        r#"SELECT a.slug AS "slug!", r.password AS "password!", r.maxmemory_mb AS "maxmemory_mb!",
-                  p.port AS "port!"
+        r#"SELECT a.id AS "app_id!", a.slug AS "slug!", r.password AS "password!",
+                  r.maxmemory_mb AS "maxmemory_mb!", p.port AS "port!"
            FROM redis_instances r
            JOIN apps a ON a.id = r.app_id
            JOIN app_ports p ON p.app_id = r.app_id AND p.name = ?
@@ -252,18 +253,45 @@ pub async fn refresh(state: &State, platform: &dyn Platform) -> anyhow::Result<u
     .await?;
     let mut rewritten = 0;
     for r in rows {
-        let password = secrets::decrypt(&state.key, &r.password)?;
-        let wanted = render_conf(&r.slug, r.port as u16, &password, r.maxmemory_mb as u32);
-        let path = conf_path(&r.slug);
-        if platform.read_file(&path)?.as_deref() == Some(wanted.as_str()) {
-            continue;
+        let outcome = secrets::decrypt(&state.key, &r.password).and_then(|password| {
+            let wanted = render_conf(&r.slug, r.port as u16, &password, r.maxmemory_mb as u32);
+            rewrite(platform, &r.slug, &wanted)
+        });
+        match outcome {
+            Ok(true) => rewritten += 1,
+            Ok(false) => {}
+            Err(error) => {
+                tracing::warn!(slug = %r.slug, %error, "redis did not start after its conf was refreshed");
+                events::emit(
+                    state,
+                    Kind::BrokeOnItsOwn,
+                    Some(&r.app_id),
+                    &r.slug,
+                    &format!(
+                        "Redis for {} did not start after its configuration was refreshed: {error}",
+                        r.slug
+                    ),
+                    Some(&format!("/apps/{}", r.slug)),
+                )
+                .await;
+            }
         }
-        platform.write_file(&path, &wanted, 0o600)?;
-        platform.chown(&path, &user_name(&r.slug))?;
-        platform.service(ServiceAction::Restart, &unit_name(&r.slug))?;
-        rewritten += 1;
     }
     Ok(rewritten)
+}
+
+fn rewrite(platform: &dyn Platform, slug: &str, wanted: &str) -> anyhow::Result<bool> {
+    let path = conf_path(slug);
+    if platform.read_file(&path)?.as_deref() == Some(wanted) {
+        return Ok(false);
+    }
+    let unit = unit_name(slug);
+    platform.service(ServiceAction::Stop, &unit)?;
+    platform.write_file(&path, wanted, 0o600)?;
+    platform.chown(&path, &user_name(slug))?;
+    platform.service(ServiceAction::ResetFailed, &unit)?;
+    platform.service(ServiceAction::Start, &unit)?;
+    Ok(true)
 }
 
 fn remove_from_host(platform: &dyn Platform, slug: &str) {
@@ -474,45 +502,98 @@ mod tests {
         assert_eq!(ports, 0);
     }
 
-    #[tokio::test]
-    async fn a_refresh_rewrites_only_a_conf_that_differs_and_restarts_its_unit() {
-        let (_d, state) = state().await;
-        let p = platform();
+    async fn with_redis(state: &State, p: &FakePlatform, slugs: &[&str]) {
         p.write_file(Path::new(REDIS_SERVER), "", 0o755).unwrap();
-        let app = apps::create(&state, new_app("ledger", &[("/", "main", false)]))
-            .await
-            .unwrap();
-        request(&state, &p, &app, 64).await.unwrap();
-        assert_eq!(refresh(&state, &p).await.unwrap(), 0);
-        assert!(p.calls_matching("service restart").is_empty());
-        assert!(
-            p.calls()
-                .contains(&"set_sysctl vm.overcommit_memory 1".to_string()),
-            "{:#?}",
-            p.calls()
-        );
+        for slug in slugs {
+            p.set_active(&unit_name(slug));
+            let app = apps::create(state, new_app(slug, &[("/", "main", false)]))
+                .await
+                .unwrap();
+            request(state, p, &app, 64).await.unwrap();
+        }
+    }
 
+    fn make_stale(p: &FakePlatform, slug: &str) {
+        let path = conf_path(slug);
         let stale = p
-            .written("/var/lib/ferrum/redis/ledger/redis.conf")
+            .written(&path.to_string_lossy())
             .unwrap()
             .replace("appenddirname appendonlydir", "appendonlydir appendonlydir");
-        p.write_file(&conf_path("ledger"), &stale, 0o600).unwrap();
+        p.write_file(&path, &stale, 0o600).unwrap();
+    }
+
+    #[tokio::test]
+    async fn an_unchanged_conf_is_left_alone_and_its_unit_untouched() {
+        let (_d, state) = state().await;
+        let p = FakePlatform::new();
+        with_redis(&state, &p, &["ledger"]).await;
+        let before = p.calls().len();
+        assert_eq!(refresh(&state, &p).await.unwrap(), 0);
+        let after: Vec<String> = p.calls()[before..].to_vec();
+        assert_eq!(after, ["set_sysctl vm.overcommit_memory 1"], "{after:#?}");
+    }
+
+    #[tokio::test]
+    async fn a_differing_conf_is_written_with_the_unit_stopped_then_started_afresh() {
+        let (_d, state) = state().await;
+        let p = FakePlatform::new();
+        with_redis(&state, &p, &["ledger"]).await;
+        make_stale(&p, "ledger");
+        let before = p.calls().len();
         assert_eq!(refresh(&state, &p).await.unwrap(), 1);
-        let calls = p.calls();
-        let write = calls
-            .iter()
-            .rposition(|c| c == "write_file /var/lib/ferrum/redis/ledger/redis.conf 600")
-            .unwrap();
+        let calls: Vec<String> = p.calls()[before..].to_vec();
+        let stop = position(&calls, "service stop ferrum-redis-ledger");
+        let write = position(
+            &calls,
+            "write_file /var/lib/ferrum/redis/ledger/redis.conf 600",
+        );
         let chown = position(
             &calls,
             "chown /var/lib/ferrum/redis/ledger/redis.conf ferrum-ledger",
         );
-        let restart = position(&calls, "service restart ferrum-redis-ledger");
-        assert!(write < chown && chown < restart, "{calls:#?}");
+        let reset = position(&calls, "service reset-failed ferrum-redis-ledger");
+        let start = position(&calls, "service start ferrum-redis-ledger");
+        assert!(
+            stop < write && write < chown && chown < reset && reset < start,
+            "{calls:#?}"
+        );
+        assert!(p.calls_matching("service restart").is_empty());
         assert!(
             p.written("/var/lib/ferrum/redis/ledger/redis.conf")
                 .unwrap()
                 .contains("appenddirname appendonlydir\n")
+        );
+    }
+
+    #[tokio::test]
+    async fn one_instance_failing_to_start_is_reported_and_the_next_is_still_refreshed() {
+        let (_d, state) = state().await;
+        let p = FakePlatform::new();
+        with_redis(&state, &p, &["a", "b"]).await;
+        make_stale(&p, "a");
+        make_stale(&p, "b");
+        p.fail_next("service start ferrum-redis-a");
+        assert_eq!(refresh(&state, &p).await.unwrap(), 1);
+        assert!(
+            p.calls()
+                .contains(&"service start ferrum-redis-b".to_string()),
+            "{:#?}",
+            p.calls()
+        );
+        let a = apps::by_slug(&state, "a").await.unwrap().unwrap();
+        let listed = events::list(&state, 10, false).await.unwrap();
+        assert_eq!(listed.len(), 1, "{listed:#?}");
+        let event = &listed[0];
+        assert_eq!(event.kind, "broke_on_its_own");
+        assert_eq!(event.app_id.as_deref(), Some(a.id.as_str()));
+        assert_eq!(event.subject, "a");
+        assert_eq!(event.link.as_deref(), Some("/apps/a"));
+        assert!(
+            event
+                .sentence
+                .starts_with("Redis for a did not start after its configuration was refreshed: "),
+            "{}",
+            event.sentence
         );
     }
 

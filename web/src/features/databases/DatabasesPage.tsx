@@ -87,7 +87,7 @@ export function DatabasesPage() {
         ) : null}
 
         {databases.map((db) => (
-          <DatabaseCard key={db.name} db={db} tunnel={postgres.tunnel} />
+          <DatabaseCard key={db.name} db={db} tunnel={postgres.tunnel} tunnelUser={postgres.tunnel_user} />
         ))}
 
         {redis.length ? (
@@ -282,7 +282,7 @@ function CreateDatabase({ onDone }: { onDone: () => void }) {
   );
 }
 
-function DatabaseCard({ db, tunnel }: { db: Database; tunnel: string }) {
+function DatabaseCard({ db, tunnel, tunnelUser }: { db: Database; tunnel: string; tunnelUser: string }) {
   const [confirm, setConfirm] = useState<string | null>(null);
   const [adding, setAdding] = useState(false);
   const remove = useDeleteDatabase();
@@ -396,10 +396,21 @@ function DatabaseCard({ db, tunnel }: { db: Database; tunnel: string }) {
           </p>
         ) : null}
       </CardBody>
-      <CardFoot>
-        <span>
-          Reachable only over loopback. For a client on your machine, tunnel it: <Code>{tunnel}</Code>
-        </span>
+      <CardFoot className="block">
+        <p>
+          Reachable only over loopback. For a client on your machine, tunnel it
+          {tunnelUser ? ":" : ", after setting your SSH login under Settings › Connections:"}
+        </p>
+        <div className="flex items-center gap-2 mt-2">
+          <code className="flex-1 min-w-0 font-mono text-[12px] text-ink break-all">{tunnel}</code>
+          <Button size="sm" onClick={() => navigator.clipboard?.writeText(tunnel)}>
+            Copy
+          </Button>
+        </div>
+        <p className="mt-2">
+          If Postgres already listens on 5432 on your machine, use <Code>-L 15432:127.0.0.1:5432</Code>{" "}
+          and connect to port 15432.
+        </p>
       </CardFoot>
     </Card>
   );
