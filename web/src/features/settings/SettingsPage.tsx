@@ -39,6 +39,7 @@ import { Row } from "@/components/ui/Row";
 import { Segmented } from "@/components/ui/Segmented";
 import { Tabs } from "@/components/ui/Tabs";
 import { GithubCard } from "@/features/settings/GithubCard";
+import { NotificationsCard } from "@/features/settings/NotificationsCard";
 import { ago } from "@/lib/utils";
 
 type Tab = "people" | "tokens" | "connections" | "builds" | "appearance" | "about";
@@ -84,6 +85,7 @@ export function SettingsPage() {
       {tab === "about" && (
         <div className="grid gap-4">
           <Updates />
+          <NotificationsCard />
           <About />
         </div>
       )}

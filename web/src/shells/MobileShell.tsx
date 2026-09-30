@@ -2,6 +2,8 @@ import { Link, useRouterState } from "@tanstack/react-router";
 import type { ReactNode } from "react";
 import { ChevronLeft } from "lucide-react";
 import { Mark } from "@/components/Brand";
+import { Bell } from "@/components/Bell";
+import { PushOffer } from "@/components/PushOffer";
 import { ConnectionBanner } from "@/components/ConnectionBanner";
 import { UpdateBanner } from "@/components/UpdateBanner";
 import { ThemeToggle } from "@/components/ThemeToggle";
@@ -51,10 +53,12 @@ export function MobileShell({ children }: { children: ReactNode }) {
                 <DeployRail deploy={deploy} />
               </Link>
             ) : null}
+            <Bell compact />
             <ThemeToggle />
           </div>
         </div>
       </header>
+      <PushOffer bottom="bottom-24" />
 
       <main className="flex-1 px-4 py-5 pb-28">{children}</main>
 

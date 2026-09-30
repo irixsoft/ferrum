@@ -245,7 +245,12 @@ fn router(state: AppState) -> Router {
 }
 
 pub async fn serve(data_dir: &Path) -> anyhow::Result<()> {
-    let state = State::open(data_dir).await?;
+    let mut state = State::open(data_dir).await?;
+    ferrum_core::push::ensure_vapid(&state).await?;
+    state.events_tx = Some(ferrum_core::push::spawn_fanout(
+        state.clone(),
+        ferrum_core::http::client(),
+    ));
     let deps = Deps {
         directory: ferrum_core::acme::directory(&state).await?,
         hostname: ferrum_core::setup::hostname(&state).await?,

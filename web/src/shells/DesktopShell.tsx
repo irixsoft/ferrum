@@ -2,6 +2,8 @@ import { Link, useRouterState } from "@tanstack/react-router";
 import type { ReactNode } from "react";
 import { Moon, Sun } from "lucide-react";
 import { Wordmark } from "@/components/Brand";
+import { Bell } from "@/components/Bell";
+import { PushOffer } from "@/components/PushOffer";
 import { ConnectionBanner } from "@/components/ConnectionBanner";
 import { UpdateBanner } from "@/components/UpdateBanner";
 import { DeployRail } from "@/components/DeployLadder";
@@ -54,6 +56,8 @@ export function DesktopShell({ children }: { children: ReactNode }) {
                 {r.label}
               </Pill>
             ))}
+
+            <Bell />
 
             <PillIcon
               label={`Switch to ${resolved === "dark" ? "light" : "dark"} theme`}
@@ -117,6 +121,7 @@ export function DesktopShell({ children }: { children: ReactNode }) {
           </div>
         ) : null}
       </div>
+      <PushOffer />
     </div>
   );
 }

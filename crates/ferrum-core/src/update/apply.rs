@@ -2,6 +2,7 @@ use super::{
     Latest, Progress, SIG_ASSET, SUMS_ASSET, Status, UpdateError, binary_asset, check, is_newer,
     verify,
 };
+use crate::events::{self, Kind};
 use crate::github::Api;
 use crate::state::State;
 use anyhow::Context;
@@ -14,6 +15,7 @@ use std::sync::{Arc, Mutex};
 const UPDATE_DIR: &str = "update";
 const SLACK_BYTES: u64 = 1024 * 1024;
 const TEXT_LIMIT: u64 = 64 * 1024;
+const NOTIFIED_SETTING: &str = "update.notified";
 
 /// The binary this process is, and what replaces it.
 #[derive(Clone)]
@@ -230,11 +232,33 @@ impl Updater {
         let Some(latest) = status.latest.filter(|_| status.available) else {
             return Ok(());
         };
+        if let Err(e) = self.announce(&latest).await {
+            tracing::warn!(error = ?e, "announcing the update");
+        }
         if !status.auto || status.restarting {
             return Ok(());
         }
         tracing::info!(tag = %latest.tag, "auto-update");
         self.apply(&latest).await
+    }
+
+    async fn announce(&self, latest: &Latest) -> anyhow::Result<()> {
+        let notified = self.state.get_setting(NOTIFIED_SETTING).await?;
+        if notified.as_deref() == Some(latest.version.as_str()) {
+            return Ok(());
+        }
+        events::emit(
+            &self.state,
+            Kind::UpdateAvailable,
+            None,
+            &latest.version,
+            &format!("Ferrum {} is available.", latest.version),
+            Some("/settings?tab=about"),
+        )
+        .await;
+        self.state
+            .set_setting(NOTIFIED_SETTING, &latest.version)
+            .await
     }
 }
 
@@ -578,6 +602,30 @@ pub(crate) mod tests {
             older.updater.apply(&latest).await.unwrap_err().to_string(),
             "Ferrum 0.1.5 is the latest release."
         );
+    }
+
+    #[tokio::test]
+    async fn an_available_release_is_announced_once_per_version() {
+        let key = signing_key();
+        let latest = "/repos/irixsoft/ferrum/releases/latest".to_string();
+        let r = rig(
+            vec![(latest, release_json(BASE, "v0.1.4", 10))],
+            &key,
+            "0.1.3",
+        )
+        .await;
+
+        r.updater.tick().await.unwrap();
+        r.updater.tick().await.unwrap();
+
+        let events = crate::events::list(r.updater.state(), 10, false)
+            .await
+            .unwrap();
+        assert_eq!(events.len(), 1, "{events:?}");
+        assert_eq!(events[0].kind, "update_available");
+        assert_eq!(events[0].subject, "0.1.4");
+        assert_eq!(events[0].sentence, "Ferrum 0.1.4 is available.");
+        assert_eq!(events[0].link.as_deref(), Some("/settings?tab=about"));
     }
 
     #[tokio::test]

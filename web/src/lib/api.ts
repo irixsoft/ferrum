@@ -43,6 +43,7 @@ import type {
   User,
   VersionInfo,
 } from "@/types/api";
+import type { FerrumEvent, PushDevice, PushPref, PushPrefs } from "@/types/api";
 
 export class ApiError extends Error {
   readonly status: number;
@@ -784,4 +785,61 @@ export function useSignOut() {
     mutationFn: () => request<void>("/auth/logout", { method: "POST" }),
     onSuccess: () => client.clear(),
   });
+}
+
+export function useEvents(unreadOnly = false) {
+  return useQuery({
+    queryKey: [...keys.events, "list", unreadOnly] as const,
+    queryFn: () => request<FerrumEvent[]>(`/events?limit=50${unreadOnly ? "&unread=1" : ""}`),
+  });
+}
+
+export function useUnreadCount() {
+  return useQuery({
+    queryKey: keys.unread,
+    queryFn: () => request<{ count: number }>("/events/unread"),
+    refetchInterval: 15_000,
+  });
+}
+
+export function useMarkRead() {
+  return useInvalidating(keys.events, (which: { ids: string[] } | { all: true }) =>
+    request<void>("/events/read", body(which)),
+  );
+}
+
+export function usePushPrefs() {
+  return useQuery({ queryKey: keys.pushPrefs, queryFn: () => request<PushPrefs>("/push/prefs") });
+}
+
+export function useSetPushPref() {
+  return useInvalidating(keys.pushPrefs, (change: Partial<Record<PushPref, boolean>>) =>
+    request<PushPrefs>("/push/prefs", body(change, "PUT")),
+  );
+}
+
+export function usePushDevices() {
+  return useQuery({ queryKey: keys.pushDevices, queryFn: () => request<PushDevice[]>("/push/devices") });
+}
+
+export function useRegisterDevice() {
+  return useInvalidating(keys.pushDevices, (subscription: PushSubscriptionJSON) =>
+    request<PushDevice>("/push/devices", body(subscription)),
+  );
+}
+
+export function useUnregisterDevice() {
+  return useInvalidating(keys.pushDevices, (endpoint: string) =>
+    request<void>("/push/devices", body({ endpoint }, "DELETE")),
+  );
+}
+
+export interface PushTried {
+  id: string;
+  result: "delivered" | "gone" | "rejected" | "failed";
+  status: number | null;
+}
+
+export function useTestPush() {
+  return useInvalidating(keys.pushDevices, () => request<PushTried[]>("/push/test", { method: "POST" }));
 }
