@@ -71,18 +71,25 @@ them on the System page.
 ## What a repository needs
 
 Nothing, for the common case: Ferrum reads `package.json` or the `.csproj`, works out the
-runtime, the install, build and start commands, the migration script and the variables the
-code reads, and prefills the form. Beyond that:
+runtime and the install, build, start and migration commands, and prefills the form. Beyond
+that, one file:
 
 - Listen on `PORT` and `HOST` from the environment; `HOST` is always `127.0.0.1`.
-- A `ferrum.toml` at the root names the app's processes, their paths, its commands and the
-  variable names it reads its database under. Ferrum reads it on every deploy. A `Procfile`
-  works too.
-- An `Aptfile` lists the Ubuntu packages the app needs.
+- A `ferrum.toml` at the root names the app's processes, their paths, its commands, the
+  Ubuntu packages it needs, the variables it reads, and the names it reads its database
+  under. Ferrum reads it on every deploy; a deploy that would leave a required variable
+  empty is refused before anything is built.
 - Push a tag to deploy it.
 
 Every convention is explained, with examples, under **Help** in the panel, and your AI agent
 can read the same pages through Ferrum's MCP server.
+
+### Your AI agent
+
+[`skills/ferrum-app/SKILL.md`](skills/ferrum-app/SKILL.md) is a skill for Claude Code and
+compatible agents: copy the `ferrum-app` folder into your agent's skills directory and it
+knows how to write a `ferrum.toml`, lay out processes, env and packages, and walk an existing
+app through the conventions above, without reading this repository.
 
 ## What you get
 
@@ -153,6 +160,7 @@ ferrum/
 │  └─ ferrum-platform/  # everything that touches Ubuntu, behind one trait
 ├─ web/                 # the panel (React, Vite, Tailwind), embedded in the binary
 ├─ help/                # the Help topics, embedded in the binary
+├─ skills/              # the ferrum-app skill for AI agents
 ├─ packaging/           # systemd unit, nginx templates, the release signing public key
 └─ install.sh           # the install command above
 ```
