@@ -70,6 +70,8 @@ pub struct CreateDatabase {
     pub extensions: Option<Vec<String>>,
     /// Link the new database to this application and write DATABASE_URL into its .env.
     pub app_slug: Option<String>,
+    /// The variable the owner's URL goes under in the linked application's .env instead of DATABASE_URL.
+    pub env_label: Option<String>,
 }
 
 #[derive(Deserialize, schemars::JsonSchema)]
@@ -262,6 +264,7 @@ impl Ferrum {
             name: args.name,
             connection_limit: args.connection_limit,
             extensions: args.extensions.unwrap_or_default(),
+            env_label: args.env_label,
         };
         finish(databases::create_database(&self.state, new, args.app_slug.as_deref()).await)
     }

@@ -6,13 +6,19 @@ import {
   useApps,
   useCreateDatabase,
   useCreateFromDump,
+  useCreateRole,
   useDatabases,
   useDeleteDatabase,
   useEnableExtension,
   usePostgres,
   useRedisInstances,
+  useRemoveRole,
+  useRoleUrl,
+  useRoles,
+  useRotateRole,
 } from "@/lib/api";
 import { GZIP_REFUSED, describeDump, sniffFile, type DumpFormat } from "@/lib/dump";
+import { Handoff } from "@/components/Handoff";
 import { PageTitle } from "@/components/PageTitle";
 import { Card, CardBody, CardFoot, CardHeader } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
@@ -395,6 +401,7 @@ function DatabaseCard({ db, tunnel, tunnelUser }: { db: Database; tunnel: string
             from a corrected dump.
           </p>
         ) : null}
+        <Roles database={db.name} linked={db.linked_apps.length > 0} />
       </CardBody>
       <CardFoot className="block">
         <p>
@@ -413,5 +420,158 @@ function DatabaseCard({ db, tunnel, tunnelUser }: { db: Database; tunnel: string
         </p>
       </CardFoot>
     </Card>
+  );
+}
+
+const ROLE_NAME = /^[a-z][a-z0-9_]{0,62}$/;
+const LABEL = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
+function Roles({ database, linked }: { database: string; linked: boolean }) {
+  const { data: roles = [] } = useRoles(database);
+  const create = useCreateRole(database);
+  const remove = useRemoveRole(database);
+  const rotate = useRotateRole(database);
+  const reveal = useRoleUrl(database);
+  const [shown, setShown] = useState<{ role: string; url: string } | null>(null);
+  const [removing, setRemoving] = useState<string | null>(null);
+  const [rotated, setRotated] = useState<string | null>(null);
+  const [adding, setAdding] = useState(false);
+  const [name, setName] = useState("");
+  const [label, setLabel] = useState("");
+  const [limit, setLimit] = useState(20);
+  const validName = ROLE_NAME.test(name) && database.length + 1 + name.length <= 63;
+  const validLabel = label === "" || LABEL.test(label);
+  const failed = create.error ?? remove.error ?? rotate.error ?? reveal.error;
+
+  const add = async () => {
+    await create.mutateAsync({ name, env_label: label || undefined, connection_limit: limit });
+    setName("");
+    setLabel("");
+    setLimit(20);
+    setAdding(false);
+  };
+
+  return (
+    <div className="mt-5">
+      <div className="flex items-baseline justify-between mb-2">
+        <span className="text-[13px] text-ink-3">Roles</span>
+        <button
+          type="button"
+          onClick={() => setAdding(!adding)}
+          className="font-mono text-[12px] text-ink-4 border border-dashed border-line-strong rounded px-1.5 py-0.5 hover:text-ink"
+        >
+          {adding ? "close" : "+ add role"}
+        </button>
+      </div>
+      {shown ? (
+        <Handoff label={`Connection URL for ${shown.role}`} value={shown.url} onDone={() => setShown(null)} />
+      ) : null}
+      <ul className="border border-line rounded-inset divide-y divide-line">
+        {roles.map((role) => (
+          <li key={role.name} className="flex flex-wrap items-center gap-x-3 gap-y-2 px-3 py-2.5">
+            <span className="flex items-center gap-2 min-w-0 flex-1">
+              <span className="font-mono text-[13px] text-ink truncate">{role.name}</span>
+              {role.owner ? <Badge>owner</Badge> : null}
+            </span>
+            <Code>{role.env_label}</Code>
+            <span className="text-[12.5px] text-ink-4 tnum">{role.connection_limit} connections</span>
+            <span className="flex gap-1">
+              {removing === role.name ? (
+                <>
+                  <Button size="sm" variant="ghost" onClick={() => setRemoving(null)}>
+                    Cancel
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="danger"
+                    disabled={remove.isPending}
+                    onClick={() => remove.mutate(role.name, { onSuccess: () => setRemoving(null) })}
+                  >
+                    Remove {role.name}
+                  </Button>
+                </>
+              ) : (
+                <>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    disabled={reveal.isPending}
+                    onClick={() =>
+                      reveal.mutate(role.name, { onSuccess: ({ url }) => setShown({ role: role.name, url }) })
+                    }
+                  >
+                    Copy URL
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    disabled={rotate.isPending}
+                    onClick={() =>
+                      rotate.mutate(role.name, {
+                        onSuccess: () => {
+                          setShown(null);
+                          setRotated(role.name);
+                        },
+                      })
+                    }
+                  >
+                    Rotate
+                  </Button>
+                  {role.owner ? null : (
+                    <Button size="sm" variant="ghost" onClick={() => setRemoving(role.name)}>
+                      Remove
+                    </Button>
+                  )}
+                </>
+              )}
+            </span>
+          </li>
+        ))}
+        {adding ? (
+          <li className="flex flex-wrap items-center gap-2 px-3 py-2.5">
+            <span className="flex items-center font-mono text-[13px] text-ink-4">{database}_</span>
+            <input
+              value={name}
+              onChange={(e) => setName(e.target.value.toLowerCase())}
+              placeholder="app"
+              aria-label="Role name"
+              className={`${INPUT} w-28 font-mono text-[13px]`}
+            />
+            <input
+              value={label}
+              onChange={(e) => setLabel(e.target.value.toUpperCase())}
+              placeholder={name ? `DATABASE_URL_${name.toUpperCase()}` : "DATABASE_URL_APP"}
+              aria-label="Env label"
+              className={`${INPUT} flex-1 min-w-40 font-mono text-[13px]`}
+            />
+            <input
+              type="number"
+              min={1}
+              max={500}
+              value={limit}
+              onChange={(e) => setLimit(Number(e.target.value))}
+              aria-label="Connection limit"
+              className={`${INPUT} w-20`}
+            />
+            <Button size="sm" variant="primary" disabled={!validName || !validLabel || create.isPending} onClick={add}>
+              Add
+            </Button>
+          </li>
+        ) : null}
+      </ul>
+      {rotated ? (
+        <p className="text-[12.5px] text-ink-3 mt-2">
+          {rotated} has a new password.
+          {linked
+            ? " The linked apps have it in their env file; restart them, since a new connection with the old one is refused."
+            : null}
+        </p>
+      ) : null}
+      {failed ? <p className="text-[12.5px] text-fail mt-2">{message(failed)}</p> : null}
+      <p className="text-[12.5px] text-ink-4 mt-2 leading-relaxed">
+        A role other than the owner can connect and nothing more. Grant it what it needs from a
+        migration that runs as the owner, and every app linked here gets its URL under its label.
+      </p>
+    </div>
   );
 }

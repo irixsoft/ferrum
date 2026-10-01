@@ -14,6 +14,7 @@ use crate::runtime::{self, Commands, RuntimeKind};
 use crate::state::State;
 use crate::time;
 use domains::{Domain, NewDomain};
+use ferrum_platform::Platform;
 use processes::{NewProcess, Process, WEB};
 use serde::{Deserialize, Serialize};
 use sqlx::Sqlite;
@@ -487,8 +488,22 @@ pub async fn update(state: &State, slug: &str, changes: AppChanges) -> anyhow::R
 }
 
 /// The repo's file replaces the process list and paths when it states them, and each command
-/// it states; everything it is silent on keeps its stored value.
-pub async fn apply_manifest(state: &State, app: &App, manifest: &Manifest) -> anyhow::Result<App> {
+/// it states; everything it is silent on keeps its stored value. `[database]` speaks for the
+/// first linked database only, so two databases never claim the same labels.
+pub async fn apply_manifest(
+    state: &State,
+    platform: &dyn Platform,
+    app: &App,
+    manifest: &Manifest,
+) -> anyhow::Result<App> {
+    if let Some(spec) = &manifest.database
+        && let Some(first) = crate::postgres::names_for(state, &app.id).await?.first()
+    {
+        crate::postgres::link_with_labels(state, platform, app, first, Some(spec)).await?;
+    }
+    if let Some(label) = manifest.redis.as_ref().and_then(|r| r.url.as_deref()) {
+        crate::redis::set_label(state, &app.id, label).await?;
+    }
     let mut commands = app.commands.clone();
     if manifest.commands.install.is_some() {
         commands.install = manifest.commands.install.clone();
@@ -1150,7 +1165,8 @@ pub(crate) mod tests {
         )
         .unwrap();
         let manifest = crate::manifest::from_toml(&toml);
-        let applied = apply_manifest(&state, &app, &manifest).await.unwrap();
+        let p = ferrum_platform::FakePlatform::new();
+        let applied = apply_manifest(&state, &p, &app, &manifest).await.unwrap();
 
         let web = applied.process("web").unwrap();
         assert_eq!(web.start(), Some("bun run serve"));
@@ -1175,11 +1191,83 @@ pub(crate) mod tests {
         let silent = crate::manifest::from_toml(
             &crate::manifest::parse_toml("packages = [\"ffmpeg\"]\n").unwrap(),
         );
-        let kept = apply_manifest(&state, &applied, &silent).await.unwrap();
+        let kept = apply_manifest(&state, &p, &applied, &silent).await.unwrap();
         assert_eq!(
             kept.processes.len(),
             3,
             "a file silent on processes changes none"
+        );
+        assert!(p.sql().is_empty(), "no [database], no psql");
+    }
+
+    #[tokio::test]
+    async fn a_database_section_labels_the_first_link_creates_its_roles_and_keeps_dropped_ones() {
+        let (_d, state) = state().await;
+        let p = ferrum_platform::FakePlatform::new();
+        let app = create(&state, new_app("ledger", &[("/", "main", false)]))
+            .await
+            .unwrap();
+        let db = crate::postgres::create(&state, &p, crate::postgres::tests::new("ledger_prod"))
+            .await
+            .unwrap();
+        crate::postgres::create(&state, &p, crate::postgres::tests::new("analytics"))
+            .await
+            .unwrap();
+        crate::postgres::roles::create(
+            &state,
+            &p,
+            &db,
+            crate::postgres::NewRole {
+                name: "legacy".into(),
+                ..crate::postgres::NewRole::default()
+            },
+        )
+        .await
+        .unwrap();
+        crate::postgres::link(&state, &app.id, "ledger_prod")
+            .await
+            .unwrap();
+        crate::postgres::link(&state, &app.id, "analytics")
+            .await
+            .unwrap();
+        p.set_active("ferrum-redis-ledger");
+        crate::redis::request(&state, &p, &app, 64).await.unwrap();
+
+        let manifest = crate::manifest::from_toml(
+            &crate::manifest::parse_toml(
+                "[database]\nurl = \"DATABASE_ADMIN_URL\"\n[database.roles.app]\nurl = \"DATABASE_URL\"\n[redis]\nurl = \"CACHE_URL\"\n",
+            )
+            .unwrap(),
+        );
+        apply_manifest(&state, &p, &app, &manifest).await.unwrap();
+
+        assert!(
+            p.sql()
+                .iter()
+                .any(|s| s.contains("CREATE ROLE \"ledger_prod_app\""))
+        );
+        assert!(
+            !p.sql().iter().any(|s| s.contains("analytics_app")),
+            "only the first link"
+        );
+        assert_eq!(
+            env::managed_for(&state, &app).await.unwrap().keys(),
+            [
+                "DATABASE_ADMIN_URL",
+                "DATABASE_URL",
+                "DATABASE_URL_LEGACY",
+                "ANALYTICS_DATABASE_URL",
+                "CACHE_URL"
+            ]
+        );
+        let notices = crate::events::list(&state, 10, true).await.unwrap();
+        assert_eq!(notices.len(), 1);
+        assert_eq!(notices[0].kind, "role_kept");
+        assert_eq!(notices[0].subject, "ledger_prod_legacy");
+        assert!(
+            notices[0].sentence.contains("ledger_prod_legacy"),
+            "{}",
+            notices[0].sentence
         );
     }
 }

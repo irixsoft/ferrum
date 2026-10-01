@@ -20,6 +20,7 @@ pub fn router() -> Router<AppState> {
         .route("/api/apps/detect", axum::routing::post(inspect))
         .route("/api/apps/{slug}", get(show).patch(update).delete(remove))
         .route("/api/apps/{slug}/env", axum::routing::put(set_env))
+        .route("/api/apps/{slug}/labels", axum::routing::patch(set_labels))
         .route("/api/apps/{slug}/packages", get(package_removal))
         .route(
             "/api/apps/{slug}/databases/{name}",
@@ -203,7 +204,7 @@ pub(crate) async fn detail(app: &AppState, found: &App) -> anyhow::Result<serde_
     let entries = env::entries(&app.db, &found.id).await?;
     let databases = postgres::names_for(&app.db, &found.id).await?;
     let instance = redis::for_app(&app.db, &found.id).await?;
-    let managed = env::managed_for(&app.db, found).await?.keys();
+    let managed = env::managed_for(&app.db, found).await?;
     let current = match &found.current_release_id {
         Some(id) => releases::by_id(&app.db, id).await?,
         None => None,
@@ -256,7 +257,8 @@ pub(crate) async fn detail(app: &AppState, found: &App) -> anyhow::Result<serde_
     value["certificates"] = serde_json::to_value(certificates)?;
     value["databases"] = serde_json::to_value(databases)?;
     value["redis"] = serde_json::to_value(instance)?;
-    value["managed"] = serde_json::to_value(managed)?;
+    value["managed"] = serde_json::to_value(managed.keys())?;
+    value["managed_vars"] = serde_json::to_value(managed.labels())?;
     Ok(value)
 }
 
@@ -393,9 +395,26 @@ async fn link_database(
     Path((slug, name)): Path<(String, String)>,
 ) -> ApiResult<StatusCode> {
     let found = find(&app, &slug).await?;
-    postgres::link(&app.db, &found.id, &name)
+    postgres::link_with_labels(&app.db, app.platform.as_ref(), &found, &name, None)
         .await
         .map_err(crate::routes::databases::db_error)?;
+    provision::write_env(&app.db, app.platform.as_ref(), &found).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn set_labels(
+    Extract(app): Extract<AppState>,
+    _: Caller,
+    Path(slug): Path<String>,
+    Json(changes): Json<env::LabelChanges>,
+) -> ApiResult<StatusCode> {
+    let found = find(&app, &slug).await?;
+    env::set_labels(&app.db, &found, &changes)
+        .await
+        .map_err(crate::routes::databases::db_error)?;
+    for name in postgres::names_for(&app.db, &found.id).await? {
+        crate::routes::databases::rewrite_linked(&app, &name).await?;
+    }
     provision::write_env(&app.db, app.platform.as_ref(), &found).await?;
     Ok(StatusCode::NO_CONTENT)
 }

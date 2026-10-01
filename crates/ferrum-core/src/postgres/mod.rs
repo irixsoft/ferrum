@@ -1,10 +1,15 @@
 pub mod install;
 pub mod restore;
+pub mod roles;
 pub mod sql;
 pub mod tune;
 
 pub use install::{DEFAULT_MAJOR, ensure_installed, major};
+pub use roles::{NewRole, Role};
 
+use crate::apps::App;
+use crate::apps::env::{ManagedVar, Origin};
+use crate::manifest::DatabaseSpec;
 use crate::state::State;
 use crate::time;
 use crate::{secret, secrets};
@@ -33,6 +38,10 @@ pub enum DbError {
     Linked(String, String),
     #[error("PostgreSQL refused: {0}")]
     Host(String),
+    #[error("{0}")]
+    Conflict(String),
+    #[error("{0}")]
+    Missing(String),
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -43,6 +52,7 @@ pub struct Database {
     pub connection_limit: u32,
     pub extensions: Vec<String>,
     pub linked_apps: Vec<String>,
+    pub roles: Vec<Role>,
     pub size_bytes: Option<i64>,
     pub connections_active: Option<i64>,
     pub created_at: String,
@@ -54,6 +64,7 @@ pub struct NewDatabase {
     pub name: String,
     pub connection_limit: Option<u32>,
     pub extensions: Vec<String>,
+    pub env_label: Option<String>,
 }
 
 pub fn valid_name(name: &str) -> bool {
@@ -155,6 +166,9 @@ fn validate(new: &NewDatabase) -> Result<(), DbError> {
             ));
         }
     }
+    if let Some(label) = &new.env_label {
+        roles::valid_label(label)?;
+    }
     Ok(())
 }
 
@@ -166,6 +180,11 @@ pub async fn create(
     validate(&new)?;
     if by_name(state, &new.name).await?.is_some() {
         return Err(DbError::Taken(new.name).into());
+    }
+    if roles::name_taken(state, &new.name).await? {
+        return Err(
+            DbError::Conflict(format!("A role called {} already exists.", new.name)).into(),
+        );
     }
     offered(platform, &new.extensions)?;
     let name = new.name.clone();
@@ -186,7 +205,7 @@ pub async fn create(
             Ok(())
         });
     if let Err(e) = made {
-        let _ = platform.postgres_sql(MAINTENANCE_DB, &sql::drop_database(&name, &role));
+        let _ = platform.postgres_sql(MAINTENANCE_DB, &sql::drop_database(&name, &[&role]));
         return Err(e.into());
     }
 
@@ -204,6 +223,8 @@ pub async fn create(
     )
     .execute(&mut *tx)
     .await?;
+    let label = new.env_label.as_deref().unwrap_or(roles::OWNER_LABEL);
+    roles::insert_owner(&mut tx, &id, &role, &sealed, limit, label).await?;
     for ext in &new.extensions {
         sqlx::query!(
             "INSERT OR IGNORE INTO database_extensions (database_id, name) VALUES (?, ?)",
@@ -262,8 +283,15 @@ pub async fn delete(state: &State, platform: &dyn Platform, name: &str) -> anyho
     if !db.linked_apps.is_empty() {
         return Err(DbError::Linked(db.name, db.linked_apps.join(", ")).into());
     }
+    let mut names: Vec<&str> = vec![&db.role];
+    names.extend(
+        db.roles
+            .iter()
+            .filter(|r| !r.owner)
+            .map(|r| r.name.as_str()),
+    );
     platform
-        .postgres_sql(MAINTENANCE_DB, &sql::drop_database(&db.name, &db.role))
+        .postgres_sql(MAINTENANCE_DB, &sql::drop_database(&db.name, &names))
         .map_err(host_error)?;
     sqlx::query!("DELETE FROM databases WHERE id = ?", db.id)
         .execute(&state.pool)
@@ -285,6 +313,51 @@ pub async fn link(state: &State, app_id: &str, name: &str) -> anyhow::Result<()>
     Ok(())
 }
 
+/// Links, then applies what the repo's `[database]` section says about labels and roles.
+pub async fn link_with_labels(
+    state: &State,
+    platform: &dyn Platform,
+    app: &App,
+    name: &str,
+    spec: Option<&DatabaseSpec>,
+) -> anyhow::Result<()> {
+    link(state, &app.id, name).await?;
+    let Some(spec) = spec else {
+        return Ok(());
+    };
+    let db = by_name(state, name).await?.ok_or(DbError::NotFound)?;
+    roles::ensure_from_manifest(state, platform, &db, spec, app).await?;
+    if let Some(url) = &spec.url {
+        set_link_label(state, &app.id, name, Some(url)).await?;
+    }
+    Ok(())
+}
+
+/// The owner's variable name in this app's env; `None` goes back to the name by link order.
+pub async fn set_link_label(
+    state: &State,
+    app_id: &str,
+    name: &str,
+    label: Option<&str>,
+) -> anyhow::Result<()> {
+    if let Some(label) = label {
+        roles::valid_label(label)?;
+    }
+    let db = by_name(state, name).await?.ok_or(DbError::NotFound)?;
+    let done = sqlx::query!(
+        "UPDATE app_databases SET env_label = ? WHERE app_id = ? AND database_id = ?",
+        label,
+        app_id,
+        db.id
+    )
+    .execute(&state.pool)
+    .await?;
+    if done.rows_affected() == 0 {
+        return Err(DbError::Missing(format!("{name} is not linked to that application.")).into());
+    }
+    Ok(())
+}
+
 pub async fn unlink(state: &State, app_id: &str, name: &str) -> anyhow::Result<bool> {
     let db = by_name(state, name).await?.ok_or(DbError::NotFound)?;
     let done = sqlx::query!(
@@ -297,23 +370,41 @@ pub async fn unlink(state: &State, app_id: &str, name: &str) -> anyhow::Result<b
     Ok(done.rows_affected() > 0)
 }
 
-/// `(env key, url)` for every database linked to the app, in link order.
-pub async fn urls_for(state: &State, app_id: &str) -> anyhow::Result<Vec<(String, String)>> {
+/// Every database linked to the app in link order: its owner under the link's label, then each
+/// of its other roles under the role's own.
+pub async fn urls_for(state: &State, app_id: &str) -> anyhow::Result<Vec<ManagedVar>> {
     let rows = sqlx::query!(
-        r#"SELECT d.name AS "name!", d.role AS "role!", d.password AS "password!"
+        r#"SELECT d.id AS "id!", d.name AS "name!", d.role AS "role!", d.password AS "password!",
+                  l.env_label
            FROM app_databases l JOIN databases d ON d.id = l.database_id
            WHERE l.app_id = ? ORDER BY l.position, d.name"#,
         app_id
     )
     .fetch_all(&state.pool)
     .await?;
-    rows.into_iter()
-        .enumerate()
-        .map(|(i, r)| {
-            let password = secrets::decrypt(&state.key, &r.password)?;
-            Ok((env_key(i, &r.name), url(&r.name, &r.role, &password)))
-        })
-        .collect()
+    let mut out = Vec::new();
+    for (i, r) in rows.into_iter().enumerate() {
+        let password = secrets::decrypt(&state.key, &r.password)?;
+        out.push(ManagedVar {
+            key: r.env_label.unwrap_or_else(|| env_key(i, &r.name)),
+            value: url(&r.name, &r.role, &password),
+            origin: Origin::Owner {
+                database: r.name.clone(),
+            },
+        });
+        for (label, role, sealed) in roles::sealed_for(state, &r.id).await? {
+            let password = secrets::decrypt(&state.key, &sealed)?;
+            out.push(ManagedVar {
+                key: label,
+                value: url(&r.name, &role, &password),
+                origin: Origin::Role {
+                    database: r.name.clone(),
+                    role,
+                },
+            });
+        }
+    }
+    Ok(out)
 }
 
 pub async fn names_for(state: &State, app_id: &str) -> anyhow::Result<Vec<String>> {
@@ -392,6 +483,7 @@ async fn rows(state: &State) -> anyhow::Result<Vec<Database>> {
         )
         .fetch_all(&state.pool)
         .await?;
+        let roles = roles::list_for(state, &r.id).await?;
         out.push(Database {
             id: r.id,
             name: r.name,
@@ -399,6 +491,7 @@ async fn rows(state: &State) -> anyhow::Result<Vec<Database>> {
             connection_limit: r.connection_limit as u32,
             extensions,
             linked_apps,
+            roles,
             size_bytes: None,
             connections_active: None,
             created_at: time::utc(r.created_at),
@@ -465,6 +558,7 @@ pub(crate) mod tests {
                 name: "ledger_prod".into(),
                 connection_limit: Some(30),
                 extensions: vec![],
+                env_label: None,
             },
         )
         .await
@@ -626,19 +720,79 @@ pub(crate) mod tests {
         link(&state, &app.id, "ledger_prod").await.unwrap();
         link(&state, &app.id, "analytics").await.unwrap();
         let urls = urls_for(&state, &app.id).await.unwrap();
-        assert_eq!(urls[0].0, "DATABASE_URL");
-        assert!(urls[0].1.starts_with("postgres://ledger_prod:"));
-        assert_eq!(urls[1].0, "ANALYTICS_DATABASE_URL");
-        assert!(urls[1].1.ends_with("@127.0.0.1:5432/analytics"));
+        assert_eq!(urls[0].key, "DATABASE_URL");
+        assert!(urls[0].value.starts_with("postgres://ledger_prod:"));
+        assert_eq!(urls[1].key, "ANALYTICS_DATABASE_URL");
+        assert!(urls[1].value.ends_with("@127.0.0.1:5432/analytics"));
         assert_eq!(
             names_for(&state, &app.id).await.unwrap(),
             vec!["ledger_prod", "analytics"]
         );
         unlink(&state, &app.id, "ledger_prod").await.unwrap();
         assert_eq!(
-            urls_for(&state, &app.id).await.unwrap()[0].0,
+            urls_for(&state, &app.id).await.unwrap()[0].key,
             "DATABASE_URL",
             "the next database moves up"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_link_label_names_the_owner_and_each_role_follows_under_its_own() {
+        let (_d, state) = state().await;
+        let p = FakePlatform::new();
+        let app = apps::create(&state, new_app("ledger", &[("/", "main", false)]))
+            .await
+            .unwrap();
+        let mut labelled = new("ledger_prod");
+        labelled.env_label = Some("DATABASE_ADMIN_URL".into());
+        let db = create(&state, &p, labelled).await.unwrap();
+        assert_eq!(db.roles.len(), 1);
+        assert!(db.roles[0].owner);
+        assert_eq!(db.roles[0].env_label, "DATABASE_ADMIN_URL");
+        roles::create(
+            &state,
+            &p,
+            &db,
+            NewRole {
+                name: "app".into(),
+                env_label: Some("DATABASE_URL".into()),
+                connection_limit: None,
+            },
+        )
+        .await
+        .unwrap();
+        link(&state, &app.id, "ledger_prod").await.unwrap();
+        let keys =
+            |vars: Vec<ManagedVar>| -> Vec<String> { vars.into_iter().map(|v| v.key).collect() };
+        assert_eq!(
+            keys(urls_for(&state, &app.id).await.unwrap()),
+            ["DATABASE_URL", "DATABASE_URL"],
+            "an unlabelled link keeps the name by link order"
+        );
+        set_link_label(&state, &app.id, "ledger_prod", Some("DATABASE_ADMIN_URL"))
+            .await
+            .unwrap();
+        let vars = urls_for(&state, &app.id).await.unwrap();
+        assert_eq!(keys(vars.clone()), ["DATABASE_ADMIN_URL", "DATABASE_URL"]);
+        assert!(vars[1].value.starts_with("postgres://ledger_prod_app:"));
+        assert_eq!(
+            vars[1].origin,
+            Origin::Role {
+                database: "ledger_prod".into(),
+                role: "ledger_prod_app".into()
+            }
+        );
+        assert!(
+            set_link_label(&state, &app.id, "ledger_prod", Some("1BAD"))
+                .await
+                .is_err()
+        );
+        set_link_label(&state, &app.id, "ledger_prod", None)
+            .await
+            .unwrap();
+        assert_eq!(
+            urls_for(&state, &app.id).await.unwrap()[0].key,
+            "DATABASE_URL"
         );
     }
 

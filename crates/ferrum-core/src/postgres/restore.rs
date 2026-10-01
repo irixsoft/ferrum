@@ -336,6 +336,7 @@ ALTER TABLE ONLY public.users ADD CONSTRAINT users_pkey PRIMARY KEY (id);\n";
             connection_limit: 20,
             extensions: vec![],
             linked_apps: vec![],
+            roles: vec![],
             size_bytes: None,
             connections_active: None,
             created_at: String::new(),

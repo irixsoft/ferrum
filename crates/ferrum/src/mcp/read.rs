@@ -217,7 +217,7 @@ impl Ferrum {
 
     #[tool(
         name = "database_info",
-        description = "One database with a connection URL template; the password is written as <password> and is only ever in the linked application's .env.",
+        description = "One database with a connection URL template, its roles with their env labels, and the variable each linked application gets; the password is written as <password> and is only ever in the linked application's .env.",
         annotations(read_only_hint = true, idempotent_hint = true, open_world_hint = false)
     )]
     async fn database_info(&self, Parameters(args): Parameters<DatabaseName>) -> ToolResult {

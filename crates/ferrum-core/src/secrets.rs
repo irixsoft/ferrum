@@ -148,6 +148,23 @@ pub async fn migrate(state: &State) -> anyhow::Result<u64> {
         done += 1;
     }
     for row in sqlx::query!(
+        r#"SELECT id AS "id!", password AS "password!" FROM database_roles
+           WHERE substr(password, 1, 3) <> 'v1:'"#
+    )
+    .fetch_all(&state.pool)
+    .await?
+    {
+        let sealed = encrypt(key, &row.password);
+        sqlx::query!(
+            "UPDATE database_roles SET password = ? WHERE id = ?",
+            sealed,
+            row.id
+        )
+        .execute(&state.pool)
+        .await?;
+        done += 1;
+    }
+    for row in sqlx::query!(
         r#"SELECT app_id AS "app_id!", password AS "password!" FROM redis_instances
            WHERE substr(password, 1, 3) <> 'v1:'"#
     )
@@ -258,6 +275,7 @@ mod tests {
 
         let raw: Vec<String> = sqlx::query_scalar(
             "SELECT value FROM app_env UNION ALL SELECT password FROM databases
+             UNION ALL SELECT password FROM database_roles
              UNION ALL SELECT password FROM redis_instances
              UNION ALL SELECT private_key FROM github_apps
              UNION ALL SELECT webhook_secret FROM github_apps
@@ -266,7 +284,7 @@ mod tests {
         .fetch_all(&state.pool)
         .await
         .unwrap();
-        assert_eq!(raw.len(), 6);
+        assert_eq!(raw.len(), 7);
         assert!(raw.iter().all(|v| is_encrypted(v)), "{raw:?}");
         assert!(
             raw.iter()
@@ -278,8 +296,8 @@ mod tests {
             vec![("SECRET".to_string(), "hunter2".to_string())]
         );
         let urls = postgres::urls_for(&state, &app.id).await.unwrap();
-        assert!(!urls[0].1.contains("v1:"), "{}", urls[0].1);
-        let redis_url = redis::url_for(&state, &app.id).await.unwrap().unwrap();
+        assert!(!urls[0].value.contains("v1:"), "{}", urls[0].value);
+        let (_, redis_url) = redis::url_for(&state, &app.id).await.unwrap().unwrap();
         assert!(!redis_url.contains("v1:"), "{redis_url}");
         assert_eq!(
             github::private_key(&state, 12345).await.unwrap().as_deref(),

@@ -175,17 +175,19 @@ impl Job {
         if let Some(reason) = self.missing_target(&manifest) {
             return self.refuse(reason).await;
         }
-        let applied = match apps::apply_manifest(&self.ctx.state, &self.app, &manifest).await {
-            Ok(applied) => applied,
-            Err(e) => {
-                return self
-                    .refuse(format!(
-                        "{} was not accepted: {e:#}",
-                        manifest.source.file_name()
-                    ))
-                    .await;
-            }
-        };
+        let platform = self.ctx.platform.as_ref();
+        let applied =
+            match apps::apply_manifest(&self.ctx.state, platform, &self.app, &manifest).await {
+                Ok(applied) => applied,
+                Err(e) => {
+                    return self
+                        .refuse(format!(
+                            "{} was not accepted: {e:#}",
+                            manifest.source.file_name()
+                        ))
+                        .await;
+                }
+            };
         self.say(&describe_manifest(&manifest, &applied)).await?;
         self.app = applied;
         write_env(&self.ctx.state, self.ctx.platform.as_ref(), &self.app).await?;
@@ -848,7 +850,13 @@ impl Job {
         }
         let work = work_dir(Path::new(&previous.dir), &self.app.root);
         if let Ok(Some(manifest)) = manifest::read_dir(self.ctx.platform.as_ref(), &work)
-            && let Ok(applied) = apps::apply_manifest(&self.ctx.state, &self.app, &manifest).await
+            && let Ok(applied) = apps::apply_manifest(
+                &self.ctx.state,
+                self.ctx.platform.as_ref(),
+                &self.app,
+                &manifest,
+            )
+            .await
         {
             self.app = applied;
             let _ = write_env(&self.ctx.state, self.ctx.platform.as_ref(), &self.app).await;

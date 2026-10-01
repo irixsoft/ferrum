@@ -5,9 +5,10 @@ use axum::body::Body;
 use axum::extract::{DefaultBodyLimit, Path, Request, State as Extract};
 use axum::http::StatusCode;
 use axum::{Json, Router, routing::get};
+use ferrum_core::apps::env::{self, Origin};
 use ferrum_core::apps::{self, provision};
 use ferrum_core::postgres::restore::{self, Format, Staged};
-use ferrum_core::postgres::{self, Database, DbError, NewDatabase};
+use ferrum_core::postgres::{self, Database, DbError, NewDatabase, NewRole, Role};
 use ferrum_core::{redis, setup};
 use serde::{Deserialize, Serialize};
 use std::os::unix::fs::PermissionsExt;
@@ -33,8 +34,26 @@ pub fn router() -> Router<AppState> {
             "/api/databases/{name}/restore",
             axum::routing::post(create_from_dump).layer(DefaultBodyLimit::disable()),
         )
+        .route(
+            "/api/databases/{name}/roles",
+            get(list_roles).post(create_role),
+        )
+        .route(
+            "/api/databases/{name}/roles/{role}",
+            axum::routing::delete(remove_role),
+        )
+        .route(
+            "/api/databases/{name}/roles/{role}/rotate",
+            axum::routing::post(rotate_role),
+        )
+        .route(
+            "/api/databases/{name}/roles/{role}/url",
+            axum::routing::post(role_url),
+        )
         .route("/api/redis", get(redis_list))
 }
+
+const PEOPLE_ONLY: &str = "Only a signed-in person can read a role's URL; API tokens cannot.";
 
 #[derive(Serialize)]
 pub(crate) struct Listed {
@@ -175,11 +194,18 @@ pub(crate) async fn create_database(
         ),
         None => None,
     };
+    let label = new.env_label.clone();
     let created = postgres::create(&app.db, app.platform.as_ref(), new)
         .await
         .map_err(db_error)?;
     if let Some(target) = linked_app {
-        postgres::link(&app.db, &target.id, &created.name).await?;
+        postgres::link_with_labels(&app.db, app.platform.as_ref(), &target, &created.name, None)
+            .await?;
+        if label.is_some() {
+            postgres::set_link_label(&app.db, &target.id, &created.name, label.as_deref())
+                .await
+                .map_err(db_error)?;
+        }
         provision::write_env(&app.db, app.platform.as_ref(), &target).await?;
         return Ok(postgres::by_name(&app.db, &created.name)
             .await?
@@ -203,9 +229,25 @@ pub(crate) async fn detail(app: &AppState, name: &str) -> ApiResult<serde_json::
         .into_iter()
         .find(|d| d.name == name)
         .ok_or_else(|| ApiError::not_found(DbError::NotFound.to_string()))?;
+    let mut labels = Vec::new();
+    for slug in &found.linked_apps {
+        let Some(linked) = apps::by_slug(&app.db, slug).await? else {
+            continue;
+        };
+        for label in env::managed_for(&app.db, &linked).await?.labels() {
+            let ours = match &label.origin {
+                Origin::Owner { database } | Origin::Role { database, .. } => database == name,
+                Origin::Redis => false,
+            };
+            if ours {
+                labels.push(serde_json::json!({ "app": slug, "label": label }));
+            }
+        }
+    }
     let mut value = serde_json::to_value(&found).map_err(anyhow::Error::from)?;
     value["url_hint"] =
         serde_json::Value::String(postgres::url(&found.name, &found.role, "<password>"));
+    value["labels"] = serde_json::Value::Array(labels);
     value["restore"] =
         serde_json::to_value(restore_status(app, name)).map_err(anyhow::Error::from)?;
     Ok(value)
@@ -270,6 +312,7 @@ async fn create_from_dump(
             name: name.clone(),
             connection_limit: params.connection_limit,
             extensions,
+            env_label: None,
         },
         params.app_slug.as_deref(),
     )
@@ -283,10 +326,11 @@ async fn create_from_dump(
     let database = name.clone();
     tokio::spawn(async move {
         let platform = task.platform.clone();
+        let loaded = db.clone();
         let result = tokio::task::spawn_blocking(move || {
             let result = restore::load(
                 platform.as_ref(),
-                &db,
+                &loaded,
                 &staged,
                 format,
                 prepared.list.as_deref(),
@@ -295,9 +339,13 @@ async fn create_from_dump(
             result
         })
         .await;
+        let result = match result {
+            Ok(Ok(())) => postgres::roles::regrant(&task.db, task.platform.as_ref(), &db).await,
+            Ok(Err(e)) => Err(e),
+            Err(e) => Err(e.into()),
+        };
         let outcome = match result {
-            Ok(Ok(())) => Install::Idle,
-            Ok(Err(e)) => Install::Failed(e.to_string()),
+            Ok(()) => Install::Idle,
             Err(e) => Install::Failed(e.to_string()),
         };
         task.restores.lock().unwrap().insert(database, outcome);
@@ -388,10 +436,98 @@ async fn redis_list(
     Ok(Json(redis::list(&app.db).await?))
 }
 
+async fn database(app: &AppState, name: &str) -> ApiResult<Database> {
+    postgres::by_name(&app.db, name)
+        .await?
+        .ok_or_else(|| ApiError::not_found(DbError::NotFound.to_string()))
+}
+
+/// A role's URL or label changed: every app linked to the database gets its env file again.
+pub(crate) async fn rewrite_linked(app: &AppState, name: &str) -> ApiResult<()> {
+    let db = database(app, name).await?;
+    for slug in &db.linked_apps {
+        if let Some(linked) = apps::by_slug(&app.db, slug).await? {
+            provision::write_env(&app.db, app.platform.as_ref(), &linked).await?;
+        }
+    }
+    Ok(())
+}
+
+async fn list_roles(
+    Extract(app): Extract<AppState>,
+    _: Caller,
+    Path(name): Path<String>,
+) -> ApiResult<Json<Vec<Role>>> {
+    let db = database(&app, &name).await?;
+    Ok(Json(db.roles))
+}
+
+async fn create_role(
+    Extract(app): Extract<AppState>,
+    _: Caller,
+    Path(name): Path<String>,
+    Json(body): Json<NewRole>,
+) -> ApiResult<(StatusCode, Json<Role>)> {
+    let db = database(&app, &name).await?;
+    let role = postgres::roles::create(&app.db, app.platform.as_ref(), &db, body)
+        .await
+        .map_err(db_error)?;
+    rewrite_linked(&app, &name).await?;
+    Ok((StatusCode::CREATED, Json(role)))
+}
+
+async fn remove_role(
+    Extract(app): Extract<AppState>,
+    _: Caller,
+    Path((name, role)): Path<(String, String)>,
+) -> ApiResult<StatusCode> {
+    let db = database(&app, &name).await?;
+    postgres::roles::remove(&app.db, app.platform.as_ref(), &db, &role)
+        .await
+        .map_err(db_error)?;
+    rewrite_linked(&app, &name).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn rotate_role(
+    Extract(app): Extract<AppState>,
+    _: Caller,
+    Path((name, role)): Path<(String, String)>,
+) -> ApiResult<Json<Role>> {
+    let db = database(&app, &name).await?;
+    let rotated = postgres::roles::rotate(&app.db, app.platform.as_ref(), &db, &role)
+        .await
+        .map_err(db_error)?;
+    rewrite_linked(&app, &name).await?;
+    Ok(Json(rotated))
+}
+
+#[derive(Serialize)]
+struct RoleUrl {
+    url: String,
+}
+
+async fn role_url(
+    Extract(app): Extract<AppState>,
+    caller: Caller,
+    Path((name, role)): Path<(String, String)>,
+) -> ApiResult<Json<RoleUrl>> {
+    if caller.user().is_none() {
+        return Err(ApiError::new(StatusCode::FORBIDDEN, PEOPLE_ONLY));
+    }
+    let db = database(&app, &name).await?;
+    let url = postgres::roles::url(&app.db, &db, &role)
+        .await
+        .map_err(db_error)?;
+    Ok(Json(RoleUrl { url }))
+}
+
 pub fn db_error(e: anyhow::Error) -> ApiError {
     match e.downcast_ref::<DbError>() {
-        Some(DbError::Taken(_)) | Some(DbError::Linked(..)) => ApiError::conflict(e.to_string()),
-        Some(DbError::NotFound) => ApiError::not_found(e.to_string()),
+        Some(DbError::Taken(_)) | Some(DbError::Linked(..)) | Some(DbError::Conflict(_)) => {
+            ApiError::conflict(e.to_string())
+        }
+        Some(DbError::NotFound) | Some(DbError::Missing(_)) => ApiError::not_found(e.to_string()),
         Some(DbError::Invalid(_)) | Some(DbError::Host(_)) => ApiError::bad_request(e.to_string()),
         None => e.into(),
     }

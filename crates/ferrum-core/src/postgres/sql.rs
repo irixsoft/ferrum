@@ -47,11 +47,39 @@ pub fn recreate_database(name: &str, role: &str) -> String {
     )
 }
 
-pub fn drop_database(name: &str, role: &str) -> String {
+pub fn drop_database(name: &str, roles: &[&str]) -> String {
+    let mut out = format!(
+        "DROP DATABASE IF EXISTS {} WITH (FORCE);\n",
+        quote_ident(name)
+    );
+    for role in roles {
+        out.push_str(&format!("DROP ROLE IF EXISTS {};\n", quote_ident(role)));
+    }
+    out
+}
+
+pub fn grant_connect(name: &str, role: &str) -> String {
     format!(
-        "DROP DATABASE IF EXISTS {} WITH (FORCE);\nDROP ROLE IF EXISTS {};\n",
+        "GRANT CONNECT ON DATABASE {} TO {};\n",
         quote_ident(name),
         quote_ident(role)
+    )
+}
+
+pub fn alter_password(role: &str, password: &str) -> String {
+    format!(
+        "ALTER ROLE {} PASSWORD {};\n",
+        quote_ident(role),
+        quote_literal(password)
+    )
+}
+
+/// Run inside the role's database: what it created passes to the owner, its grants go with it.
+pub fn drop_role(role: &str, owner: &str) -> String {
+    format!(
+        "REASSIGN OWNED BY {role} TO {owner};\nDROP OWNED BY {role};\nDROP ROLE IF EXISTS {role};\n",
+        role = quote_ident(role),
+        owner = quote_ident(owner)
     )
 }
 
@@ -91,6 +119,22 @@ mod tests {
         assert_eq!(
             create_role("x", "p'w", 5),
             "CREATE ROLE \"x\" LOGIN PASSWORD 'p''w' CONNECTION LIMIT 5;\n"
+        );
+        assert_eq!(
+            alter_password("x", "p'w"),
+            "ALTER ROLE \"x\" PASSWORD 'p''w';\n"
+        );
+    }
+
+    #[test]
+    fn a_database_drops_with_every_role_and_a_role_leaves_nothing_behind() {
+        assert_eq!(
+            drop_database("ledger", &["ledger", "ledger_app"]),
+            "DROP DATABASE IF EXISTS \"ledger\" WITH (FORCE);\nDROP ROLE IF EXISTS \"ledger\";\nDROP ROLE IF EXISTS \"ledger_app\";\n"
+        );
+        assert_eq!(
+            drop_role("ledger_app", "ledger"),
+            "REASSIGN OWNED BY \"ledger_app\" TO \"ledger\";\nDROP OWNED BY \"ledger_app\";\nDROP ROLE IF EXISTS \"ledger_app\";\n"
         );
     }
 

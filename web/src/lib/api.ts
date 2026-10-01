@@ -10,6 +10,7 @@ import type {
   BuildLimits,
   BuildSettings,
   Database,
+  DatabaseRole,
   Deploy,
   DeployOutcome,
   Detected,
@@ -27,7 +28,9 @@ import type {
   MetricSeries,
   MintedToken,
   NewApp,
+  LabelChanges,
   NewDatabase,
+  NewRole,
   NginxFiles,
   PackageRemoval,
   PostgresStatus,
@@ -492,6 +495,45 @@ export function useCreateFromDump() {
 export function useEnableExtension() {
   return useInvalidating(keys.databases, (input: { database: string; extension: string }) =>
     request<void>(`/databases/${input.database}/extensions`, body({ name: input.extension })),
+  );
+}
+
+export function useRoles(name: string) {
+  return useQuery({
+    queryKey: keys.roles(name),
+    queryFn: () => request<DatabaseRole[]>(`/databases/${name}/roles`),
+  });
+}
+
+export function useCreateRole(name: string) {
+  return useInvalidating([keys.databases, keys.apps], (role: NewRole) =>
+    request<DatabaseRole>(`/databases/${name}/roles`, body(role)),
+  );
+}
+
+export function useRemoveRole(name: string) {
+  return useInvalidating([keys.databases, keys.apps], (role: string) =>
+    request<void>(`/databases/${name}/roles/${role}`, { method: "DELETE" }),
+  );
+}
+
+export function useRotateRole(name: string) {
+  return useInvalidating(keys.roles(name), (role: string) =>
+    request<DatabaseRole>(`/databases/${name}/roles/${role}/rotate`, { method: "POST" }),
+  );
+}
+
+/** Only a signed-in session gets an answer; an API token is refused. */
+export function useRoleUrl(name: string) {
+  return useMutation({
+    mutationFn: (role: string) =>
+      request<{ url: string }>(`/databases/${name}/roles/${role}/url`, { method: "POST" }),
+  });
+}
+
+export function useSetLabels(slug: string) {
+  return useInvalidating([keys.apps, keys.databases], (changes: LabelChanges) =>
+    request<void>(`/apps/${slug}/labels`, body(changes, "PATCH")),
   );
 }
 

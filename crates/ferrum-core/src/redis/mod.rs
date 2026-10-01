@@ -122,9 +122,10 @@ pub async fn for_app(state: &State, app_id: &str) -> anyhow::Result<Option<Insta
     }))
 }
 
-pub async fn url_for(state: &State, app_id: &str) -> anyhow::Result<Option<String>> {
+/// `(label, url)` of the app's instance.
+pub async fn url_for(state: &State, app_id: &str) -> anyhow::Result<Option<(String, String)>> {
     let row = sqlx::query!(
-        r#"SELECT r.password AS "password!", p.port AS "port!"
+        r#"SELECT r.password AS "password!", r.env_label AS "env_label!", p.port AS "port!"
            FROM redis_instances r JOIN app_ports p ON p.app_id = r.app_id AND p.name = ?
            WHERE r.app_id = ?"#,
         PORT_NAME,
@@ -134,9 +135,21 @@ pub async fn url_for(state: &State, app_id: &str) -> anyhow::Result<Option<Strin
     .await?;
     row.map(|r| {
         let password = secrets::decrypt(&state.key, &r.password)?;
-        Ok(url(r.port as u16, &password))
+        Ok((r.env_label, url(r.port as u16, &password)))
     })
     .transpose()
+}
+
+pub async fn set_label(state: &State, app_id: &str, label: &str) -> anyhow::Result<bool> {
+    crate::postgres::roles::valid_label(label)?;
+    let done = sqlx::query!(
+        "UPDATE redis_instances SET env_label = ? WHERE app_id = ?",
+        label,
+        app_id
+    )
+    .execute(&state.pool)
+    .await?;
+    Ok(done.rows_affected() > 0)
 }
 
 pub async fn list(state: &State) -> anyhow::Result<Vec<Listed>> {

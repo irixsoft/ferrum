@@ -1,45 +1,153 @@
 use super::{App, AppError};
 pub use crate::detect::env_hints::EnvHint;
+use crate::postgres::DbError;
 use crate::secrets::{self, Key};
 use crate::state::State;
 use crate::{postgres, redis};
 use serde::{Deserialize, Serialize};
 use sqlx::{Sqlite, Transaction};
+use std::collections::BTreeMap;
 
 pub const HOST: &str = "127.0.0.1";
 pub const REDIS_URL_KEY: &str = "REDIS_URL";
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum Origin {
+    Owner { database: String },
+    Role { database: String, role: String },
+    Redis,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ManagedVar {
+    pub key: String,
+    pub value: String,
+    pub origin: Origin,
+}
+
+/// A managed variable as the panel sees it: where it comes from, never its value.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct Label {
+    pub key: String,
+    #[serde(flatten)]
+    pub origin: Origin,
+}
 
 /// Variables Ferrum owns: rendered from links at write time, never stored, so a relink cannot
 /// leave a stale copy behind.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Managed {
-    pub database_urls: Vec<(String, String)>,
-    pub redis_url: Option<String>,
+    pub vars: Vec<ManagedVar>,
 }
 
 impl Managed {
     pub fn keys(&self) -> Vec<String> {
-        let mut keys: Vec<String> = self.database_urls.iter().map(|(k, _)| k.clone()).collect();
-        if self.redis_url.is_some() {
-            keys.push(REDIS_URL_KEY.to_string());
-        }
-        keys
+        self.vars.iter().map(|v| v.key.clone()).collect()
     }
 
-    fn pairs(&self) -> Vec<(String, String)> {
-        let mut pairs = self.database_urls.clone();
-        if let Some(url) = &self.redis_url {
-            pairs.push((REDIS_URL_KEY.to_string(), url.clone()));
-        }
-        pairs
+    pub fn pairs(&self) -> Vec<(String, String)> {
+        self.vars
+            .iter()
+            .map(|v| (v.key.clone(), v.value.clone()))
+            .collect()
+    }
+
+    pub fn labels(&self) -> Vec<Label> {
+        self.vars
+            .iter()
+            .map(|v| Label {
+                key: v.key.clone(),
+                origin: v.origin.clone(),
+            })
+            .collect()
     }
 }
 
 pub async fn managed_for(state: &State, app: &App) -> anyhow::Result<Managed> {
-    Ok(Managed {
-        database_urls: postgres::urls_for(state, &app.id).await?,
-        redis_url: redis::url_for(state, &app.id).await?,
-    })
+    let mut vars = postgres::urls_for(state, &app.id).await?;
+    if let Some((key, value)) = redis::url_for(state, &app.id).await? {
+        vars.push(ManagedVar {
+            key,
+            value,
+            origin: Origin::Redis,
+        });
+    }
+    Ok(Managed { vars })
+}
+
+/// What the panel sends to rename managed variables; roles are keyed `<database>/<role>`.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default)]
+pub struct LabelChanges {
+    pub database: BTreeMap<String, String>,
+    pub roles: BTreeMap<String, String>,
+    pub redis: Option<String>,
+}
+
+pub const FOLLOWS_FILE: &str =
+    "The repo's file names the labels; turn following off to edit them here.";
+
+pub async fn set_labels(state: &State, app: &App, changes: &LabelChanges) -> anyhow::Result<()> {
+    if app.follow_repo_file {
+        return Err(DbError::Conflict(FOLLOWS_FILE.into()).into());
+    }
+    let mut seen: Vec<&String> = Vec::new();
+    for label in changes
+        .database
+        .values()
+        .chain(changes.roles.values())
+        .chain(changes.redis.iter())
+    {
+        postgres::roles::valid_label(label)?;
+        if seen.contains(&label) {
+            return Err(DbError::Invalid(format!("{label} is named twice.")).into());
+        }
+        seen.push(label);
+    }
+    let linked = postgres::linked_to(state, &app.id).await?;
+    let linked_db = |name: &str| {
+        linked
+            .iter()
+            .find(|d| d.name == name)
+            .ok_or_else(|| DbError::Missing(format!("{name} is not linked to {}.", app.slug)))
+    };
+    let mut per_db: BTreeMap<&str, Vec<(String, String)>> = BTreeMap::new();
+    for (name, label) in &changes.database {
+        let db = linked_db(name)?;
+        per_db
+            .entry(db.name.as_str())
+            .or_default()
+            .push((db.role.clone(), label.clone()));
+    }
+    for (key, label) in &changes.roles {
+        let (name, role) = key
+            .split_once('/')
+            .ok_or_else(|| DbError::Invalid(format!("{key} is not <database>/<role>.")))?;
+        let db = linked_db(name)?;
+        let found = postgres::roles::find(state, db, role)
+            .await?
+            .filter(|r| !r.owner)
+            .ok_or_else(|| DbError::Missing(format!("{name} has no role called {role}.")))?;
+        per_db
+            .entry(db.name.as_str())
+            .or_default()
+            .push((found.name, label.clone()));
+    }
+    if changes.redis.is_some() && redis::for_app(state, &app.id).await?.is_none() {
+        return Err(DbError::Missing(format!("{} has no Redis instance.", app.slug)).into());
+    }
+
+    for (name, labels) in &per_db {
+        postgres::roles::set_labels(state, linked_db(name)?, labels).await?;
+    }
+    for (name, label) in &changes.database {
+        postgres::set_link_label(state, &app.id, name, Some(label)).await?;
+    }
+    if let Some(label) = &changes.redis {
+        redis::set_label(state, &app.id, label).await?;
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -367,14 +475,27 @@ mod tests {
         assert_eq!(out, "KEEP=1\nWEB_PORT=20000\nHOST=127.0.0.1\n");
     }
 
+    fn owner(key: &str, value: &str) -> ManagedVar {
+        ManagedVar {
+            key: key.into(),
+            value: value.into(),
+            origin: Origin::Owner {
+                database: "ledger_prod".into(),
+            },
+        }
+    }
+
     #[test]
     fn managed_variables_come_after_the_users_and_before_the_ports() {
         let managed = Managed {
-            database_urls: vec![(
-                "DATABASE_URL".into(),
-                "postgres://a:b@127.0.0.1:5432/ledger_prod".into(),
-            )],
-            redis_url: Some("redis://:pw@127.0.0.1:20001/0".into()),
+            vars: vec![
+                owner("DATABASE_URL", "postgres://a:b@127.0.0.1:5432/ledger_prod"),
+                ManagedVar {
+                    key: REDIS_URL_KEY.into(),
+                    value: "redis://:pw@127.0.0.1:20001/0".into(),
+                    origin: Origin::Redis,
+                },
+            ],
         };
         let out = render(
             &[("APP_KEY".into(), "x".into())],
@@ -391,8 +512,7 @@ mod tests {
     #[test]
     fn a_user_variable_named_database_url_is_overridden_by_the_link_not_duplicated() {
         let managed = Managed {
-            database_urls: vec![("DATABASE_URL".into(), "postgres://real".into())],
-            redis_url: None,
+            vars: vec![owner("DATABASE_URL", "postgres://real")],
         };
         let out = render(
             &[("DATABASE_URL".into(), "postgres://stale".into())],
@@ -428,11 +548,92 @@ mod tests {
             managed.keys(),
             vec!["DATABASE_URL", "ANALYTICS_DATABASE_URL", "REDIS_URL"]
         );
+        let redis = managed.vars.last().unwrap();
+        assert_eq!(redis.origin, Origin::Redis);
         assert!(
-            managed
-                .redis_url
-                .unwrap()
+            redis
+                .value
                 .ends_with(&format!("@127.0.0.1:{}/0", instance.port))
+        );
+    }
+
+    #[tokio::test]
+    async fn labels_rename_the_owner_each_role_and_redis_unless_the_file_names_them() {
+        let (_d, state) = state().await;
+        let p = ferrum_platform::FakePlatform::new();
+        let mut app = crate::apps::create(&state, new_app("ledger", &[("/", "main", false)]))
+            .await
+            .unwrap();
+        let db = postgres::create(&state, &p, postgres::tests::new("ledger_prod"))
+            .await
+            .unwrap();
+        postgres::roles::create(
+            &state,
+            &p,
+            &db,
+            postgres::NewRole {
+                name: "app".into(),
+                ..postgres::NewRole::default()
+            },
+        )
+        .await
+        .unwrap();
+        postgres::link(&state, &app.id, "ledger_prod")
+            .await
+            .unwrap();
+        p.set_active("ferrum-redis-ledger");
+        redis::request(&state, &p, &app, 64).await.unwrap();
+        assert_eq!(
+            managed_for(&state, &app).await.unwrap().keys(),
+            ["DATABASE_URL", "DATABASE_URL_APP", "REDIS_URL"]
+        );
+
+        let mut changes = LabelChanges {
+            redis: Some("CACHE_URL".into()),
+            ..LabelChanges::default()
+        };
+        changes
+            .database
+            .insert("ledger_prod".into(), "DATABASE_ADMIN_URL".into());
+        changes
+            .roles
+            .insert("ledger_prod/app".into(), "DATABASE_URL".into());
+        set_labels(&state, &app, &changes).await.unwrap();
+        let managed = managed_for(&state, &app).await.unwrap();
+        assert_eq!(
+            managed.keys(),
+            ["DATABASE_ADMIN_URL", "DATABASE_URL", "CACHE_URL"]
+        );
+        assert_eq!(
+            serde_json::to_value(managed.labels()).unwrap(),
+            serde_json::json!([
+                {"key": "DATABASE_ADMIN_URL", "kind": "owner", "database": "ledger_prod"},
+                {"key": "DATABASE_URL", "kind": "role", "database": "ledger_prod", "role": "ledger_prod_app"},
+                {"key": "CACHE_URL", "kind": "redis"}
+            ])
+        );
+
+        let mut twice = LabelChanges::default();
+        twice.database.insert("ledger_prod".into(), "X_URL".into());
+        twice.roles.insert("ledger_prod/app".into(), "X_URL".into());
+        assert_eq!(
+            set_labels(&state, &app, &twice)
+                .await
+                .unwrap_err()
+                .to_string(),
+            "X_URL is named twice."
+        );
+        let mut stranger = LabelChanges::default();
+        stranger.database.insert("analytics".into(), "X_URL".into());
+        assert!(set_labels(&state, &app, &stranger).await.is_err());
+
+        app.follow_repo_file = true;
+        assert_eq!(
+            set_labels(&state, &app, &changes)
+                .await
+                .unwrap_err()
+                .to_string(),
+            FOLLOWS_FILE
         );
     }
 
