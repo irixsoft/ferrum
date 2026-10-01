@@ -323,19 +323,25 @@ function Overview({ app, deploying }: { app: AppDetail; deploying: boolean }) {
               <p className="text-[13.5px] text-ink-3">No domain yet. Add one under Configuration.</p>
             ) : (
               <ul className="divide-y divide-line">
-                {app.certificates.map((c, i) => (
-                  <li key={c.domain} className="py-2.5">
-                    <div className="flex items-center gap-2">
-                      <span className="text-[13.5px] text-ink truncate">{c.domain}</span>
-                      {i === 0 ? <Badge>Primary</Badge> : <Badge>Redirects</Badge>}
-                      <Certificate status={c.status} />
-                      {host?.certificates_staging && c.status.kind === "issued" ? <StagingBadge /> : null}
-                    </div>
-                    {c.status.kind === "waiting_for_dns" || c.status.kind === "failed" ? (
-                      <p className="text-[12px] text-ink-4 mt-1">{c.status.detail}</p>
-                    ) : null}
-                  </li>
-                ))}
+                {app.domains.map((d) => {
+                  const status = app.certificates.find((c) => c.domain === d.domain)?.status;
+                  return (
+                    <li key={d.domain} className="py-2.5">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <span className="font-mono text-[13px] text-ink truncate">{d.domain}</span>
+                        {d.primary ? <Badge>Primary</Badge> : null}
+                        <span className="text-[12.5px] text-ink-3">
+                          {d.job === "serve" ? "serves" : "redirects to"} <Code>{d.target}</Code>
+                        </span>
+                        {status ? <Certificate status={status} /> : null}
+                        {host?.certificates_staging && status?.kind === "issued" ? <StagingBadge /> : null}
+                      </div>
+                      {status?.kind === "waiting_for_dns" || status?.kind === "failed" ? (
+                        <p className="text-[12px] text-ink-4 mt-1">{status.detail}</p>
+                      ) : null}
+                    </li>
+                  );
+                })}
               </ul>
             )}
             {retry.error ? <p className="text-[12.5px] text-fail mt-2">{message(retry.error)}</p> : null}

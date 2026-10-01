@@ -43,7 +43,7 @@ import type {
   User,
   VersionInfo,
 } from "@/types/api";
-import type { FerrumEvent, HelpTopic, PushDevice, PushPref, PushPrefs } from "@/types/api";
+import type { DnsProvider, FerrumEvent, HelpTopic, PushDevice, PushPref, PushPrefs } from "@/types/api";
 
 export class ApiError extends Error {
   readonly status: number;
@@ -870,4 +870,12 @@ export interface PushTried {
 
 export function useTestPush() {
   return useInvalidating(keys.pushDevices, () => request<PushTried[]>("/push/test", { method: "POST" }));
+}
+
+/** A server without providers yet reads as an empty list rather than an error. */
+export function useDnsProviders() {
+  return useQuery({
+    queryKey: keys.dnsProviders,
+    queryFn: () => request<DnsProvider[]>("/dns-providers").catch((): DnsProvider[] => []),
+  });
 }

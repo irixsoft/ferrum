@@ -8,6 +8,7 @@ import { Segmented } from "@/components/ui/Segmented";
 import { runtimeLabel } from "@/components/RuntimeMark";
 import { useGithubTags } from "@/lib/api";
 import { isFolder, reconcileRoutes, renameInRoutes, routable } from "@/lib/processes";
+import { DomainsEditor, type DomainDraft } from "./DomainsEditor";
 import type {
   App,
   AppChanges,
@@ -39,7 +40,7 @@ export interface Draft {
   processes: ProcessInput[];
   routes: RouteInput[];
   packages: string[];
-  domains: string[];
+  domains: DomainDraft[];
 }
 
 /** Which fields detection filled and why; `follow_repo_file` names the file that decides the app's shape. */
@@ -183,7 +184,7 @@ export function draftFromApp(app: App): Draft {
     processes: app.processes.map(inputOf),
     routes: app.routes.map((r) => ({ path: r.path, process: r.process, websocket: r.websocket })),
     packages: app.packages,
-    domains: app.domains,
+    domains: app.domains.map(({ wildcard: _, ...d }) => d),
   };
 }
 
@@ -537,13 +538,12 @@ export function ConfigForm({
       </Card>
 
       <Card>
-        <CardHeader title="Domains" hint="The first one is primary; the others redirect to it" />
+        <CardHeader title="Domains" hint="Each name serves a process or redirects to another name" />
         <CardBody>
-          <ListEditor
-            items={draft.domains}
-            onChange={(items) => set("domains", items)}
-            placeholder="app.example.com"
-            mono
+          <DomainsEditor
+            domains={draft.domains}
+            processes={routable(draft.processes)}
+            onChange={(domains) => set("domains", domains)}
           />
         </CardBody>
         <CardFoot>
