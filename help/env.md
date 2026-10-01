@@ -8,8 +8,21 @@ Values under the app's Environment tab. Ferrum never reads values from the repos
 
 ## What the repository tells Ferrum
 
-- `.env.example` (also `.env.sample`, `.env.template`) and code that reads `process.env.X`, `Bun.env.X` or `Environment.GetEnvironmentVariable("X")` tell Ferrum which names your app needs. Missing ones are listed on the Environment tab and in the deploy log.
-- A build or start that fails naming a missing variable is reported with that name.
+The `[env]` section of `ferrum.toml` names the variables your code reads, so the Environment tab can ask for exactly those; Ferrum does not guess from example files or from the code.
+
+```toml
+[env]
+required = ["SESSION_SECRET", "SMTP_HOST"]
+
+[env.UPLOADS_DIR]
+about = "Where uploaded files are kept; must survive a deploy"
+default = "{{shared}}/uploads"
+```
+
+- A bare name in `required` is shown as missing until you set it. A deploy of a tag whose file requires a name that has no value and no default is refused before anything is built.
+- `[env.NAME]` adds a sentence (`about`) the tab shows beside the field, and a non-secret `default` Ferrum writes the first time nothing is set. A value you typed is never overwritten.
+- `{{shared}}` in a default stands for the app's shared directory, `/var/lib/ferrum/apps/<slug>/shared`, the place for uploads and anything that must survive a deploy; the app's Overview shows that path.
+- A build or start that fails naming a missing variable is reported with that name, and the name is listed as missing.
 
 ## What Ferrum sets itself
 

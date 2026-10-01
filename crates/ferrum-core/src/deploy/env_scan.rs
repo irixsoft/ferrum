@@ -1,12 +1,5 @@
-use crate::detect::env_hints::{self, SCHEMA_FILES, is_framework_set, is_managed, valid_key};
-
-const ACCESSORS: [&str; 4] = [
-    "process.env.",
-    "Bun.env.",
-    "import.meta.env.",
-    "process.env[",
-];
-const DOTNET_ACCESSOR: &str = "Environment.GetEnvironmentVariable(";
+const FRAMEWORK_SET: [&str; 4] = ["NODE_ENV", "NEXT_PHASE", "NEXT_RUNTIME", "CI"];
+const FRAMEWORK_PREFIXES: [&str; 1] = ["VERCEL_"];
 const UNSET_PHRASES: [&str; 8] = [
     " is not set",
     " is not defined",
@@ -20,43 +13,12 @@ const UNSET_PHRASES: [&str; 8] = [
 const MISSING_WORD: &str = "missing";
 const INVALID_BLOCK: &str = "Invalid environment variables";
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Reference {
-    pub key: String,
-    pub path: String,
-    pub optional: bool,
+fn is_framework_set(key: &str) -> bool {
+    FRAMEWORK_SET.contains(&key) || FRAMEWORK_PREFIXES.iter().any(|p| key.starts_with(p))
 }
 
-/// Every `process.env.X`-style read in one source file, plus the keys of an env schema file.
-pub fn refs_in(path: &str, source: &str) -> Vec<Reference> {
-    let mut refs: Vec<Reference> = Vec::new();
-    let mut add = |key: &str, optional: bool| {
-        if valid_key(key) && !refs.iter().any(|r| r.key == key) {
-            refs.push(Reference {
-                key: key.to_string(),
-                path: path.to_string(),
-                optional,
-            });
-        }
-    };
-    if SCHEMA_FILES.contains(&path) {
-        for (key, optional) in env_hints::schema_keys(source) {
-            add(&key, optional);
-        }
-    }
-    let mut reads: Vec<(usize, &str)> = Vec::new();
-    for accessor in ACCESSORS.iter().chain([&DOTNET_ACCESSOR]) {
-        for (at, _) in source.match_indices(accessor) {
-            let rest = &source[at + accessor.len()..];
-            let rest = rest.trim_start_matches(['"', '\'', '`']);
-            reads.push((at, identifier(rest)));
-        }
-    }
-    reads.sort_by_key(|(at, _)| *at);
-    for (_, key) in reads {
-        add(key, false);
-    }
-    refs
+fn valid_key(key: &str) -> bool {
+    crate::apps::env::valid_key(key).is_ok()
 }
 
 fn identifier(text: &str) -> &str {
@@ -66,51 +28,6 @@ fn identifier(text: &str) -> &str {
         .map(|(i, _)| i)
         .unwrap_or(text.len());
     &text[..end]
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Finding {
-    pub key: String,
-    pub path: String,
-    pub optional: bool,
-}
-
-/// The referenced keys neither the app nor Ferrum sets, one per key, sorted by name.
-pub fn unset(referenced: &[Reference], stored: &[String], managed: &[String]) -> Vec<Finding> {
-    let mut findings: Vec<Finding> = Vec::new();
-    for r in referenced {
-        if is_framework_set(&r.key)
-            || is_managed(&r.key)
-            || stored.contains(&r.key)
-            || managed.contains(&r.key)
-        {
-            continue;
-        }
-        match findings.iter_mut().find(|f| f.key == r.key) {
-            Some(existing) => existing.optional = existing.optional && r.optional,
-            None => findings.push(Finding {
-                key: r.key.clone(),
-                path: r.path.clone(),
-                optional: r.optional,
-            }),
-        }
-    }
-    findings.sort_by(|a, b| a.key.cmp(&b.key));
-    findings
-}
-
-pub fn describe(findings: &[Finding]) -> String {
-    let items: Vec<String> = findings
-        .iter()
-        .map(|f| {
-            if f.optional {
-                format!("{} ({}, optional)", f.key, f.path)
-            } else {
-                format!("{} ({})", f.key, f.path)
-            }
-        })
-        .collect();
-    format!("Referenced in the code but not set: {}", items.join(", "))
 }
 
 /// The variables a failed command complained about, read from validator output shapes.
@@ -220,17 +137,9 @@ fn is_upper_key(key: &str) -> bool {
         && !is_framework_set(key)
 }
 
-/// "The build failed: A is not set (src/env.ts)" with the file a hint knows, if any.
-pub fn failure_sentence(what: &str, keys: &[(String, Option<String>)]) -> String {
-    let named: Vec<String> = keys
-        .iter()
-        .map(|(key, file)| match file {
-            Some(file) => format!("{key} ({file})"),
-            None => key.clone(),
-        })
-        .collect();
+pub fn failure_sentence(what: &str, keys: &[String]) -> String {
     let verb = if keys.len() == 1 { "is" } else { "are" };
-    format!("The {what} failed: {} {verb} not set", named.join(", "))
+    format!("The {what} failed: {} {verb} not set", keys.join(", "))
 }
 
 #[cfg(test)]
@@ -239,104 +148,6 @@ mod tests {
 
     fn lines(text: &str) -> Vec<String> {
         text.lines().map(str::to_string).collect()
-    }
-
-    #[test]
-    fn every_access_pattern_is_found_once_per_file() {
-        let source = r#"
-const a = process.env.SMTP_HOST;
-const b = process.env["STRIPE_KEY"] ?? process.env.SMTP_HOST;
-const c = Bun.env.LOG_LEVEL;
-const d = import.meta.env.VITE_API;
-const e = process.env.NODE_ENV;
-"#;
-        let found = refs_in("src/x.ts", source);
-        let keys: Vec<&str> = found.iter().map(|r| r.key.as_str()).collect();
-        assert_eq!(
-            keys,
-            vec![
-                "SMTP_HOST",
-                "STRIPE_KEY",
-                "LOG_LEVEL",
-                "VITE_API",
-                "NODE_ENV"
-            ]
-        );
-        let cs = refs_in(
-            "Api/Program.cs",
-            r#"var s = Environment.GetEnvironmentVariable("SENTRY_DSN");"#,
-        );
-        assert_eq!(cs[0].key, "SENTRY_DSN");
-        let schema = refs_in("src/env.ts", "SMTP_HOST: z.string().optional(),\n");
-        assert_eq!(
-            schema,
-            vec![Reference {
-                key: "SMTP_HOST".into(),
-                path: "src/env.ts".into(),
-                optional: true
-            }]
-        );
-    }
-
-    #[test]
-    fn unset_drops_what_is_set_or_managed_and_keeps_the_first_path() {
-        let refs = vec![
-            Reference {
-                key: "SMTP_HOST".into(),
-                path: "src/mail.ts".into(),
-                optional: false,
-            },
-            Reference {
-                key: "SMTP_HOST".into(),
-                path: "src/env.ts".into(),
-                optional: true,
-            },
-            Reference {
-                key: "STRIPE_KEY".into(),
-                path: "src/pay.ts".into(),
-                optional: false,
-            },
-            Reference {
-                key: "DATABASE_URL".into(),
-                path: "src/db.ts".into(),
-                optional: false,
-            },
-            Reference {
-                key: "NODE_ENV".into(),
-                path: "src/db.ts".into(),
-                optional: false,
-            },
-            Reference {
-                key: "REDIS_URL".into(),
-                path: "src/q.ts".into(),
-                optional: false,
-            },
-            Reference {
-                key: "LOG_LEVEL".into(),
-                path: "src/env.ts".into(),
-                optional: true,
-            },
-        ];
-        let found = unset(&refs, &["STRIPE_KEY".into()], &["REDIS_URL".into()]);
-        assert_eq!(
-            found,
-            vec![
-                Finding {
-                    key: "LOG_LEVEL".into(),
-                    path: "src/env.ts".into(),
-                    optional: true
-                },
-                Finding {
-                    key: "SMTP_HOST".into(),
-                    path: "src/mail.ts".into(),
-                    optional: false
-                },
-            ]
-        );
-        assert_eq!(
-            describe(&found),
-            "Referenced in the code but not set: LOG_LEVEL (src/env.ts, optional), SMTP_HOST (src/mail.ts)"
-        );
     }
 
     #[test]
@@ -379,23 +190,14 @@ const e = process.env.NODE_ENV;
     }
 
     #[test]
-    fn the_failure_sentence_names_the_file_when_a_hint_knows_it() {
+    fn the_failure_sentence_counts_its_keys() {
         assert_eq!(
-            failure_sentence(
-                "build",
-                &[("NEXT_PUBLIC_APP_URL".into(), Some("src/env.ts".into()))]
-            ),
-            "The build failed: NEXT_PUBLIC_APP_URL (src/env.ts) is not set"
+            failure_sentence("build", &["NEXT_PUBLIC_APP_URL".into()]),
+            "The build failed: NEXT_PUBLIC_APP_URL is not set"
         );
         assert_eq!(
-            failure_sentence(
-                "build",
-                &[
-                    ("A_KEY".into(), None),
-                    ("B_KEY".into(), Some(".env.example".into()))
-                ]
-            ),
-            "The build failed: A_KEY, B_KEY (.env.example) are not set"
+            failure_sentence("build", &["A_KEY".into(), "B_KEY".into()]),
+            "The build failed: A_KEY, B_KEY are not set"
         );
     }
 }

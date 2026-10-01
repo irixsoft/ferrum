@@ -1,0 +1,38 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT key AS \"key!\", source AS \"source!\", about, default_value\n           FROM app_env_required WHERE app_id = ? ORDER BY rowid",
+  "describe": {
+    "columns": [
+      {
+        "name": "key!",
+        "ordinal": 0,
+        "type_info": "Text"
+      },
+      {
+        "name": "source!",
+        "ordinal": 1,
+        "type_info": "Text"
+      },
+      {
+        "name": "about",
+        "ordinal": 2,
+        "type_info": "Text"
+      },
+      {
+        "name": "default_value",
+        "ordinal": 3,
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false,
+      false,
+      true,
+      true
+    ]
+  },
+  "hash": "0684a8a2da5701d62f39c2ae855df517e98929ff6c71dadab640160a0c67ea14"
+}

@@ -20,8 +20,8 @@ Every process with a port is named in the shared environment as `<NAME>_PORT`: `
 
 ## How a deploy treats them
 
-1. Clone, install and build once.
-2. Read `ferrum.toml` or the Procfile from the tag, when the app follows its file.
+1. Clone the tag and read its `ferrum.toml`, when the app follows its file. A required variable without a value, or a name pointing at a process the file dropped, stops the deploy here.
+2. Install the packages the file lists, then install dependencies and build, once.
 3. Snapshot the database and run the migration command once. With "Pause traffic while migrations run" on, the maintenance page goes up and every process is stopped first, so no worker touches the database mid-change.
 4. Write one unit per process, switch `current` to the new release, and start or restart every process.
 5. A process with a port passes when its health path answers within the startup budget. A worker passes when it is still running ten seconds after starting.

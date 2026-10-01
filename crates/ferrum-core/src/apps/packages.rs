@@ -1,25 +1,7 @@
 use super::App;
-use crate::detect::valid_package;
 use crate::state::State;
 use ferrum_platform::{Platform, PlatformError};
 use serde::Serialize;
-
-pub fn parse_aptfile(text: &str) -> (Vec<String>, Vec<String>) {
-    let mut ok = Vec::new();
-    let mut bad = Vec::new();
-    for line in text.lines() {
-        let line = line.trim();
-        if line.is_empty() || line.starts_with('#') {
-            continue;
-        }
-        if valid_package(line) {
-            ok.push(line.to_string());
-        } else {
-            bad.push(line.to_string());
-        }
-    }
-    (ok, bad)
-}
 
 fn resolve(platform: &dyn Platform, names: &[String]) -> Vec<String> {
     names
@@ -144,13 +126,6 @@ mod tests {
     use super::*;
     use crate::apps::tests::{new_app, state};
     use ferrum_platform::FakePlatform;
-
-    #[test]
-    fn an_aptfile_keeps_comments_and_blanks_out_and_reports_bad_lines() {
-        let (ok, bad) = parse_aptfile("# tools\nffmpeg\n\n  libvips42 \nlibvips; rm -rf /\n");
-        assert_eq!(ok, vec!["ffmpeg", "libvips42"]);
-        assert_eq!(bad, vec!["libvips; rm -rf /"]);
-    }
 
     #[tokio::test]
     async fn a_package_the_host_had_before_is_never_removable_and_a_shared_one_is_kept() {

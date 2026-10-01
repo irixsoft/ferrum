@@ -1,8 +1,8 @@
 # ferrum.toml
 
-A file at the root of your repository (or of the root directory you set for the app) that tells Ferrum what the app is: its processes, the paths they answer, its build and migration commands, and the names it reads its database and Redis addresses under.
+A file at the root of your repository (or of the root directory you set for the app) that tells Ferrum what the app is: its processes, the paths they answer, its build and migration commands, the Ubuntu packages it needs, the variables it reads, and the names it reads its database and Redis addresses under. It is the only file Ferrum reads for this; there is no Aptfile, Procfile or example-file scanning.
 
-Ferrum reads it when you create the app, and again on **every deploy** while "Follow the repo's file" is on. A tag that changes the file changes the app; rolling back to an older tag brings that tag's file back with it.
+Ferrum reads it when you create the app, and again on **every deploy** while "Follow the repo's file" is on, right after the clone, so the tag's packages are installed and its commands used for the very deploy that brings them. A tag that changes the file changes the app; rolling back to an older tag brings that tag's file back with it.
 
 ```toml
 runtime = "bun"                       # node, bun or dotnet
@@ -10,7 +10,7 @@ version = "1.2.3"                     # a full version; a channel like "10.0" fo
 install = "bun install --frozen-lockfile"
 build = "bun run --filter web build"
 migrate = "bun run db:migrate"        # runs once per deploy, before any process restarts
-packages = ["ffmpeg"]                 # suggested at creation; the Aptfile is the source on deploys
+packages = ["ffmpeg", "libvips42"]    # Ubuntu packages, installed before the build
 
 [processes.web]
 start = "bun run start"
@@ -41,12 +41,21 @@ url = "DATABASE_URL"                  # a restricted role Ferrum creates, and it
 
 [redis]
 url = "CACHE_URL"
+
+[env]
+required = ["SESSION_SECRET", "SMTP_HOST"]   # names your code reads; the panel holds the values
+
+[env.UPLOADS_DIR]                     # a table when there is something to say about a key
+about = "Where uploaded files are kept; must survive a deploy"
+default = "{{shared}}/uploads"        # written once if you set nothing; {{shared}} is the app's shared directory
 ```
 
 ## What each key does
 
 - `runtime`, `version`: the toolchain the app builds and runs with. Toolchains are private to Ferrum, never on the system PATH.
 - `install`, `build`, `migrate`: run as the app's own user, through `sh -c`, in the release directory. A key you leave out keeps what the panel has.
+- `packages`: Ubuntu packages, one name each (`^[a-z0-9][a-z0-9+._-]*$`), installed before the build on every deploy. A package dropped from the list is kept and the app's page says so, with an Uninstall button; a deploy never removes anything. A key left out keeps the panel's list.
+- `[env]`: the variables your code reads. `required` is a list of bare names; `[env.NAME]` is a table for a name with a sentence (`about`, shown on the Environment tab) or a non-secret `default`. A default is written the first time nothing is set, never over a value you typed; `{{shared}}` in it becomes `/var/lib/ferrum/apps/<slug>/shared`. **A required name with no value and no default refuses the deploy before anything is built**, naming the key. Names Ferrum sets itself (`PORT`, `HOST`, `*_PORT`, the labels this file names) cannot be required.
 - `[processes.<name>]`: one table per process. A name is lowercase letters, digits and underscores. `web` is the usual name for the process that answers `/`.
   - `start`: the command. Anything the process needs that its siblings don't goes in front of it: `WORKER_MODE=1 bun run start`.
   - `dir`: where the command starts, relative to the app's root. Empty means the root.
@@ -59,7 +68,7 @@ url = "CACHE_URL"
 
 ## What the file never decides
 
-Domains, environment values, memory limits and which database is linked belong to the server and live in the panel. A process's memory limit is kept when the file changes.
+Domains, environment values, memory and CPU limits, the startup budget and which database is linked belong to the server and live in the panel. A process's memory limit is kept when the file changes.
 
 ## When a tag drops a process
 

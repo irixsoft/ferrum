@@ -7,7 +7,7 @@ use crate::apps::provision::{self, app_dir, user_name, write_env};
 use crate::apps::{self, App, env, packages};
 use crate::events::{self, Kind};
 use crate::github::commits;
-use crate::manifest::{self, Manifest};
+use crate::manifest::{self, Manifest, TOML_NAME};
 use crate::runtime::toolchain;
 use crate::runtime::{Phase, RuntimeKind};
 use crate::{postgres, runtime as rt};
@@ -59,7 +59,11 @@ impl Job {
             return self.rollback().await;
         }
         self.clone_step().await?;
-        self.env_scan_step().await?;
+        let dir = self
+            .release_dir
+            .clone()
+            .expect("cloned before reading the manifest");
+        self.manifest_step(&dir).await?;
         self.packages_step().await?;
         toolchain::link(
             self.ctx.platform.as_ref(),
@@ -72,11 +76,6 @@ impl Job {
         self.command_step(DeployState::InstallingDeps, "install")
             .await?;
         self.command_step(DeployState::Building, "build").await?;
-        let dir = self
-            .release_dir
-            .clone()
-            .expect("cloned before reading the manifest");
-        self.manifest_step(&dir).await?;
         self.migration_steps().await?;
         let dir = self.release_dir.clone().expect("cloned before swapping");
         let release = releases::record(
@@ -170,15 +169,16 @@ impl Job {
         let manifest = match found {
             Ok(Some(manifest)) => manifest,
             Ok(None) => {
-                self.say(
-                    "No ferrum.toml or Procfile in this tag; the configuration stays as it is",
-                )
-                .await?;
+                self.say("No ferrum.toml in this tag; the configuration stays as it is")
+                    .await?;
                 return Ok(());
             }
             Err(e) => return self.refuse(format!("{e:#}")).await,
         };
         if let Some(reason) = self.missing_target(&manifest) {
+            return self.refuse(reason).await;
+        }
+        if let Some(reason) = self.missing_variables(&manifest).await? {
             return self.refuse(reason).await;
         }
         let platform = self.ctx.platform.as_ref();
@@ -187,10 +187,7 @@ impl Job {
                 Ok(applied) => applied,
                 Err(e) => {
                     return self
-                        .refuse(format!(
-                            "{} was not accepted: {e:#}",
-                            manifest.source.file_name()
-                        ))
+                        .refuse(format!("{TOML_NAME} was not accepted: {e:#}"))
                         .await;
                 }
             };
@@ -198,6 +195,32 @@ impl Job {
         self.app = applied;
         write_env(&self.ctx.state, self.ctx.platform.as_ref(), &self.app).await?;
         Ok(())
+    }
+
+    /// A required variable with neither a value nor a default; the deploy stops before anything
+    /// is built, since the app could not start.
+    async fn missing_variables(&self, manifest: &Manifest) -> anyhow::Result<Option<String>> {
+        let Some(required) = &manifest.env else {
+            return Ok(None);
+        };
+        let stored = env::keys(&self.ctx.state, &self.app.id).await?;
+        let missing: Vec<&str> = required
+            .iter()
+            .filter(|r| r.default.is_none() && !stored.contains(&r.key))
+            .map(|r| r.key.as_str())
+            .collect();
+        if missing.is_empty() {
+            return Ok(None);
+        }
+        let (is, has, it) = if missing.len() == 1 {
+            ("is", "has", "it")
+        } else {
+            ("are", "have", "them")
+        };
+        Ok(Some(format!(
+            "{} {is} required by {TOML_NAME} and {has} no value; set {it} on the Environment tab.",
+            missing.join(", ")
+        )))
     }
 
     /// A served domain or a stored path pointing at a process the file no longer names.
@@ -408,49 +431,6 @@ impl Job {
         Ok(())
     }
 
-    /// Never fails the deploy: optional keys exist, and a scan that cannot run is one log line.
-    async fn env_scan_step(&mut self) -> anyhow::Result<()> {
-        let dir = self.release_dir.clone().expect("cloned before scanning");
-        let work = work_dir(&dir, &self.app.root);
-        let platform = self.ctx.platform.clone();
-        let walked = tokio::task::spawn_blocking(move || {
-            let mut refs = Vec::new();
-            platform
-                .walk_text_files(&work, &mut |path, text| {
-                    refs.extend(env_scan::refs_in(path, text));
-                })
-                .map(|_| refs)
-        })
-        .await?;
-        let referenced = match walked {
-            Ok(refs) => refs,
-            Err(e) => {
-                return self
-                    .say(&format!("Could not scan the code for variables: {e}"))
-                    .await;
-            }
-        };
-        let stored = env::keys(&self.ctx.state, &self.app.id).await?;
-        let mut managed = env::managed_for(&self.ctx.state, &self.app).await?.keys();
-        managed.extend(env::reserved_keys(&self.app.ports()));
-        let findings = env_scan::unset(&referenced, &stored, &managed);
-        if findings.is_empty() {
-            return Ok(());
-        }
-        self.say(&env_scan::describe(&findings)).await?;
-        for f in &findings {
-            env::add_hint(
-                &self.ctx.state,
-                &self.app.id,
-                &f.key,
-                &format!("referenced in {}", f.path),
-                f.optional,
-            )
-            .await?;
-        }
-        Ok(())
-    }
-
     /// Framework caches live under `shared/` and are reached through a link, because the release
     /// is read-only to the running unit.
     fn prepare_caches(&self, dir: &Path) -> anyhow::Result<()> {
@@ -467,88 +447,25 @@ impl Job {
         Ok(())
     }
 
-    /// The tag's Aptfile adds to the app's list; it never removes, that stays the user's call.
+    /// Installs what the app lists, which the file has just added to; a deploy never removes.
     async fn packages_step(&mut self) -> anyhow::Result<()> {
-        let dir = self.release_dir.clone().expect("cloned first");
-        let aptfile = self
-            .ctx
-            .platform
-            .read_file(&work_dir(&dir, &self.app.root).join("Aptfile"))?;
-        let (listed, rejected) = aptfile
-            .as_deref()
-            .map(packages::parse_aptfile)
-            .unwrap_or_default();
-        let added: Vec<String> = listed
-            .iter()
-            .filter(|n| !self.app.packages.contains(n))
-            .cloned()
-            .collect();
-        let unlisted: Vec<String> = match aptfile {
-            Some(_) => self
-                .app
-                .packages
-                .iter()
-                .filter(|n| !listed.contains(n))
-                .cloned()
-                .collect(),
-            None => Vec::new(),
-        };
-        if self.app.packages.is_empty() && added.is_empty() {
+        if self.app.packages.is_empty() {
             return self
                 .skip(DeployState::InstallingSystemPackages, "no system packages")
                 .await;
         }
         self.enter(DeployState::InstallingSystemPackages).await?;
-        if !rejected.is_empty() {
-            self.say(&format!(
-                "Ignoring Aptfile lines that are not package names: {}",
-                rejected.join(", ")
-            ))
-            .await?;
-        }
-        if !added.is_empty() {
-            self.say(&format!("The Aptfile adds {}", added.join(", ")))
-                .await?;
-            let preexisting = packages::install(self.ctx.platform.as_ref(), &added)
-                .context("installing system packages")?;
-            packages::add(&self.ctx.state, &self.app.id, &added).await?;
-            packages::record(&self.ctx.state, &added, &preexisting).await?;
-            self.app.packages.extend(added);
-        }
-        if !unlisted.is_empty() {
-            self.say(&format!(
-                "Not in the Aptfile, kept from the configuration: {}",
-                unlisted.join(", ")
-            ))
-            .await?;
-            for package in &unlisted {
-                events::emit(
-                    &self.ctx.state,
-                    Kind::PackageDropped,
-                    Some(&self.app.id),
-                    package,
-                    &format!(
-                        "{} no longer lists {package} in its Aptfile. It is still installed; uninstall it from the app's page if nothing else needs it.",
-                        self.app.slug
-                    ),
-                    Some(&format!("/apps/{}?tab=configuration", self.app.slug)),
-                )
-                .await;
-            }
-        }
         let resolved: Vec<String> = self
             .app
             .packages
             .iter()
             .flat_map(|p| self.ctx.platform.resolve_package(p))
             .collect();
-        let names: Vec<&str> = resolved.iter().map(String::as_str).collect();
-        self.say(&format!("Installing {}", names.join(", ")))
+        self.say(&format!("Installing {}", resolved.join(", ")))
             .await?;
-        self.ctx
-            .platform
-            .install_packages(&names)
+        let preexisting = packages::install(self.ctx.platform.as_ref(), &self.app.packages)
             .context("installing system packages")?;
+        packages::record(&self.ctx.state, &self.app.packages, &preexisting).await?;
         let count = self.app.packages.len();
         let note = if count == 1 {
             "1 package".to_string()
@@ -947,24 +864,10 @@ impl Job {
         {
             let keys = env_scan::keys_in_failure(&tail);
             if !keys.is_empty() {
-                let hints = env::hints(&self.ctx.state, &self.app.id).await?;
-                let mut named = Vec::with_capacity(keys.len());
-                for key in keys {
-                    let file = hints
-                        .iter()
-                        .find(|h| h.key == key)
-                        .and_then(|h| hint_file(&h.source));
-                    env::add_hint(
-                        &self.ctx.state,
-                        &self.app.id,
-                        &key,
-                        &format!("named by the failed {what}"),
-                        false,
-                    )
-                    .await?;
-                    named.push((key, file));
+                for key in &keys {
+                    env::note_named_by_failure(&self.ctx.state, &self.app.id, key, what).await?;
                 }
-                bail!(env_scan::failure_sentence(what, &named));
+                bail!(env_scan::failure_sentence(what, &keys));
             }
         }
         let sentence = exit_sentence(what, &exit, self.ctx.build_memory_mb, timeout);
@@ -1009,14 +912,6 @@ impl Job {
     async fn skip(&self, state: DeployState, note: &str) -> anyhow::Result<()> {
         super::skip(&self.ctx.state, &self.deploy.id, state, note).await
     }
-}
-
-/// "from src/env.ts" and "referenced in src/mail.ts" both name a file; a failed build does not.
-fn hint_file(source: &str) -> Option<String> {
-    source
-        .strip_prefix("from ")
-        .or_else(|| source.strip_prefix("referenced in "))
-        .map(str::to_string)
 }
 
 /// The same content as `shared/.env`, so a command sees what the unit will, plus the
@@ -1066,9 +961,16 @@ pub async fn command_env(
 
 /// One deploy log line for what the file changed.
 fn describe_manifest(manifest: &Manifest, applied: &App) -> String {
-    let file = manifest.source.file_name();
+    let file = TOML_NAME;
+    let mut tail = String::new();
+    if let Some(packages) = &manifest.packages {
+        tail.push_str(&format!("; {} packages", packages.len()));
+    }
+    if let Some(required) = &manifest.env {
+        tail.push_str(&format!("; {} variables required", required.len()));
+    }
     if !manifest.states_processes() {
-        return format!("{file} read; it names no processes, so the list stays as it is");
+        return format!("{file} read; it names no processes, so the list stays as it is{tail}");
     }
     let processes: Vec<String> = applied
         .processes
@@ -1085,7 +987,7 @@ fn describe_manifest(manifest: &Manifest, applied: &App) -> String {
         .map(|r| format!("{} → {}", r.path, r.process))
         .collect();
     format!(
-        "{file}: processes {}; paths {}",
+        "{file}: processes {}; paths {}{tail}",
         processes.join(", "),
         paths.join(", ")
     )

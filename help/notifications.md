@@ -9,7 +9,7 @@ Ferrum keeps a list of events under the bell, and can push the important ones to
 - Something broke on its own: a process systemd could not bring back, a certificate that could not be renewed, a Redis instance that failed to start.
 - A Ferrum update is available.
 
-Each kind has its own switch under Settings › About › Notifications. Everything else, such as a package dropped from the Aptfile or a route removed, stays in the list without a push.
+Each kind has its own switch under Settings › About › Notifications. Everything else, such as a package dropped from `ferrum.toml` or a route removed, stays in the list without a push.
 
 ## Turning it on
 

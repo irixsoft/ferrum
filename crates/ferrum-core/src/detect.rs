@@ -1,36 +1,22 @@
-pub mod env_hints;
-
 use crate::github::Api;
 use crate::manifest::{self, Manifest};
 use crate::runtime::{self, Detection, node, static_site};
 use crate::state::State;
-use env_hints::EnvHint;
 use serde::Serialize;
 use std::collections::HashMap;
 
 pub const TOO_LARGE: &str = "The repository tree is too large to inspect. Set the root directory to the application's folder, or fill in the settings by hand.";
 
-const WANTED: [&str; 18] = [
+const WANTED: [&str; 7] = [
     "package.json",
     ".nvmrc",
     ".node-version",
     ".bun-version",
     "global.json",
-    "Aptfile",
     "ferrum.toml",
-    "Procfile",
     "README.md",
-    ".env.example",
-    ".env.sample",
-    ".env.template",
-    ".env.local.example",
-    "src/env.ts",
-    "src/lib/env.ts",
-    "env.ts",
-    "env.mjs",
-    "src/config/env.ts",
 ];
-const WANTED_GLOBS: [&str; 2] = ["*.csproj", "ecosystem.config.*"];
+const WANTED_GLOBS: [&str; 1] = ["*.csproj"];
 const MAX_PROJECT_FILES: usize = 10;
 
 const POSTGRES_CLIENTS: [&str; 7] = [
@@ -43,8 +29,6 @@ const POSTGRES_CLIENTS: [&str; 7] = [
     "drizzle-orm",
 ];
 const REDIS_CLIENTS: [&str; 4] = ["ioredis", "redis", "bullmq", "connect-redis"];
-const POSTGRES_KEYS: [&str; 2] = ["DATABASE_URL", "POSTGRES_URL"];
-const REDIS_KEYS: [&str; 1] = ["REDIS_URL"];
 
 #[derive(Debug, Clone, Default)]
 pub struct RepoTree {
@@ -144,10 +128,7 @@ pub struct Wants {
 pub struct Detected {
     pub candidates: Vec<Detection>,
     pub manifest: Option<Manifest>,
-    pub aptfile: Vec<String>,
-    pub aptfile_rejected: Vec<String>,
     pub wants: Wants,
-    pub env_hints: Vec<EnvHint>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -203,14 +184,10 @@ pub fn detect(tree: &RepoTree) -> Detected {
         .collect();
     candidates.sort_by_key(|c| std::cmp::Reverse(c.confidence));
 
-    let (aptfile, aptfile_rejected) = aptfile(tree);
     Detected {
         candidates,
         manifest: manifest::read(tree),
-        aptfile,
-        aptfile_rejected,
         wants: wants(tree),
-        env_hints: env_hints::hints(tree),
     }
 }
 
@@ -222,13 +199,6 @@ pub fn wants(tree: &RepoTree) -> Wants {
             .and_then(|p| node::depends_on(p, clients))
             .map(|dep| format!("{dep} in dependencies"))
     };
-    let from_env = |keys: &[&str]| {
-        env_hints::DOTENV_FILES.iter().find_map(|file| {
-            let named = env_hints::dotenv_keys(tree.read(file)?);
-            let key = keys.iter().find(|k| named.iter().any(|n| n == *k))?;
-            Some(format!("{file} names {key}"))
-        })
-    };
     let from_csproj = || {
         tree.matching("*.csproj")
             .into_iter()
@@ -236,10 +206,8 @@ pub fn wants(tree: &RepoTree) -> Wants {
             .map(|p| format!("Npgsql in {p}"))
     };
     Wants {
-        postgres: from_package(&POSTGRES_CLIENTS)
-            .or_else(|| from_env(&POSTGRES_KEYS))
-            .or_else(from_csproj),
-        redis: from_package(&REDIS_CLIENTS).or_else(|| from_env(&REDIS_KEYS)),
+        postgres: from_package(&POSTGRES_CLIENTS).or_else(from_csproj),
+        redis: from_package(&REDIS_CLIENTS),
     }
 }
 
@@ -248,10 +216,6 @@ fn under<'a>(path: &'a str, prefix: &str) -> Option<&'a str> {
         return Some(path);
     }
     path.strip_prefix(prefix)?.strip_prefix('/')
-}
-
-pub fn aptfile(tree: &RepoTree) -> (Vec<String>, Vec<String>) {
-    crate::apps::packages::parse_aptfile(tree.read("Aptfile").unwrap_or(""))
 }
 
 /// `^[a-z0-9][a-z0-9+._-]*$` — a package name reaches `apt-get` as one argv entry.
@@ -264,14 +228,6 @@ pub fn valid_package(name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn an_aptfile_is_read_and_bad_lines_are_reported_not_dropped() {
-        let tree = RepoTree::from_files(&[("Aptfile", "ffmpeg\n# comment\nlibvips42\nrm -rf /\n")]);
-        let (ok, bad) = aptfile(&tree);
-        assert_eq!(ok, vec!["ffmpeg", "libvips42"]);
-        assert_eq!(bad, vec!["rm -rf /"]);
-    }
 
     #[test]
     fn package_names_are_argv_safe_or_refused() {
@@ -311,22 +267,19 @@ mod tests {
             ("src/index.ts", ""),
             (".env.example", ""),
             ("src/env.ts", ""),
-            ("ecosystem.config.cjs", ""),
-            ("src/lib/env.test.ts", ""),
+            ("Aptfile", ""),
+            ("Procfile", ""),
+            ("ferrum.toml", ""),
         ]);
         assert_eq!(
             tree.wanted(),
-            vec![
-                "package.json",
-                ".env.example",
-                "src/env.ts",
-                "ecosystem.config.cjs"
-            ]
+            vec!["package.json", "ferrum.toml"],
+            "no example files, no Aptfile, no Procfile: ferrum.toml says it all"
         );
     }
 
     #[test]
-    fn a_database_is_wanted_from_the_dependencies_the_env_example_or_the_csproj() {
+    fn a_database_is_wanted_from_the_dependencies_or_the_csproj() {
         let deps = RepoTree::from_files(&[(
             "package.json",
             r#"{"dependencies":{"drizzle-orm":"1","ioredis":"5"}}"#,
@@ -336,17 +289,6 @@ mod tests {
             Wants {
                 postgres: Some("drizzle-orm in dependencies".into()),
                 redis: Some("ioredis in dependencies".into()),
-            }
-        );
-        let env = RepoTree::from_files(&[
-            ("package.json", "{}"),
-            (".env.example", "DATABASE_URL=\nREDIS_URL=\n"),
-        ]);
-        assert_eq!(
-            wants(&env),
-            Wants {
-                postgres: Some(".env.example names DATABASE_URL".into()),
-                redis: Some(".env.example names REDIS_URL".into()),
             }
         );
         let dotnet = RepoTree::from_files(&[(
