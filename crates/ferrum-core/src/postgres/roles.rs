@@ -190,6 +190,7 @@ pub async fn create(
     if label_holder(state, &db.id, &label).await?.is_some() {
         return Err(label_taken(db, &label).into());
     }
+    free_in_linked_apps(state, db, &label, &[]).await?;
     let password = secret::generate();
     let mut document = sql::create_role(&role, &password, limit);
     document.push_str(&sql::grant_connect(&db.name, &role));
@@ -335,6 +336,30 @@ async fn label_holder(
     .await?)
 }
 
+async fn linked_app_ids(state: &State, database_id: &str) -> anyhow::Result<Vec<String>> {
+    Ok(sqlx::query_scalar!(
+        r#"SELECT app_id AS "app_id!" FROM app_databases WHERE database_id = ?"#,
+        database_id
+    )
+    .fetch_all(&state.pool)
+    .await?)
+}
+
+/// A label is one variable in every app the database is linked to, so it must be free in each.
+async fn free_in_linked_apps(
+    state: &State,
+    db: &Database,
+    label: &str,
+    except: &[env::Origin],
+) -> anyhow::Result<()> {
+    for app_id in linked_app_ids(state, &db.id).await? {
+        if let Some(other) = super::label_clash(state, &app_id, label, except).await? {
+            return Err(super::clash_sentence(label, &other).into());
+        }
+    }
+    Ok(())
+}
+
 fn label_taken(db: &Database, label: &str) -> DbError {
     DbError::Conflict(format!(
         "{label} is already the label of another role of {}.",
@@ -359,6 +384,24 @@ pub async fn set_labels(
     let mut targets = Vec::with_capacity(changes.len());
     for (role, label) in changes {
         targets.push((found(state, db, role).await?, label));
+    }
+    let moving: Vec<env::Origin> = targets
+        .iter()
+        .map(|(role, _)| {
+            if role.owner {
+                env::Origin::Owner {
+                    database: db.name.clone(),
+                }
+            } else {
+                env::Origin::Role {
+                    database: db.name.clone(),
+                    role: role.name.clone(),
+                }
+            }
+        })
+        .collect();
+    for (_, label) in &targets {
+        free_in_linked_apps(state, db, label, &moving).await?;
     }
     let mut tx = state.pool.begin().await?;
     for (role, label) in &targets {
@@ -435,7 +478,18 @@ pub async fn ensure_from_manifest(
                 }
             }
             None => {
-                let free = label_holder(state, &db.id, &label).await?.is_none();
+                let holder = label_holder(state, &db.id, &label).await?;
+                if let Some(holder) = &holder {
+                    let moves = (spec.url.is_some() && *holder == db.role)
+                        || spec
+                            .roles
+                            .keys()
+                            .any(|named| role_name(&db.name, named) == *holder);
+                    if !moves {
+                        return Err(label_taken(db, &label).into());
+                    }
+                }
+                let free = holder.is_none();
                 let first = if free {
                     label.clone()
                 } else {
@@ -752,6 +806,41 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_label_an_app_already_carries_from_elsewhere_is_refused() {
+        let (_d, state) = state().await;
+        let p = FakePlatform::new();
+        let app = crate::apps::create(&state, new_app("ledger", &[("/", "main", false)]))
+            .await
+            .unwrap();
+        let db = ledger(&state, &p).await;
+        postgres::link_as(&state, &app.id, "ledger_prod", Some("PG_URL"))
+            .await
+            .unwrap();
+        let e = create(
+            &state,
+            &p,
+            &db,
+            NewRole {
+                name: "app".into(),
+                env_label: Some("PG_URL".into()),
+                connection_limit: None,
+            },
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(e.to_string(), "PG_URL is already the label of ledger_prod.");
+        assert!(
+            p.sql().iter().all(|s| !s.contains("\"ledger_prod_app\"")),
+            "nothing reaches the cluster"
+        );
+        create(&state, &p, &db, new_role("app")).await.unwrap();
+        let e = set_labels(&state, &db, &[("app".into(), "PG_URL".into())])
+            .await
+            .unwrap_err();
+        assert_eq!(e.to_string(), "PG_URL is already the label of ledger_prod.");
+    }
+
+    #[tokio::test]
     async fn a_manifest_creates_what_it_names_labels_it_and_keeps_what_it_dropped() {
         let (_d, state) = state().await;
         let p = FakePlatform::new();
@@ -825,6 +914,35 @@ mod tests {
             .await
             .unwrap_err();
         assert_eq!(e.to_string(), "ferrum.toml names DATABASE_ADMIN_URL twice.");
+
+        let creates = p
+            .sql()
+            .iter()
+            .filter(|s| s.starts_with("CREATE ROLE"))
+            .count();
+        let mut taken = spec.clone();
+        taken.roles.insert(
+            "b".into(),
+            RoleSpec {
+                url: Some("DATABASE_URL_OLD".into()),
+            },
+        );
+        let e = ensure_from_manifest(&state, &p, &db, &taken, &app)
+            .await
+            .unwrap_err();
+        assert_eq!(
+            e.to_string(),
+            "DATABASE_URL_OLD is already the label of another role of ledger_prod."
+        );
+        assert_eq!(
+            p.sql()
+                .iter()
+                .filter(|s| s.starts_with("CREATE ROLE"))
+                .count(),
+            creates,
+            "a label an unlisted role holds is refused before anything is created"
+        );
+        assert!(find(&state, &db, "b").await.unwrap().is_none());
     }
 
     #[tokio::test]

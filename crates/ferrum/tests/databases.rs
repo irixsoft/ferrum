@@ -557,6 +557,29 @@ async fn an_upload_that_does_not_fit_on_the_disk_is_refused_and_removed() {
 }
 
 #[tokio::test]
+async fn a_second_upload_for_the_same_name_is_refused_and_leaves_the_first_alone() {
+    let (h, cookie) = with_postgres().await;
+    let dir = h.data_dir().join("restores");
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("ledger_prod.dump");
+    std::fs::write(&path, b"PGDMP still arriving").unwrap();
+    let res = h
+        .post_bytes_with_cookie("/api/databases/ledger_prod/restore", b"PGDMP\x01", &cookie)
+        .await;
+    assert_eq!(res.status, StatusCode::CONFLICT, "{}", res.json);
+    assert!(
+        res.json["error"]
+            .as_str()
+            .unwrap()
+            .contains("still being uploaded"),
+        "{}",
+        res.json
+    );
+    assert_eq!(std::fs::read(&path).unwrap(), b"PGDMP still arriving");
+    assert!(h.platform.sql().is_empty());
+}
+
+#[tokio::test]
 async fn a_load_that_fails_on_the_host_is_reported_on_the_database() {
     let (h, cookie) = with_postgres().await;
     h.platform.fail_next("postgres_restore ledger_prod");

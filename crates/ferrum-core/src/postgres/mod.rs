@@ -300,12 +300,61 @@ pub async fn delete(state: &State, platform: &dyn Platform, name: &str) -> anyho
 }
 
 pub async fn link(state: &State, app_id: &str, name: &str) -> anyhow::Result<()> {
+    link_as(state, app_id, name, None).await
+}
+
+/// Links under `label`, or the name by link order. Every variable the link adds must be free
+/// in the app, and the database's own roles must not share one.
+pub async fn link_as(
+    state: &State,
+    app_id: &str,
+    name: &str,
+    label: Option<&str>,
+) -> anyhow::Result<()> {
     let db = by_name(state, name).await?.ok_or(DbError::NotFound)?;
+    let linked = names_for(state, app_id).await?;
+    if linked.iter().any(|n| n == name) {
+        return Ok(());
+    }
+    if let Some(label) = label {
+        roles::valid_label(label)?;
+    }
+    let owner_key = label
+        .map(str::to_string)
+        .unwrap_or_else(|| env_key(linked.len(), name));
+    let mut adding = vec![(
+        owner_key,
+        Origin::Owner {
+            database: name.to_string(),
+        },
+    )];
+    for role in roles::list_for(state, &db.id).await? {
+        if !role.owner {
+            adding.push((
+                role.env_label,
+                Origin::Role {
+                    database: name.to_string(),
+                    role: role.name,
+                },
+            ));
+        }
+    }
+    let carried = managed_keys(state, app_id).await?;
+    for (i, (key, _)) in adding.iter().enumerate() {
+        let taken = carried
+            .iter()
+            .chain(adding[..i].iter())
+            .find(|(k, _)| k == key);
+        if let Some((_, other)) = taken {
+            return Err(clash_sentence(key, other).into());
+        }
+    }
     sqlx::query!(
-        "INSERT OR IGNORE INTO app_databases (app_id, database_id, position)
-         VALUES (?, ?, (SELECT coalesce(max(position) + 1, 0) FROM app_databases WHERE app_id = ?))",
+        "INSERT INTO app_databases (app_id, database_id, env_label, position)
+         VALUES (?, ?, ?, (SELECT coalesce(max(position) + 1, 0) FROM app_databases WHERE app_id = ?))",
         app_id,
         db.id,
+        label,
         app_id
     )
     .execute(&state.pool)
@@ -321,7 +370,7 @@ pub async fn link_with_labels(
     name: &str,
     spec: Option<&DatabaseSpec>,
 ) -> anyhow::Result<()> {
-    link(state, &app.id, name).await?;
+    link_as(state, &app.id, name, spec.and_then(|s| s.url.as_deref())).await?;
     let Some(spec) = spec else {
         return Ok(());
     };
@@ -344,6 +393,19 @@ pub async fn set_link_label(
         roles::valid_label(label)?;
     }
     let db = by_name(state, name).await?.ok_or(DbError::NotFound)?;
+    let linked = names_for(state, app_id).await?;
+    let Some(position) = linked.iter().position(|n| n == name) else {
+        return Err(DbError::Missing(format!("{name} is not linked to that application.")).into());
+    };
+    let key = label
+        .map(str::to_string)
+        .unwrap_or_else(|| env_key(position, name));
+    let own = Origin::Owner {
+        database: name.to_string(),
+    };
+    if let Some(other) = label_clash(state, app_id, &key, std::slice::from_ref(&own)).await? {
+        return Err(clash_sentence(&key, &other).into());
+    }
     let done = sqlx::query!(
         "UPDATE app_databases SET env_label = ? WHERE app_id = ? AND database_id = ?",
         label,
@@ -405,6 +467,43 @@ pub async fn urls_for(state: &State, app_id: &str) -> anyhow::Result<Vec<Managed
         }
     }
     Ok(out)
+}
+
+/// Every variable Ferrum renders into the app's env file, with where each comes from.
+pub async fn managed_keys(state: &State, app_id: &str) -> anyhow::Result<Vec<(String, Origin)>> {
+    let mut keys: Vec<(String, Origin)> = urls_for(state, app_id)
+        .await?
+        .into_iter()
+        .map(|v| (v.key, v.origin))
+        .collect();
+    if let Some((key, _)) = crate::redis::url_for(state, app_id).await? {
+        keys.push((key, Origin::Redis));
+    }
+    Ok(keys)
+}
+
+/// Who already carries `label` in the app, leaving out the origins that are being renamed.
+pub async fn label_clash(
+    state: &State,
+    app_id: &str,
+    label: &str,
+    except: &[Origin],
+) -> anyhow::Result<Option<Origin>> {
+    Ok(managed_keys(state, app_id)
+        .await?
+        .into_iter()
+        .find(|(key, origin)| key == label && !except.contains(origin))
+        .map(|(_, origin)| origin))
+}
+
+pub fn clash_sentence(label: &str, origin: &Origin) -> DbError {
+    DbError::Conflict(match origin {
+        Origin::Owner { database } => format!("{label} is already the label of {database}."),
+        Origin::Role { database, role } => {
+            format!("{label} is already the label of {role}, a role of {database}.")
+        }
+        Origin::Redis => format!("{label} is already the label of Redis."),
+    })
 }
 
 pub async fn names_for(state: &State, app_id: &str) -> anyhow::Result<Vec<String>> {
@@ -761,17 +860,17 @@ pub(crate) mod tests {
         )
         .await
         .unwrap();
-        link(&state, &app.id, "ledger_prod").await.unwrap();
-        let keys =
-            |vars: Vec<ManagedVar>| -> Vec<String> { vars.into_iter().map(|v| v.key).collect() };
+        let refused = link(&state, &app.id, "ledger_prod").await.unwrap_err();
         assert_eq!(
-            keys(urls_for(&state, &app.id).await.unwrap()),
-            ["DATABASE_URL", "DATABASE_URL"],
-            "an unlabelled link keeps the name by link order"
+            refused.to_string(),
+            "DATABASE_URL is already the label of ledger_prod.",
+            "an unlabelled link would name the owner DATABASE_URL as well"
         );
-        set_link_label(&state, &app.id, "ledger_prod", Some("DATABASE_ADMIN_URL"))
+        link_as(&state, &app.id, "ledger_prod", Some("DATABASE_ADMIN_URL"))
             .await
             .unwrap();
+        let keys =
+            |vars: Vec<ManagedVar>| -> Vec<String> { vars.into_iter().map(|v| v.key).collect() };
         let vars = urls_for(&state, &app.id).await.unwrap();
         assert_eq!(keys(vars.clone()), ["DATABASE_ADMIN_URL", "DATABASE_URL"]);
         assert!(vars[1].value.starts_with("postgres://ledger_prod_app:"));
@@ -787,12 +886,22 @@ pub(crate) mod tests {
                 .await
                 .is_err()
         );
+        let clash = set_link_label(&state, &app.id, "ledger_prod", None)
+            .await
+            .unwrap_err();
+        assert_eq!(
+            clash.to_string(),
+            "DATABASE_URL is already the label of ledger_prod_app, a role of ledger_prod."
+        );
+        roles::set_labels(&state, &db, &[("app".into(), "DATABASE_APP_URL".into())])
+            .await
+            .unwrap();
         set_link_label(&state, &app.id, "ledger_prod", None)
             .await
             .unwrap();
         assert_eq!(
-            urls_for(&state, &app.id).await.unwrap()[0].key,
-            "DATABASE_URL"
+            keys(urls_for(&state, &app.id).await.unwrap()),
+            ["DATABASE_URL", "DATABASE_APP_URL"]
         );
     }
 

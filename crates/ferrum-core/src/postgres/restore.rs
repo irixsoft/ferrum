@@ -3,6 +3,7 @@ use ferrum_platform::Platform;
 use ferrum_platform::ubuntu::PG_USER;
 use std::io::{BufRead, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 pub const DIR: &str = "restores";
 pub const SNIFF_LEN: usize = 5;
@@ -50,6 +51,7 @@ pub struct Staged {
     pub dir: PathBuf,
     pub path: PathBuf,
     pub list: PathBuf,
+    claimed: AtomicBool,
 }
 
 impl Staged {
@@ -59,12 +61,22 @@ impl Staged {
             path: dir.join(format!("{database}.dump")),
             list: dir.join(format!("{database}.list")),
             dir,
+            claimed: AtomicBool::new(false),
         }
+    }
+
+    /// The files are this upload's own from here on; before the claim they may belong to one
+    /// still in flight, and dropping must not take them away from it.
+    pub fn claim(&self) {
+        self.claimed.store(true, Ordering::Relaxed);
     }
 }
 
 impl Drop for Staged {
     fn drop(&mut self) {
+        if !self.claimed.load(Ordering::Relaxed) {
+            return;
+        }
         let _ = std::fs::remove_file(&self.path);
         let _ = std::fs::remove_file(&self.list);
     }
@@ -251,6 +263,13 @@ mod tests {
         std::fs::write(&staged.path, b"PGDMP").unwrap();
         std::fs::write(&staged.list, b";1\n").unwrap();
         let (path, list) = (staged.path.clone(), staged.list.clone());
+        drop(staged);
+        assert!(
+            path.exists() && list.exists(),
+            "an upload that never claimed the files leaves them to the one that did"
+        );
+        let staged = Staged::new(dir.path(), "ledger_prod");
+        staged.claim();
         drop(staged);
         assert!(!path.exists());
         assert!(!list.exists());

@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO app_databases (app_id, database_id, env_label, position)\n         VALUES (?, ?, ?, (SELECT coalesce(max(position) + 1, 0) FROM app_databases WHERE app_id = ?))",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 4
+    },
+    "nullable": []
+  },
+  "hash": "2178951ad3892da7cd79655165eec98c47df9dd03c3dbd443138aa7e7f06d5f5"
+}

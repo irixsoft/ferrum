@@ -282,7 +282,7 @@ async fn create_from_dump(
         return Err(ApiError::conflict(DbError::Taken(name).to_string()));
     }
     let staged = Staged::new(&app.db.data_dir, &name);
-    let format = receive(&app, &staged, request.into_body()).await?;
+    let format = receive(&app, &name, &staged, request.into_body()).await?;
 
     let platform = app.platform.clone();
     let role = name.clone();
@@ -353,7 +353,7 @@ async fn create_from_dump(
     Ok((StatusCode::CREATED, Json(detail(&app, &name).await?)))
 }
 
-async fn receive(app: &AppState, staged: &Staged, body: Body) -> ApiResult<Format> {
+async fn receive(app: &AppState, name: &str, staged: &Staged, body: Body) -> ApiResult<Format> {
     std::fs::create_dir_all(&staged.dir).map_err(anyhow::Error::from)?;
     std::fs::set_permissions(&staged.dir, std::fs::Permissions::from_mode(0o700))
         .map_err(anyhow::Error::from)?;
@@ -362,14 +362,22 @@ async fn receive(app: &AppState, staged: &Staged, body: Body) -> ApiResult<Forma
         .disk_free_bytes(&app.db.data_dir)
         .map_err(anyhow::Error::from)?;
     let budget = free.saturating_sub(DISK_HEADROOM);
-    let mut file = tokio::fs::OpenOptions::new()
+    let mut file = match tokio::fs::OpenOptions::new()
         .write(true)
-        .create(true)
-        .truncate(true)
+        .create_new(true)
         .mode(0o600)
         .open(&staged.path)
         .await
-        .map_err(anyhow::Error::from)?;
+    {
+        Ok(file) => file,
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+            return Err(ApiError::conflict(format!(
+                "A dump for {name} is still being uploaded; wait for it to finish or pick another name."
+            )));
+        }
+        Err(e) => return Err(anyhow::Error::from(e).into()),
+    };
+    staged.claim();
 
     let mut stream = body.into_data_stream();
     let mut head = Vec::with_capacity(restore::SNIFF_LEN);
