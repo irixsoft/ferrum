@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE app_databases SET env_label = ? WHERE app_id = ? AND database_id = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": []
+  },
+  "hash": "ff49d6e35677173ee3e43263b3c7ed3584a20074ce73d25946cb9daf6f66f7c8"
+}

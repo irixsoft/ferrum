@@ -1,0 +1,56 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT id AS \"id!\", database_id AS \"database_id!\", name AS \"name!\",\n                  env_label AS \"env_label!\", connection_limit AS \"connection_limit!\",\n                  owner AS \"owner!: bool\", created_at AS \"created_at!\"\n           FROM database_roles WHERE database_id = ? ORDER BY owner DESC, name",
+  "describe": {
+    "columns": [
+      {
+        "name": "id!",
+        "ordinal": 0,
+        "type_info": "Text"
+      },
+      {
+        "name": "database_id!",
+        "ordinal": 1,
+        "type_info": "Text"
+      },
+      {
+        "name": "name!",
+        "ordinal": 2,
+        "type_info": "Text"
+      },
+      {
+        "name": "env_label!",
+        "ordinal": 3,
+        "type_info": "Text"
+      },
+      {
+        "name": "connection_limit!",
+        "ordinal": 4,
+        "type_info": "Integer"
+      },
+      {
+        "name": "owner!: bool",
+        "ordinal": 5,
+        "type_info": "Integer"
+      },
+      {
+        "name": "created_at!",
+        "ordinal": 6,
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "e8d84f9313559ff8483f5f1c36e011efa163122ca20543e1b951656f561922c4"
+}

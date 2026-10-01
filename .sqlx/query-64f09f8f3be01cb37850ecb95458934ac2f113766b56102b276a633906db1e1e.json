@@ -1,0 +1,32 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT r.password AS \"password!\", r.env_label AS \"env_label!\", p.port AS \"port!\"\n           FROM redis_instances r JOIN app_ports p ON p.app_id = r.app_id AND p.name = ?\n           WHERE r.app_id = ?",
+  "describe": {
+    "columns": [
+      {
+        "name": "password!",
+        "ordinal": 0,
+        "type_info": "Text"
+      },
+      {
+        "name": "env_label!",
+        "ordinal": 1,
+        "type_info": "Text"
+      },
+      {
+        "name": "port!",
+        "ordinal": 2,
+        "type_info": "Integer"
+      }
+    ],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": [
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "64f09f8f3be01cb37850ecb95458934ac2f113766b56102b276a633906db1e1e"
+}
