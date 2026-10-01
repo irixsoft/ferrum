@@ -101,7 +101,7 @@ export function DesktopShell({ children }: { children: ReactNode }) {
           </nav>
 
           <main className="flex-1 min-w-0 overflow-y-auto pl-2 pr-8 pb-8">
-            <div className="max-w-[1240px]">{children}</div>
+            <div className="max-w-[1600px]">{children}</div>
           </main>
         </div>
 
