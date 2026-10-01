@@ -206,7 +206,7 @@ impl Job {
         let stored = env::keys(&self.ctx.state, &self.app.id).await?;
         let missing: Vec<&str> = required
             .iter()
-            .filter(|r| r.default.is_none() && !stored.contains(&r.key))
+            .filter(|r| !r.optional && r.default.is_none() && !stored.contains(&r.key))
             .map(|r| r.key.as_str())
             .collect();
         if missing.is_empty() {
@@ -967,7 +967,14 @@ fn describe_manifest(manifest: &Manifest, applied: &App) -> String {
         tail.push_str(&format!("; {} packages", packages.len()));
     }
     if let Some(required) = &manifest.env {
-        tail.push_str(&format!("; {} variables required", required.len()));
+        let optional = required.iter().filter(|r| r.optional).count();
+        tail.push_str(&format!(
+            "; {} variables required",
+            required.len() - optional
+        ));
+        if optional > 0 {
+            tail.push_str(&format!(", {optional} optional"));
+        }
     }
     if !manifest.states_processes() {
         return format!("{file} read; it names no processes, so the list stays as it is{tail}");

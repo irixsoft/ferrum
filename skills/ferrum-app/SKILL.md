@@ -14,7 +14,7 @@ description: >
 
 # Running an app on Ferrum
 
-Written for Ferrum 0.2.1. Everything an agent needs is in this file.
+Written for Ferrum 0.2.2. Everything an agent needs is in this file.
 
 ## How Ferrum runs an app
 
@@ -82,11 +82,15 @@ url = "DATABASE_URL"                  # a restricted role Ferrum creates, and it
 url = "CACHE_URL"
 
 [env]
-required = ["SESSION_SECRET", "SMTP_HOST"]   # names the code reads; values live in the panel
+required = ["SESSION_SECRET", "SMTP_HOST"]   # bare names the code must have; values live in the panel
 
-[env.UPLOADS_DIR]                     # a table when there is something to say about a key
+[env.UPLOADS_DIR]                     # a table instead, when there is something to say about a key
 about = "Where uploaded files are kept; must survive a deploy"
 default = "{{shared}}/uploads"        # written once if nothing is set; {{shared}} is the app's shared directory
+
+[env.SMTP_USER]                       # the app runs without it: shown in the panel, never refuses a deploy
+about = "Leave empty for a relay without a login"
+optional = true
 ```
 
 Keys:
@@ -119,18 +123,73 @@ Keys:
     Only one process can own `/`, and it is the one a served name points at.
 - `[database]`, `[database.roles.<name>]`, `[redis]`: the env names the code reads its
   addresses under. See *Databases*.
-- `[env]`: the variables the code reads. `required` is a list of bare names. `[env.NAME]` is
-  a table for a name with a sentence (`about`, shown beside the field on the Environment tab)
-  or a non-secret `default`. A default is written the first time nothing is set and never
-  over a value typed in the panel; `{{shared}}` in it becomes
-  `/var/lib/ferrum/apps/<slug>/shared`. A required name with no value and no default refuses
-  the deploy before the build, naming the key. Names Ferrum sets itself (`PORT`, `HOST`,
-  `*_PORT`, the labels the same file names) cannot be required.
+- `[env]`: the variables the code reads. See *Declaring variables* below; it has rules an
+  agent gets wrong.
 - Top-level `start`, `output_dir`, `health_path` still work and mean one process `web`.
 
 What the file never decides: domains, environment values, memory and CPU limits, the startup
 budget, whether traffic pauses for migrations, and which database is linked. Those belong to
 the server and live in the panel.
+
+### Declaring variables
+
+Every variable goes in **exactly one** of two places. Pick per key:
+
+| The key is… | Write it as |
+|---|---|
+| needed, and its name says enough | a bare name in `required = [...]` |
+| needed, and wants a sentence or a non-secret default | a table `[env.KEY]` with `about` and/or `default` — **not** also in `required` |
+| something the app runs without | a table `[env.KEY]` with `optional = true` — **not** in `required` |
+
+- **A table alone already makes the key required.** The `required` list is only the short
+  form for keys with nothing to say. Never write a key in both; the list is not a "this is
+  required" flag that tables need.
+- **Required** means: a deploy is refused before the build while the key has no value in the
+  panel and no `default` in the file. So only require what the app cannot start or build
+  without.
+- **Optional** means: the Environment tab shows the key and its sentence, and a deploy never
+  waits for it. Use it for anything described as "leave empty unless…", legacy keys, feature
+  switches, and anything used only in local development. Never give such a key a fake value
+  or a fake default to get past the check, and never leave it out of the file.
+- `default` is for non-secret values only. It is written the first time nothing is set and
+  never over a value typed in the panel. `{{shared}}` in it becomes
+  `/var/lib/ferrum/apps/<slug>/shared`. Secrets never get a default.
+- Do not declare what Ferrum sets itself: `PORT`, `HOST`, `<NAME>_PORT` for a process of
+  this app that has a port (`WEB_PORT`, `REALTIME_PORT`), and the labels named under
+  `[database]`, `[database.roles.*]` and `[redis]`. Any other name is the app's own, including
+  ones that end in `_PORT`: `SMTP_PORT` and `DB_PORT` are fine.
+
+Wrong, and how it is fixed:
+
+```toml
+# WRONG: ADMIN_EMAIL is in the list and in a table.
+[env]
+required = ["SESSION_SECRET", "ADMIN_EMAIL"]
+
+[env.ADMIN_EMAIL]
+about = "The first admin's login"
+
+# WRONG: the app works without it, so requiring it blocks every deploy.
+[env.STRIPE_LEGACY_KEY]
+about = "Optional; only for accounts created before 2024"
+```
+
+```toml
+# RIGHT
+[env]
+required = ["SESSION_SECRET"]
+
+[env.ADMIN_EMAIL]
+about = "The first admin's login"
+
+[env.STRIPE_LEGACY_KEY]
+about = "Only for accounts created before 2024"
+optional = true
+```
+
+Ferrum 0.2.2 tolerates the first mistake (the table wins), but 0.2.1 refuses the deploy, so
+write it the right way. A key in `required` whose table says `optional = true` is always
+refused.
 
 ## Processes
 
@@ -240,9 +299,10 @@ Work through this in order; each line is a grep or a file.
 9. **System tools.** Chromium, ffmpeg, libvips → `packages`; their paths via a variable in
    `[env]` with a default (`CHROMIUM_PATH = "/usr/bin/chromium"`).
 10. **`[env]`.** Every key the code reads that Ferrum does not set, including build-time
-    public keys, with a sentence for anything a stranger could not guess and a default for
-    anything non-secret. Keep `.env.example` for local development if you like; Ferrum does
-    not read it.
+    public keys, each in one place: a bare name in `required`, or a table when it has a
+    sentence or a non-secret default. For each key ask "does the app start and build without
+    it?" — if yes, it is a table with `optional = true`. Keep `.env.example` for local
+    development if you like; Ferrum does not read it.
 11. **Write `ferrum.toml`.** Commit it. Keep `package.json` `build` and `start` working as
     the bare commands.
 12. **Prove it locally.** `PORT=4000 HOST=127.0.0.1 bun run start` for each process, with the
@@ -344,8 +404,14 @@ provider picked, `www.example.com` redirects.
 
 ## What a refused or failed deploy usually means
 
-- "X is required by ferrum.toml and has no value": set it on the Environment tab, then push
-  the tag again (or give it a `default` in the file if it is not a secret).
+- "X is required by ferrum.toml and has no value": set it on the Environment tab and deploy
+  again. If it is not a secret, give it a `default` in the file; if the app runs without it,
+  make it a table with `optional = true`.
+- "[env] names X, which Ferrum sets itself": X is `PORT`, `HOST`, the `<NAME>_PORT` of one of
+  the file's own processes, or a database/Redis label. Remove it from `[env]`. (Ferrum 0.2.1
+  wrongly said this for every name ending in `_PORT`; update Ferrum.)
+- "[env] names X twice" (0.2.1): X is in `required` and in a table. Keep the table only.
+- "[env] lists X as required and marks it optional": remove X from `required`.
 - "has no process named X, which Y points at": the tag's file dropped a process a name or
   path still uses. Repoint in the panel, redeploy.
 - "web healthy after …" missing, deploy rolled back: the health path did not answer within

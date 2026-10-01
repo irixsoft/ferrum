@@ -36,6 +36,7 @@ import { ConfigForm, draftFromApp, toChanges, type Draft, type Sources } from ".
 import { DataCard } from "./DataCard";
 import { DeployLog } from "./DeployLog";
 import { EnvironmentPanel } from "./EnvironmentPanel";
+import { sharedDir } from "./SharedDirHint";
 import { NginxPanel } from "./NginxPanel";
 import { LogPanel } from "./LogPanel";
 import { RunPanel } from "./RunPanel";
@@ -198,7 +199,7 @@ function Overview({ app, deploying }: { app: AppDetail; deploying: boolean }) {
                 {app.follow_repo_file ? "Followed on every deploy" : <span className="text-ink-4">Not followed</span>}
               </Row>
               <Row label="Writable directory" hint="Survives every deploy; put uploads and storage here">
-                <span className="font-mono text-[13px] break-all">/var/lib/ferrum/apps/{app.slug}/shared</span>
+                <span className="font-mono text-[13px] break-all">{sharedDir(app.slug)}</span>
               </Row>
               <Row label="Install">
                 <Command value={app.commands.install} />

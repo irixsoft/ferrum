@@ -64,7 +64,7 @@ async fn detection_reads_ferrum_toml_and_the_dependencies_and_nothing_else() {
             ("Procfile", "web: bun run start\n"),
             (
                 "ferrum.toml",
-                "packages = [\"libvips42\"]\n[env]\nrequired = [\"SMTP_HOST\"]\n[env.UPLOADS_DIR]\nabout = \"Where uploads live\"\ndefault = \"{{shared}}/uploads\"\n",
+                "packages = [\"libvips42\"]\n[env]\nrequired = [\"SMTP_HOST\"]\n[env.UPLOADS_DIR]\nabout = \"Where uploads live\"\ndefault = \"{{shared}}/uploads\"\n[env.SMTP_PORT]\noptional = true\n",
             ),
         ],
     );
@@ -89,8 +89,9 @@ async fn detection_reads_ferrum_toml_and_the_dependencies_and_nothing_else() {
     assert_eq!(
         res.json["manifest"]["env"],
         serde_json::json!([
-            { "key": "SMTP_HOST", "about": null, "default": null },
-            { "key": "UPLOADS_DIR", "about": "Where uploads live", "default": "{{shared}}/uploads" },
+            { "key": "SMTP_HOST", "about": null, "default": null, "optional": false },
+            { "key": "SMTP_PORT", "about": null, "default": null, "optional": true },
+            { "key": "UPLOADS_DIR", "about": "Where uploads live", "default": "{{shared}}/uploads", "optional": false },
         ])
     );
     assert!(res.json.get("env_hints").is_none());
@@ -110,7 +111,7 @@ async fn required_variables_travel_with_the_app_and_show_as_unset_keys() {
     h.pretend_toolchain(RuntimeKind::Node, "22.11.0").await;
     let json = new_app_json("ledger").replace(
         "\"domains\"",
-        r#""env":[{"key":"STRIPE_KEY","value":"sk"}],"env_required":[{"key":"STRIPE_KEY"},{"key":"SMTP_HOST","about":"Outgoing mail server"}],"domains""#,
+        r#""env":[{"key":"STRIPE_KEY","value":"sk"}],"env_required":[{"key":"STRIPE_KEY"},{"key":"SMTP_HOST","about":"Outgoing mail server"},{"key":"SMTP_USER","optional":true}],"domains""#,
     );
     let res = h.post_with_cookie("/api/apps", &json, &cookie).await;
     assert_eq!(res.status, StatusCode::CREATED, "{}", res.json);
@@ -119,8 +120,9 @@ async fn required_variables_travel_with_the_app_and_show_as_unset_keys() {
     assert_eq!(
         got.json["env"],
         serde_json::json!([
-            { "key": "STRIPE_KEY", "set": true, "source": "ferrum.toml", "about": null },
-            { "key": "SMTP_HOST", "set": false, "source": "ferrum.toml", "about": "Outgoing mail server" },
+            { "key": "STRIPE_KEY", "set": true, "source": "ferrum.toml", "about": null, "optional": false },
+            { "key": "SMTP_HOST", "set": false, "source": "ferrum.toml", "about": "Outgoing mail server", "optional": false },
+            { "key": "SMTP_USER", "set": false, "source": "ferrum.toml", "about": null, "optional": true },
         ])
     );
     let env = h.env_file("ledger");

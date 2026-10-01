@@ -61,7 +61,8 @@ pub struct RedisSpec {
     pub url: Option<String>,
 }
 
-/// `required = ["A", "B"]` for bare names, `[env.A]` tables when there is something to say.
+/// `required = ["A", "B"]` for bare names, `[env.A]` tables when there is something to say; a
+/// table alone asks for its key unless it says `optional = true`.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct EnvSpec {
@@ -75,6 +76,7 @@ pub struct EnvSpec {
 pub struct EnvKeySpec {
     pub about: Option<String>,
     pub default: Option<String>,
+    pub optional: bool,
 }
 
 /// What a repository says about its own shape. Empty `processes` means the file is silent on
@@ -130,7 +132,7 @@ pub fn from_toml(t: &FerrumToml) -> Result<Manifest, String> {
         processes.push(NewProcess::folder(WEB, dir));
     }
     let env = match &t.env {
-        Some(spec) => Some(env_requirements(spec, t)?),
+        Some(spec) => Some(env_requirements(spec, t, &processes)?),
         None => None,
     };
     Ok(Manifest {
@@ -148,33 +150,61 @@ pub fn from_toml(t: &FerrumToml) -> Result<Manifest, String> {
     })
 }
 
-/// A key Ferrum sets itself cannot be asked for, and a key is named once.
-fn env_requirements(spec: &EnvSpec, t: &FerrumToml) -> Result<Vec<EnvRequirement>, String> {
-    let mut labels: Vec<&str> = Vec::new();
+/// A key Ferrum sets itself cannot be asked for: `PORT`, `HOST`, the port of a process this
+/// file names, and its labels. A key in `required` and in a table takes what the table says.
+fn env_requirements(
+    spec: &EnvSpec,
+    t: &FerrumToml,
+    processes: &[NewProcess],
+) -> Result<Vec<EnvRequirement>, String> {
+    let mut ours: Vec<String> = vec!["PORT".into(), "HOST".into()];
+    ours.extend(
+        processes
+            .iter()
+            .filter(|p| p.port)
+            .map(|p| env::port_var(&p.name)),
+    );
     if let Some(db) = &t.database {
-        labels.extend(db.url.as_deref());
-        labels.extend(db.roles.values().filter_map(|r| r.url.as_deref()));
+        ours.extend(db.url.clone());
+        ours.extend(db.roles.values().filter_map(|r| r.url.clone()));
     }
-    labels.extend(t.redis.as_ref().and_then(|r| r.url.as_deref()));
-    let bare = spec.required.iter().map(|k| (k.as_str(), None, None));
-    let tables = spec
-        .keys
-        .iter()
-        .map(|(k, s)| (k.as_str(), s.about.clone(), s.default.clone()));
+    ours.extend(t.redis.as_ref().and_then(|r| r.url.clone()));
+
     let mut out: Vec<EnvRequirement> = Vec::new();
-    for (key, about, default) in bare.chain(tables) {
-        env::valid_key(key).map_err(|e| e.to_string())?;
-        if key == "PORT" || key == "HOST" || key.ends_with("_PORT") || labels.contains(&key) {
-            return Err(format!("[env] names {key}, which Ferrum sets itself."));
+    for key in &spec.required {
+        if out.iter().any(|r| &r.key == key) {
+            continue;
         }
-        if out.iter().any(|r| r.key == key) {
-            return Err(format!("[env] names {key} twice."));
+        if spec.keys.get(key).is_some_and(|s| s.optional) {
+            return Err(format!(
+                "[env] lists {key} as required and marks it optional."
+            ));
         }
         out.push(EnvRequirement {
-            key: key.to_string(),
-            about,
-            default,
+            key: key.clone(),
+            ..EnvRequirement::default()
         });
+    }
+    for (key, table) in &spec.keys {
+        let req = EnvRequirement {
+            key: key.clone(),
+            about: table.about.clone(),
+            default: table.default.clone(),
+            optional: table.optional,
+        };
+        match out.iter_mut().find(|r| &r.key == key) {
+            Some(listed) => *listed = req,
+            None => out.push(req),
+        }
+    }
+    for req in &out {
+        env::valid_key(&req.key).map_err(|e| e.to_string())?;
+        if ours.contains(&req.key) {
+            return Err(format!(
+                "[env] names {}, which Ferrum sets itself.",
+                req.key
+            ));
+        }
     }
     Ok(out)
 }
@@ -328,12 +358,10 @@ default = "{{shared}}/uploads"
     }
 
     #[test]
-    fn an_env_section_refuses_a_key_named_twice_or_one_ferrum_sets() {
-        let twice = parse_toml("[env]\nrequired = [\"A\"]\n[env.A]\nabout = \"x\"\n").unwrap();
-        assert_eq!(from_toml(&twice).unwrap_err(), "[env] names A twice.");
-        for key in ["PORT", "HOST", "WEB_PORT", "DATABASE_URL"] {
+    fn an_env_section_refuses_only_the_keys_ferrum_sets_for_this_app() {
+        for key in ["PORT", "HOST", "WEB_PORT", "REALTIME_PORT", "DATABASE_URL"] {
             let t = parse_toml(&format!(
-                "[env]\nrequired = [\"{key}\"]\n[database]\nurl = \"DATABASE_URL\"\n"
+                "[env]\nrequired = [\"{key}\"]\n[database]\nurl = \"DATABASE_URL\"\n[processes.web]\nstart = \"a\"\n[processes.realtime]\nstart = \"b\"\nport = true\n[processes.jobs]\nstart = \"c\"\n"
             ))
             .unwrap();
             assert_eq!(
@@ -341,6 +369,15 @@ default = "{{shared}}/uploads"
                 format!("[env] names {key}, which Ferrum sets itself.")
             );
         }
+        let t = parse_toml(
+            "[processes.web]\nstart = \"a\"\n[processes.jobs]\nstart = \"c\"\n[env]\nrequired = [\"SMTP_PORT\", \"JOBS_PORT\", \"REALTIME_PORT\"]\n",
+        )
+        .unwrap();
+        assert_eq!(
+            from_toml(&t).unwrap().env.unwrap().len(),
+            3,
+            "a name ending in _PORT is the app's own unless a port process carries it"
+        );
         let bad = parse_toml("[env]\nrequired = [\"1bad\"]\n").unwrap();
         assert!(
             from_toml(&bad)
@@ -354,6 +391,58 @@ default = "{{shared}}/uploads"
             "an empty section asks for nothing"
         );
         assert!(from_toml(&parse_toml("").unwrap()).unwrap().env.is_none());
+    }
+
+    #[test]
+    fn an_env_key_is_required_unless_its_table_says_optional() {
+        let t = parse_toml(
+            r#"
+[env]
+required = ["SESSION_SECRET", "ADMIN_EMAIL", "SESSION_SECRET"]
+
+[env.ADMIN_EMAIL]
+about = "The first admin's login"
+
+[env.SMTP_PORT]
+default = "587"
+
+[env.SMTP_USER]
+about = "Leave empty for a relay without a login"
+optional = true
+"#,
+        )
+        .unwrap();
+        let env = from_toml(&t).unwrap().env.unwrap();
+        let keys: Vec<(&str, Option<&str>, Option<&str>, bool)> = env
+            .iter()
+            .map(|r| {
+                (
+                    r.key.as_str(),
+                    r.about.as_deref(),
+                    r.default.as_deref(),
+                    r.optional,
+                )
+            })
+            .collect();
+        assert_eq!(
+            keys,
+            [
+                ("SESSION_SECRET", None, None, false),
+                ("ADMIN_EMAIL", Some("The first admin's login"), None, false),
+                ("SMTP_PORT", None, Some("587"), false),
+                (
+                    "SMTP_USER",
+                    Some("Leave empty for a relay without a login"),
+                    None,
+                    true
+                ),
+            ]
+        );
+        let both = parse_toml("[env]\nrequired = [\"A\"]\n[env.A]\noptional = true\n").unwrap();
+        assert_eq!(
+            from_toml(&both).unwrap_err(),
+            "[env] lists A as required and marks it optional."
+        );
     }
 
     #[test]

@@ -9,6 +9,7 @@ import { runtimeLabel } from "@/components/RuntimeMark";
 import { useGithubTags } from "@/lib/api";
 import { isFolder, reconcileDomains, reconcileRoutes, renameInDomains, renameInRoutes, routable } from "@/lib/processes";
 import { DomainsEditor, type DomainDraft } from "./DomainsEditor";
+import { SharedDirHint } from "./SharedDirHint";
 import type {
   App,
   AppChanges,
@@ -321,6 +322,7 @@ export function ConfigForm({
               className={MONO}
             />
           </Field>
+          <SharedDirHint slug={draft.slug} className="sm:col-span-2" />
         </CardBody>
       </Card>
 

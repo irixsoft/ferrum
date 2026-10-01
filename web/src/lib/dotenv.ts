@@ -113,7 +113,7 @@ export function importDotenv(rows: EnvRow[], parsed: Parsed, managed: string[]):
       row.value = value;
       filled++;
     } else {
-      next.push({ key, value, stored: false, source: null, about: null });
+      next.push({ key, value, stored: false, source: null, about: null, optional: false });
       added++;
     }
   }

@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT OR REPLACE INTO app_env_required\n                 (app_id, key, source, about, default_value, optional)\n             VALUES (?, ?, ?, ?, ?, ?)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 6
+    },
+    "nullable": []
+  },
+  "hash": "54bd4d6a396deaf1d80f11fadc2f7fce5f2f289baf9b7029887624581f29f2f1"
+}

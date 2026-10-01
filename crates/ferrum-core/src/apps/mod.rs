@@ -973,12 +973,11 @@ pub(crate) mod tests {
             env::EnvRequirement {
                 key: "SMTP_HOST".into(),
                 about: Some("Outgoing mail server".into()),
-                default: None,
+                ..env::EnvRequirement::default()
             },
             env::EnvRequirement {
                 key: "STRIPE_KEY".into(),
-                about: None,
-                default: None,
+                ..env::EnvRequirement::default()
             },
         ];
         let app = create(&state, wanted).await.unwrap();

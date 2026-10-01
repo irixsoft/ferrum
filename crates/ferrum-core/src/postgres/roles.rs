@@ -41,14 +41,15 @@ pub fn default_label(name: &str) -> String {
     format!("DATABASE_URL_{}", name.to_ascii_uppercase())
 }
 
-/// A label becomes a variable in the app's env file, next to the ones Ferrum sets per unit.
+/// A label becomes a variable in the app's env file, next to the ones Ferrum sets per unit;
+/// a process's own port name is checked where the app is known.
 pub fn valid_label(label: &str) -> Result<(), DbError> {
     if env::valid_key(label).is_err() {
         return Err(DbError::Invalid(format!(
             "{label:?} is not a valid variable name; use letters, digits and underscores."
         )));
     }
-    if label == "PORT" || label == "HOST" || label.ends_with("_PORT") {
+    if label == "PORT" || label == "HOST" {
         return Err(DbError::Invalid(format!(
             "{label} is set by Ferrum for every process; pick another label."
         )));
@@ -631,7 +632,7 @@ mod tests {
                 "{bad:?}"
             );
         }
-        for label in ["1X", "HOST", "WEB_PORT", "A B"] {
+        for label in ["1X", "HOST", "PORT", "A B"] {
             let e = create(
                 &state,
                 &p,

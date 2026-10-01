@@ -6,6 +6,7 @@ import { Card, CardBody, CardFoot, CardHeader } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
 import { Badge } from "@/components/ui/Badge";
 import { Code } from "@/components/ui/Code";
+import { SharedDirHint, sharedDir } from "./SharedDirHint";
 import type { EnvChange, EnvEntry, EnvRequirement, LabelChanges, ManagedVar } from "@/types/api";
 
 /** `value` is null while the stored value is untouched; a required row starts unstored with its default or "". */
@@ -15,22 +16,31 @@ export interface EnvRow {
   stored: boolean;
   source: string | null;
   about: string | null;
+  optional: boolean;
 }
 
 const INPUT =
   "h-9 px-3 bg-inset border border-line-strong rounded-control text-sm text-ink placeholder:text-ink-4 font-mono text-[13px]";
 
-export const REQUIRED_NOTE =
-  "These keys are required by the repo's ferrum.toml. A deploy is refused while one of them has no value.";
+const REQUIRED_NOTE =
+  "These keys come from the repo's ferrum.toml. A deploy is refused while one of them has no value, unless it is marked optional.";
+
+/** Shown when the file asks for at least one key a deploy cannot go without. */
+export function RequiredNote({ rows }: { rows: EnvRow[] }) {
+  return rows.some((r) => r.source === "ferrum.toml" && !r.optional) ? (
+    <p className="text-[12.5px] text-ink-4 mt-1">{REQUIRED_NOTE}</p>
+  ) : null;
+}
 
 /** The default is shown as it will be written: `{{shared}}` becomes the app's shared directory on the server. */
 export function rowsFromRequired(required: EnvRequirement[], slug: string): EnvRow[] {
   return required.map((r) => ({
     key: r.key,
-    value: r.default ? r.default.replaceAll("{{shared}}", `/var/lib/ferrum/apps/${slug}/shared`) : "",
+    value: r.default ? r.default.replaceAll("{{shared}}", sharedDir(slug)) : "",
     stored: false,
     source: "ferrum.toml",
     about: r.about,
+    optional: r.optional,
   }));
 }
 
@@ -41,11 +51,12 @@ function rowsFromEntries(entries: EnvEntry[]): EnvRow[] {
     stored: e.set,
     source: e.source,
     about: e.about,
+    optional: e.optional,
   }));
 }
 
 export function blankRow(): EnvRow {
-  return { key: "", value: "", stored: false, source: null, about: null };
+  return { key: "", value: "", stored: false, source: null, about: null, optional: false };
 }
 
 /** The file is read in the browser and fills the rows; it is never uploaded or kept. */
@@ -120,9 +131,12 @@ export function EnvRows({
             <input
               value={row.value ?? ""}
               onChange={(e) => update(i, { ...row, value: e.target.value })}
-              placeholder={row.value === null ? "••••••••" : row.stored ? "value" : "not set"}
+              placeholder={
+                row.value === null ? "••••••••" : row.stored ? "value" : row.optional ? "optional" : "not set"
+              }
               className={`${INPUT} flex-1 min-w-0`}
             />
+            {row.optional ? <Badge className="shrink-0">optional</Badge> : null}
             {row.source ? (
               <Badge className="shrink-0 hidden sm:inline-flex" title={row.source}>
                 {row.source}
@@ -242,7 +256,6 @@ export function EnvironmentPanel({
   const [dirty, setDirty] = useState(false);
   const [note, setNote] = useState<string | null>(null);
   const save = useSetEnv(slug);
-  const required = rows.some((r) => r.source === "ferrum.toml");
 
   const change = (next: EnvRow[]) => {
     setRows(next);
@@ -290,7 +303,8 @@ export function EnvironmentPanel({
       <CardBody className="grid gap-2">
         <EnvRows rows={rows} onChange={change} managed={managed} managedRows={<ManagedRows slug={slug} />} />
         {note ? <p className="text-[12.5px] text-ink-3 mt-1">{note}</p> : null}
-        {required ? <p className="text-[12.5px] text-ink-4 mt-1">{REQUIRED_NOTE}</p> : null}
+        <RequiredNote rows={rows} />
+        <SharedDirHint slug={slug} className="mt-1" />
         {save.error ? (
           <p className="text-[12.5px] text-fail">
             {save.error instanceof ApiError ? save.error.message : String(save.error)}
