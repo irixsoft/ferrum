@@ -459,7 +459,8 @@ mod tests {
             instance.port
         );
         assert_eq!(list(&state).await.unwrap()[0].app_slug, "ledger");
-        let url = url_for(&state, &app.id).await.unwrap().unwrap();
+        let (label, url) = url_for(&state, &app.id).await.unwrap().unwrap();
+        assert_eq!(label, "REDIS_URL");
         assert!(
             url.starts_with("redis://:")
                 && url.ends_with(&format!("@127.0.0.1:{}/0", instance.port))
