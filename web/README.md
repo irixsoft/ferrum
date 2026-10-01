@@ -93,12 +93,13 @@ without a session.
 
 ## PWA
 
-`vite-plugin-pwa` in `prompt` mode. Icons are generated from `public/icon.svg` by
+`vite-plugin-pwa` in `prompt` mode with our own worker, `src/sw.ts`, so pushes
+can be shown. Icons are generated from `public/icon.svg` by
 `scripts/gen-icons.mjs` — maskable variants sit inside the 80% safe zone on an
 opaque field, plus an `apple-touch-icon` because iOS still needs its own.
 
 The service worker precaches the shell and static assets **only**. `/api/*` and
-`/mcp` are `NetworkOnly`: a service worker cache is written to disk and outlives
+`/mcp` are never cached: a service worker cache is written to disk and outlives
 the session, and env vars, database passwords and connection strings must never
 land there.
 
@@ -108,15 +109,15 @@ is a service worker that never updates.
 CI sets `FERRUM_BUILD_ID` at build time so `UpdatePrompt` can compare the running
 bundle against `/api/version`.
 
-## Not built yet
+## Help
 
-App creation, the rollback dialog with its two clearly-labelled choices, the
-command palette, routes and system-packages editors, and most mutations.
+The Help section renders the Markdown topics in `../help/`, which the binary
+embeds and also serves over MCP. The conventions a repository follows live
+there, not here.
 
-The rollback dialog in particular must never pick for the user: *roll back code
-only* and *roll back code and restore the pre-migration snapshot* are different
-decisions with different consequences, and the panel must say so with the actual
-timestamp.
+The rollback dialog must never pick for the user: *roll back code only* and
+*roll back code and restore the pre-migration snapshot* are different decisions
+with different consequences, and the panel says so with the actual timestamp.
 
 ## Licence
 
