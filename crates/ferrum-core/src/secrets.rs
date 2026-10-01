@@ -101,6 +101,7 @@ pub async fn any_encrypted(pool: &sqlx::SqlitePool) -> anyhow::Result<bool> {
              UNION ALL SELECT password FROM databases
              UNION ALL SELECT password FROM redis_instances
              UNION ALL SELECT private_key FROM github_apps
+             UNION ALL SELECT credentials FROM dns_providers
            ) WHERE substr(v, 1, 3) = 'v1:'"#
     )
     .fetch_one(pool)
