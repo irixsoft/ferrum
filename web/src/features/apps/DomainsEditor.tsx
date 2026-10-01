@@ -19,7 +19,10 @@ const JOBS: Array<{ value: DomainJob; label: string }> = [
 export const isWildcard = (name: string) => name.startsWith("*.");
 
 const redirectTargets = (rows: DomainDraft[], self: string) =>
-  rows.filter((r) => r.job === "serve" && r.domain !== self && !isWildcard(r.domain)).map((r) => r.domain);
+  rows
+    .filter((r) => r.job === "serve" && r.domain !== self && !isWildcard(r.domain))
+    .sort((a, b) => Number(b.primary) - Number(a.primary))
+    .map((r) => r.domain);
 
 /** Hands the primary to the first served name when the row holding it stops serving or goes. */
 function keepPrimary(rows: DomainDraft[]): DomainDraft[] {
