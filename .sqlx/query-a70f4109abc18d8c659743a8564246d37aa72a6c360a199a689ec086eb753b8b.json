@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE database_roles SET bypass_rls = ? WHERE id = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": []
+  },
+  "hash": "a70f4109abc18d8c659743a8564246d37aa72a6c360a199a689ec086eb753b8b"
+}

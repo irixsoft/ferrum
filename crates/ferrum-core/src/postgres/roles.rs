@@ -21,6 +21,7 @@ pub struct Role {
     pub env_label: String,
     pub connection_limit: u32,
     pub owner: bool,
+    pub bypass_rls: bool,
     pub created_at: String,
 }
 
@@ -59,7 +60,8 @@ pub async fn list_for(state: &State, database_id: &str) -> anyhow::Result<Vec<Ro
     let rows = sqlx::query!(
         r#"SELECT id AS "id!", database_id AS "database_id!", name AS "name!",
                   env_label AS "env_label!", connection_limit AS "connection_limit!",
-                  owner AS "owner!: bool", created_at AS "created_at!"
+                  owner AS "owner!: bool", bypass_rls AS "bypass_rls!: bool",
+                  created_at AS "created_at!"
            FROM database_roles WHERE database_id = ? ORDER BY owner DESC, name"#,
         database_id
     )
@@ -74,9 +76,35 @@ pub async fn list_for(state: &State, database_id: &str) -> anyhow::Result<Vec<Ro
             env_label: r.env_label,
             connection_limit: r.connection_limit as u32,
             owner: r.owner,
+            bypass_rls: r.bypass_rls,
             created_at: time::utc(r.created_at),
         })
         .collect())
+}
+
+/// Only the owner can bypass row-level security, and only while the file asks for it; a table
+/// with `FORCE ROW LEVEL SECURITY` otherwise hides its rows from the owner too.
+async fn set_owner_bypass_rls(
+    state: &State,
+    platform: &dyn Platform,
+    db: &Database,
+    on: bool,
+) -> anyhow::Result<()> {
+    let owner = found(state, db, &db.role).await?;
+    if owner.bypass_rls == on {
+        return Ok(());
+    }
+    platform
+        .postgres_sql(MAINTENANCE_DB, &sql::set_bypass_rls(&db.role, on))
+        .map_err(host_error)?;
+    sqlx::query!(
+        "UPDATE database_roles SET bypass_rls = ? WHERE id = ?",
+        on,
+        owner.id
+    )
+    .execute(&state.pool)
+    .await?;
+    Ok(())
 }
 
 /// `role` is the full role name or the part after `<database>_`.
@@ -431,6 +459,7 @@ pub async fn ensure_from_manifest(
         }
     }
     set_labels(state, db, &changes).await?;
+    set_owner_bypass_rls(state, platform, db, spec.bypass_rls).await?;
 
     for stored in list_for(state, &db.id).await? {
         let named = spec
@@ -796,5 +825,71 @@ mod tests {
             .await
             .unwrap_err();
         assert_eq!(e.to_string(), "ferrum.toml names DATABASE_ADMIN_URL twice.");
+    }
+
+    #[tokio::test]
+    async fn the_owner_bypasses_rls_only_while_the_file_says_so() {
+        let (_d, state) = state().await;
+        let p = FakePlatform::new();
+        let app = crate::apps::create(&state, new_app("ledger", &[("/", "main", false)]))
+            .await
+            .unwrap();
+        let db = ledger(&state, &p).await;
+        let alters = |p: &FakePlatform| {
+            p.sql()
+                .into_iter()
+                .filter(|s| s.contains("BYPASSRLS"))
+                .collect::<Vec<_>>()
+        };
+
+        let plain = DatabaseSpec::default();
+        ensure_from_manifest(&state, &p, &db, &plain, &app)
+            .await
+            .unwrap();
+        assert!(
+            alters(&p).is_empty(),
+            "an owner that never asked is left alone"
+        );
+        assert!(
+            !find(&state, &db, &db.role)
+                .await
+                .unwrap()
+                .unwrap()
+                .bypass_rls
+        );
+
+        let on = DatabaseSpec {
+            bypass_rls: true,
+            ..DatabaseSpec::default()
+        };
+        ensure_from_manifest(&state, &p, &db, &on, &app)
+            .await
+            .unwrap();
+        ensure_from_manifest(&state, &p, &db, &on, &app)
+            .await
+            .unwrap();
+        assert_eq!(alters(&p), ["ALTER ROLE \"ledger_prod\" BYPASSRLS;\n"]);
+        assert!(
+            find(&state, &db, &db.role)
+                .await
+                .unwrap()
+                .unwrap()
+                .bypass_rls
+        );
+
+        ensure_from_manifest(&state, &p, &db, &plain, &app)
+            .await
+            .unwrap();
+        assert_eq!(
+            alters(&p).last().unwrap(),
+            "ALTER ROLE \"ledger_prod\" NOBYPASSRLS;\n"
+        );
+        assert!(
+            !find(&state, &db, &db.role)
+                .await
+                .unwrap()
+                .unwrap()
+                .bypass_rls
+        );
     }
 }

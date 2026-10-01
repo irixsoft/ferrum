@@ -45,6 +45,7 @@ pub struct ProcessSpec {
 #[serde(default)]
 pub struct DatabaseSpec {
     pub url: Option<String>,
+    pub bypass_rls: bool,
     pub roles: BTreeMap<String, RoleSpec>,
 }
 
@@ -266,6 +267,7 @@ path = "/admin"
 
 [database]
 url = "DATABASE_ADMIN_URL"
+bypass_rls = true
 
 [database.roles.app]
 url = "DATABASE_URL"
@@ -309,6 +311,7 @@ url = "CACHE_URL"
         assert!(m.commands.install.is_none());
         let db = m.database.unwrap();
         assert_eq!(db.url.as_deref(), Some("DATABASE_ADMIN_URL"));
+        assert!(db.bypass_rls);
         assert_eq!(db.roles["app"].url.as_deref(), Some("DATABASE_URL"));
         assert_eq!(m.redis.unwrap().url.as_deref(), Some("CACHE_URL"));
     }

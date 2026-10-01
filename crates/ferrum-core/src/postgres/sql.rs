@@ -74,6 +74,14 @@ pub fn alter_password(role: &str, password: &str) -> String {
     )
 }
 
+pub fn set_bypass_rls(role: &str, on: bool) -> String {
+    format!(
+        "ALTER ROLE {} {};\n",
+        quote_ident(role),
+        if on { "BYPASSRLS" } else { "NOBYPASSRLS" }
+    )
+}
+
 /// Run inside the role's database: what it created passes to the owner, its grants go with it.
 pub fn drop_role(role: &str, owner: &str) -> String {
     format!(
@@ -123,6 +131,11 @@ mod tests {
         assert_eq!(
             alter_password("x", "p'w"),
             "ALTER ROLE \"x\" PASSWORD 'p''w';\n"
+        );
+        assert_eq!(set_bypass_rls("x", true), "ALTER ROLE \"x\" BYPASSRLS;\n");
+        assert_eq!(
+            set_bypass_rls("x", false),
+            "ALTER ROLE \"x\" NOBYPASSRLS;\n"
         );
     }
 

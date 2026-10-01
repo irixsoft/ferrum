@@ -472,6 +472,7 @@ function Roles({ database, linked }: { database: string; linked: boolean }) {
             <span className="flex items-center gap-2 min-w-0 flex-1">
               <span className="font-mono text-[13px] text-ink truncate">{role.name}</span>
               {role.owner ? <Badge>owner</Badge> : null}
+              {role.bypass_rls ? <Badge>bypasses RLS</Badge> : null}
             </span>
             <Code>{role.env_label}</Code>
             <span className="text-[12.5px] text-ink-4 tnum">{role.connection_limit} connections</span>

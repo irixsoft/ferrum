@@ -428,6 +428,7 @@ export interface DatabaseRole {
   env_label: string;
   connection_limit: number;
   owner: boolean;
+  bypass_rls: boolean;
 }
 
 export interface NewRole {

@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT id AS \"id!\", database_id AS \"database_id!\", name AS \"name!\",\n                  env_label AS \"env_label!\", connection_limit AS \"connection_limit!\",\n                  owner AS \"owner!: bool\", created_at AS \"created_at!\"\n           FROM database_roles WHERE database_id = ? ORDER BY owner DESC, name",
+  "query": "SELECT id AS \"id!\", database_id AS \"database_id!\", name AS \"name!\",\n                  env_label AS \"env_label!\", connection_limit AS \"connection_limit!\",\n                  owner AS \"owner!: bool\", bypass_rls AS \"bypass_rls!: bool\",\n                  created_at AS \"created_at!\"\n           FROM database_roles WHERE database_id = ? ORDER BY owner DESC, name",
   "describe": {
     "columns": [
       {
@@ -34,8 +34,13 @@
         "type_info": "Integer"
       },
       {
-        "name": "created_at!",
+        "name": "bypass_rls!: bool",
         "ordinal": 6,
+        "type_info": "Integer"
+      },
+      {
+        "name": "created_at!",
+        "ordinal": 7,
         "type_info": "Text"
       }
     ],
@@ -49,8 +54,9 @@
       false,
       false,
       false,
+      false,
       false
     ]
   },
-  "hash": "e8d84f9313559ff8483f5f1c36e011efa163122ca20543e1b951656f561922c4"
+  "hash": "9faeb12c27d002efda0dfa4f7711f4b36cd2561f2322a4903dbe5e226ce3daa7"
 }

@@ -1,0 +1,1 @@
+ALTER TABLE database_roles ADD COLUMN bypass_rls INTEGER NOT NULL DEFAULT 0;

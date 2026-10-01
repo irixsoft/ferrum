@@ -6,6 +6,16 @@ Ferrum runs one PostgreSQL server on the box, listening on loopback only. Each d
 
 Created with the database. It owns every table, runs your migrations, and is what `DATABASE_URL` points at unless your file says otherwise.
 
+Row-level security never applies to the owner of a table, unless your migrations say `FORCE ROW LEVEL SECURITY` on it. Then the owner needs the `BYPASSRLS` attribute to see every row, and the file asks for it:
+
+```toml
+[database]
+url = "DATABASE_ADMIN_URL"
+bypass_rls = true
+```
+
+Ferrum sets it on the owner at link and on every deploy that follows the file, and takes it away again when the line goes. Restricted roles never get it.
+
 ## Restricted roles
 
 A login with a password and a connection limit that can connect, and nothing else. What it may read or write is decided by your own migrations (`GRANT`, row-level security policies). It never gets superuser or bypass-RLS powers. This is how a multi-tenant app serves each tenant as a user the database rules apply to, while migrations run as the owner.
