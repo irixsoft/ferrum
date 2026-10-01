@@ -1,0 +1,44 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT domain AS \"domain!\", job AS \"job!: Job\", target, primary_domain AS \"primary!: bool\",\n                  dns_provider_id\n           FROM app_domains WHERE app_id = ? ORDER BY primary_domain DESC, position",
+  "describe": {
+    "columns": [
+      {
+        "name": "domain!",
+        "ordinal": 0,
+        "type_info": "Text"
+      },
+      {
+        "name": "job!: Job",
+        "ordinal": 1,
+        "type_info": "Text"
+      },
+      {
+        "name": "target",
+        "ordinal": 2,
+        "type_info": "Text"
+      },
+      {
+        "name": "primary!: bool",
+        "ordinal": 3,
+        "type_info": "Integer"
+      },
+      {
+        "name": "dns_provider_id",
+        "ordinal": 4,
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false,
+      false,
+      true,
+      false,
+      true
+    ]
+  },
+  "hash": "3609e3b1b427ee1e2a53fb1a666af11412f6eed61165ccb4b2e843130b615aee"
+}

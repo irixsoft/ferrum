@@ -1,5 +1,6 @@
-use super::App;
+use super::domains::{Domain, Job};
 use super::provision::app_dir;
+use super::{App, Route};
 use crate::deploy::maintenance;
 use crate::{ACME_ROOT, PAGES_DIR, acme, logs};
 use ferrum_platform::ubuntu::{NGINX_CONF_DIR, NGINX_CUSTOM_DIR};
@@ -13,7 +14,7 @@ const TLS: &str = "    ssl_protocols TLSv1.2 TLSv1.3;
     ssl_session_timeout 1d;
     ssl_session_tickets off;
 
-    add_header Strict-Transport-Security \"max-age=31536000; includeSubDomains\" always;
+    add_header Strict-Transport-Security \"max-age=31536000\" always;
 ";
 
 const HEADERS: &str = "    add_header X-Content-Type-Options \"nosniff\" always;
@@ -36,57 +37,70 @@ pub fn custom_path(slug: &str) -> PathBuf {
     Path::new(NGINX_CUSTOM_DIR).join(format!("{slug}.conf"))
 }
 
-/// `with_tls` names the domains whose certificate is on disk; each gets its own `:443` block.
-pub fn render_vhost(app: &App, domains: &[String], with_tls: &[String]) -> String {
+/// One `:80` block per name, and a `:443` block for each name in `with_tls`, whose certificate
+/// is on disk.
+pub fn render_vhost(app: &App, with_tls: &[String]) -> String {
     let mut out = format!(
-        "# managed by Ferrum — do not edit. Your own directives go in {}\n\n",
+        "# managed by Ferrum — do not edit. Your own directives go in {}\n",
         custom_path(&app.slug).display()
     );
-    let Some(primary) = domains.first() else {
-        return out;
-    };
-    let primary_tls = with_tls.contains(primary);
-
-    out.push_str("server {\n    listen 80;\n    listen [::]:80;\n");
-    let _ = writeln!(out, "    server_name {primary};");
-    out.push_str(&logs(&app.slug));
-    out.push_str(&acme());
-    if primary_tls {
-        out.push_str("    location / {\n        return 301 https://$host$request_uri;\n    }\n}\n");
-    } else {
-        out.push_str(HEADERS);
-        out.push_str(&body(app));
-        out.push_str("}\n");
-    }
-
-    if primary_tls {
-        out.push_str(&tls_server(&app.slug, primary));
-        out.push_str(HEADERS);
-        out.push_str(&acme());
-        out.push_str(&body(app));
-        out.push_str("}\n");
-    }
-
-    let scheme = if primary_tls { "https" } else { "$scheme" };
-    for secondary in &domains[1..] {
-        out.push_str("\nserver {\n    listen 80;\n    listen [::]:80;\n");
-        let _ = writeln!(out, "    server_name {secondary};");
-        out.push_str(&logs(&app.slug));
-        out.push_str(&acme());
-        let _ = writeln!(
-            out,
-            "    location / {{\n        return 301 {scheme}://{primary}$request_uri;\n    }}\n}}"
-        );
-        if with_tls.contains(secondary) {
-            out.push_str(&tls_server(&app.slug, secondary));
-            out.push_str(&acme());
-            let _ = writeln!(
-                out,
-                "    location / {{\n        return 301 https://{primary}$request_uri;\n    }}\n}}"
-            );
+    let tls = |name: &str| with_tls.iter().any(|d| d == name);
+    for row in &app.domains {
+        let name = row.domain.as_str();
+        match row.job {
+            Job::Serve => {
+                out.push_str(&plain_server(&app.slug, name));
+                if tls(name) {
+                    out.push_str(
+                        "    location / {\n        return 301 https://$host$request_uri;\n    }\n}\n",
+                    );
+                    out.push_str(&tls_server(&app.slug, name));
+                    out.push_str(HEADERS);
+                    out.push_str(&acme());
+                } else {
+                    out.push_str(HEADERS);
+                }
+                out.push_str(&body(app, &row.target));
+                out.push_str("}\n");
+            }
+            Job::Redirect => {
+                let Some(target) = redirect_target(app, row) else {
+                    continue;
+                };
+                out.push_str(&plain_server(&app.slug, name));
+                let scheme = if tls(target) { "https" } else { "$scheme" };
+                out.push_str(&redirect(scheme, target));
+                if tls(name) {
+                    out.push_str(&tls_server(&app.slug, name));
+                    out.push_str(&acme());
+                    let scheme = if tls(target) { "https" } else { "http" };
+                    out.push_str(&redirect(scheme, target));
+                }
+            }
         }
     }
     out
+}
+
+/// A redirect lands on a served name; one whose target is gone lands on the primary.
+fn redirect_target<'a>(app: &'a App, row: &'a Domain) -> Option<&'a str> {
+    let served = |name: &str| app.domain(name).is_some_and(|d| d.serves() && !d.wildcard);
+    if served(&row.target) {
+        return Some(&row.target);
+    }
+    app.primary_domain().filter(|p| served(p))
+}
+
+fn plain_server(slug: &str, name: &str) -> String {
+    let mut out = String::from("\nserver {\n    listen 80;\n    listen [::]:80;\n");
+    let _ = writeln!(out, "    server_name {name};");
+    out.push_str(&logs(slug));
+    out.push_str(&acme());
+    out
+}
+
+fn redirect(scheme: &str, target: &str) -> String {
+    format!("    location / {{\n        return 301 {scheme}://{target}$request_uri;\n    }}\n}}\n")
 }
 
 /// Every block Ferrum owns for the app writes to the same pair of files, so the Logs tab reads one
@@ -128,12 +142,22 @@ fn maintenance(app: &App) -> String {
     )
 }
 
-fn body(app: &App) -> String {
+/// `/` belongs to the name's own process; every other path of the app applies on every name.
+fn body(app: &App, target: &str) -> String {
     let mut out = String::new();
     let _ = writeln!(out, "    include {};\n", custom_path(&app.slug).display());
     out.push_str(&maintenance(app));
 
-    let mut routes: Vec<_> = app.routes.iter().collect();
+    let root = Route {
+        path: "/".into(),
+        process: target.into(),
+        websocket: app
+            .routes
+            .iter()
+            .any(|r| r.path == "/" && r.process == target && r.websocket),
+    };
+    let mut routes: Vec<&Route> = app.routes.iter().filter(|r| r.path != "/").collect();
+    routes.push(&root);
     routes.sort_by_key(|r| (r.path.len(), r.path.clone()));
     for route in routes {
         let Some(process) = app.process(&route.process) else {
@@ -190,18 +214,60 @@ fn body(app: &App) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::apps::tests::{app, folder, process, route};
+    use crate::apps::domains::NewDomain;
+    use crate::apps::tests::{app, folder, process, route, rows};
+
+    fn serve(domain: &str, target: &str, primary: bool) -> NewDomain {
+        NewDomain {
+            domain: domain.into(),
+            job: Job::Serve,
+            target: target.into(),
+            primary,
+            dns_provider_id: None,
+        }
+    }
+
+    fn redirect_row(domain: &str, target: &str) -> NewDomain {
+        NewDomain {
+            domain: domain.into(),
+            job: Job::Redirect,
+            target: target.into(),
+            primary: false,
+            dns_provider_id: None,
+        }
+    }
+
+    fn tls(names: &[&str]) -> Vec<String> {
+        names.iter().map(|n| n.to_string()).collect()
+    }
+
+    fn ledger_with_www() -> App {
+        let mut a = app("ledger");
+        a.domains = rows(&[
+            serve("ledger.example.com", "web", true),
+            redirect_row("www.ledger.example.com", "ledger.example.com"),
+        ]);
+        a
+    }
+
+    fn block<'a>(v: &'a str, listen: &str, name: &str) -> &'a str {
+        let marker = format!("{listen}\n    listen [::]:");
+        let needle = format!("server_name {name};");
+        v.match_indices("\nserver {")
+            .map(|(i, _)| {
+                let end = v[i + 1..].find("\nserver {").map_or(v.len(), |e| e + i + 1);
+                &v[i..end]
+            })
+            .find(|b| b.contains(&marker) && b.contains(&needle))
+            .unwrap_or_else(|| panic!("no {listen} block for {name} in {v}"))
+    }
 
     #[test]
     fn the_vhost_proxies_each_route_to_its_process_port_and_raises_the_websocket_timeout() {
         let mut a = app("ledger");
         a.processes = vec![process("web", 20000), process("ws", 20001)];
         a.routes = vec![route("/", "web", false), route("/ws", "ws", true)];
-        let v = render_vhost(
-            &a,
-            &["ledger.example.com".into()],
-            &["ledger.example.com".into()],
-        );
+        let v = render_vhost(&a, &tls(&["ledger.example.com"]));
 
         let tls = v.find("listen 443 ssl;").unwrap();
         let root = v[tls..].find("location / {").unwrap() + tls;
@@ -222,13 +288,17 @@ mod tests {
         assert!(v.contains(
             "ssl_certificate     /var/lib/ferrum/certs/ledger.example.com/fullchain.pem;"
         ));
-        assert!(v.contains("Strict-Transport-Security"));
+        assert!(v.contains("add_header Strict-Transport-Security \"max-age=31536000\" always;"));
+        assert!(
+            !v.contains("includeSubDomains"),
+            "one app's HSTS must not bind the names of every other app under it"
+        );
         assert!(v.contains("return 301 https://$host$request_uri;"));
     }
 
     #[test]
     fn the_vhost_includes_the_user_snippet_from_outside_conf_d() {
-        let v = render_vhost(&app("ledger"), &["ledger.example.com".into()], &[]);
+        let v = render_vhost(&app("ledger"), &[]);
         assert!(v.contains("include /etc/nginx/ferrum-custom/ledger.conf;"));
         assert!(v.starts_with("# managed by Ferrum"));
         assert!(
@@ -239,11 +309,7 @@ mod tests {
 
     #[test]
     fn the_vhost_serves_the_maintenance_page_only_while_the_flag_exists() {
-        let v = render_vhost(
-            &app("ledger"),
-            &["ledger.example.com".into()],
-            &["ledger.example.com".into()],
-        );
+        let v = render_vhost(&app("ledger"), &tls(&["ledger.example.com"]));
         assert_eq!(
             v.matches("if (-f /var/lib/ferrum/apps/ledger/maintenance) { return 503; }")
                 .count(),
@@ -254,32 +320,97 @@ mod tests {
         assert!(v.contains("add_header Retry-After 10 always;"));
         assert!(v.contains("root /var/lib/ferrum/pages;"));
         assert!(v.contains("rewrite ^ /maintenance.html break;"));
-        let plain = render_vhost(&app("ledger"), &["ledger.example.com".into()], &[]);
+        let plain = render_vhost(&app("ledger"), &[]);
         assert_eq!(plain.matches("return 503;").count(), 1);
     }
 
     #[test]
-    fn a_secondary_domain_with_its_own_certificate_redirects_over_tls() {
+    fn a_redirect_row_with_its_own_certificate_redirects_over_tls() {
         let v = render_vhost(
-            &app("ledger"),
-            &["ledger.example.com".into(), "www.ledger.example.com".into()],
-            &["ledger.example.com".into(), "www.ledger.example.com".into()],
+            &ledger_with_www(),
+            &tls(&["ledger.example.com", "www.ledger.example.com"]),
         );
         assert!(v.contains(
             "ssl_certificate     /var/lib/ferrum/certs/www.ledger.example.com/fullchain.pem;"
         ));
         assert_eq!(v.matches("listen 443 ssl;").count(), 2);
-        assert_eq!(
-            v.matches("return 301 https://ledger.example.com$request_uri;")
-                .count(),
-            2
-        );
+        let secure = block(&v, "listen 443 ssl;", "www.ledger.example.com");
+        assert!(secure.contains("return 301 https://ledger.example.com$request_uri;"));
+        assert!(!secure.contains("proxy_pass"));
+        let plain = block(&v, "listen 80;", "www.ledger.example.com");
+        assert!(plain.contains("return 301 https://ledger.example.com$request_uri;"));
+        assert!(plain.contains("location /.well-known/acme-challenge/"));
         assert!(!v.contains("$scheme://ledger.example.com"));
     }
 
     #[test]
+    fn a_redirect_follows_the_scheme_until_its_target_has_a_certificate() {
+        let v = render_vhost(&ledger_with_www(), &[]);
+        assert!(v.contains("server_name www.ledger.example.com;"));
+        assert!(v.contains("return 301 $scheme://ledger.example.com$request_uri;"));
+        assert!(!v.contains("listen 443"));
+    }
+
+    #[test]
+    fn a_redirect_never_points_at_a_redirect() {
+        let mut a = app("ledger");
+        a.domains = rows(&[
+            serve("ledger.example.com", "web", true),
+            redirect_row("www.ledger.example.com", "ledger.example.com"),
+            redirect_row("old.ledger.example.com", "www.ledger.example.com"),
+        ]);
+        let v = render_vhost(&a, &[]);
+        let old = block(&v, "listen 80;", "old.ledger.example.com");
+        assert!(old.contains("return 301 $scheme://ledger.example.com$request_uri;"));
+        assert!(!v.contains("://www.ledger.example.com"));
+    }
+
+    #[test]
+    fn two_served_names_proxy_to_their_own_processes_and_share_the_other_paths() {
+        let mut a = app("shop");
+        a.processes = vec![
+            process("web", 20000),
+            process("admin", 20001),
+            process("api", 20002),
+        ];
+        a.routes = vec![route("/", "web", false), route("/api", "api", false)];
+        a.domains = rows(&[
+            serve("shop.example.com", "web", true),
+            serve("admin.shop.example.com", "admin", false),
+        ]);
+        let v = render_vhost(&a, &[]);
+        let shop = block(&v, "listen 80;", "shop.example.com");
+        let admin = block(&v, "listen 80;", "admin.shop.example.com");
+        let root_of = |b: &str| {
+            let at = b.find("location / {").unwrap();
+            b[at..].lines().nth(1).unwrap().trim().to_string()
+        };
+        assert_eq!(root_of(shop), "proxy_pass http://127.0.0.1:20000;");
+        assert_eq!(root_of(admin), "proxy_pass http://127.0.0.1:20001;");
+        for b in [shop, admin] {
+            assert!(b.contains("location /api {"), "{b}");
+            assert!(b.contains("proxy_pass http://127.0.0.1:20002;"));
+        }
+    }
+
+    #[test]
+    fn a_wildcard_row_is_its_own_server_name() {
+        let mut a = app("shop");
+        a.domains = rows(&[
+            serve("shop.example.com", "web", true),
+            serve("*.shop.example.com", "web", false),
+        ]);
+        let v = render_vhost(&a, &tls(&["*.shop.example.com"]));
+        assert!(v.contains("    server_name *.shop.example.com;\n"));
+        assert!(v.contains("    server_name shop.example.com;\n"));
+        let secure = block(&v, "listen 443 ssl;", "*.shop.example.com");
+        assert!(secure.contains("proxy_pass http://127.0.0.1:20000;"));
+        assert!(!v.contains("server_name shop.example.com *.shop"));
+    }
+
+    #[test]
     fn without_a_certificate_the_vhost_serves_http_only_and_still_answers_acme() {
-        let v = render_vhost(&app("ledger"), &["ledger.example.com".into()], &[]);
+        let v = render_vhost(&app("ledger"), &[]);
         assert!(v.contains("listen 80;"));
         assert!(!v.contains("listen 443"));
         assert!(
@@ -297,50 +428,46 @@ mod tests {
     fn a_folder_process_serves_current_output_dir_with_a_spa_fallback() {
         let mut a = app("docs");
         a.processes = vec![folder("web", "dist")];
-        let v = render_vhost(&a, &["docs.example.com".into()], &[]);
+        let v = render_vhost(&a, &[]);
         assert!(v.contains("root /var/lib/ferrum/apps/docs/current/dist;"));
         assert!(v.contains("try_files $uri $uri/ /index.html;"));
         assert!(!v.contains("proxy_pass"));
     }
 
     #[test]
-    fn a_folder_process_under_a_path_is_aliased_beside_the_api() {
+    fn a_name_pointing_at_a_folder_serves_it_at_the_root_beside_the_api() {
         let mut a = app("shop");
         a.processes = vec![process("web", 20000), folder("admin", "apps/admin/dist")];
         a.routes = vec![route("/", "web", false), route("/admin", "admin", false)];
-        let v = render_vhost(&a, &["shop.example.com".into()], &[]);
-        assert!(v.contains("proxy_pass http://127.0.0.1:20000;"));
-        assert!(v.contains("location /admin/ {"));
-        assert!(v.contains("alias /var/lib/ferrum/apps/shop/current/apps/admin/dist/;"));
-        assert!(v.contains("try_files $uri $uri/ /admin/index.html;"));
+        a.domains = rows(&[
+            serve("shop.example.com", "web", true),
+            serve("admin.shop.example.com", "admin", false),
+        ]);
+        let v = render_vhost(&a, &[]);
+        let shop = block(&v, "listen 80;", "shop.example.com");
+        assert!(shop.contains("proxy_pass http://127.0.0.1:20000;"));
+        assert!(shop.contains("location /admin/ {"));
+        assert!(shop.contains("alias /var/lib/ferrum/apps/shop/current/apps/admin/dist/;"));
+        assert!(shop.contains("try_files $uri $uri/ /admin/index.html;"));
+        let admin = block(&v, "listen 80;", "admin.shop.example.com");
+        assert!(admin.contains("root /var/lib/ferrum/apps/shop/current/apps/admin/dist;"));
+        assert!(!admin.contains("location / {\n        proxy_pass"));
     }
 
     #[test]
     fn a_route_to_a_worker_or_an_unknown_process_renders_nothing() {
         let mut a = app("ledger");
         a.routes = vec![route("/", "web", false), route("/jobs", "jobs", false)];
-        let v = render_vhost(&a, &["ledger.example.com".into()], &[]);
+        let v = render_vhost(&a, &[]);
         assert_eq!(v.matches("location /").count(), 2, "{v}");
         assert!(!v.contains("location /jobs"));
     }
 
     #[test]
-    fn secondary_domains_redirect_to_the_primary() {
-        let v = render_vhost(
-            &app("ledger"),
-            &["ledger.example.com".into(), "www.ledger.example.com".into()],
-            &[],
-        );
-        assert!(v.contains("server_name www.ledger.example.com;"));
-        assert!(v.contains("return 301 $scheme://ledger.example.com$request_uri;"));
-    }
-
-    #[test]
     fn every_server_block_logs_to_the_app_s_own_files() {
         let v = render_vhost(
-            &app("ledger"),
-            &["ledger.example.com".into(), "www.ledger.example.com".into()],
-            &["ledger.example.com".into(), "www.ledger.example.com".into()],
+            &ledger_with_www(),
+            &tls(&["ledger.example.com", "www.ledger.example.com"]),
         );
         let blocks = v.matches("server {").count();
         assert_eq!(blocks, 4);
@@ -354,15 +481,13 @@ mod tests {
                 .count(),
             blocks
         );
-        let mut s = app("docs");
-        s.processes = vec![folder("web", "dist")];
-        let plain = render_vhost(&s, &["docs.example.com".into()], &[]);
-        assert!(plain.contains("access_log /var/log/nginx/ferrum-docs.access.log;"));
     }
 
     #[test]
     fn without_a_domain_there_is_nothing_to_serve() {
-        let v = render_vhost(&app("ledger"), &[], &[]);
+        let mut a = app("ledger");
+        a.domains.clear();
+        let v = render_vhost(&a, &[]);
         assert!(!v.contains("server {"));
     }
 

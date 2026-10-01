@@ -209,6 +209,14 @@ impl Job {
                 ));
             }
         }
+        for d in self.app.served_domains() {
+            if !named(&d.target) {
+                return Some(format!(
+                    "The tag has no process named {}, which {} points at.",
+                    d.target, d.domain
+                ));
+            }
+        }
         None
     }
 

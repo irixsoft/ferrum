@@ -2,6 +2,7 @@ use super::handler::{Ferrum, ToolResult, finish, refusal};
 use crate::routes::error::ApiError;
 use crate::routes::{apps, databases, deploys, nginx};
 use ferrum_core::apps::AppChanges;
+use ferrum_core::apps::domains::{self, Job, NewDomain};
 use ferrum_core::apps::env::EnvChange;
 use ferrum_core::apps::processes::NewProcess;
 use ferrum_core::deploy::Trigger;
@@ -78,6 +79,10 @@ pub struct AddDomain {
     pub slug: String,
     /// The domain to add; its DNS must already point at this server for the certificate.
     pub domain: String,
+    /// The process the name serves; leave it out for the primary domain's process.
+    pub process: Option<String>,
+    /// A name of this application to redirect to instead of serving a process.
+    pub redirect_to: Option<String>,
 }
 
 #[derive(Deserialize, schemars::JsonSchema)]
@@ -263,7 +268,7 @@ impl Ferrum {
 
     #[tool(
         name = "add_domain",
-        description = "Add a domain to an application, rewrite its nginx server block, and request a certificate in the background once DNS points here.",
+        description = "Add a domain to an application, serving one of its processes (the primary domain's by default) or redirecting to another of its names, rewrite its nginx server blocks, and request a certificate in the background once DNS points here.",
         annotations(
             read_only_hint = false,
             destructive_hint = false,
@@ -275,16 +280,33 @@ impl Ferrum {
         finish(
             async {
                 let found = apps::find(&self.state, &args.slug).await?;
-                let domain = args.domain.trim().to_ascii_lowercase();
-                let mut domains = found.domains.clone();
-                if !domains.contains(&domain) {
-                    domains.push(domain);
-                }
-                let changes = AppChanges {
-                    domains: Some(domains),
-                    ..AppChanges::default()
+                let (job, target) = match (args.redirect_to, args.process) {
+                    (Some(_), Some(_)) => {
+                        return Err(ApiError::bad_request(
+                            "A name either serves a process or redirects, not both.",
+                        ));
+                    }
+                    (Some(to), None) => (Job::Redirect, to),
+                    (None, Some(process)) => (Job::Serve, process),
+                    (None, None) => (
+                        Job::Serve,
+                        found
+                            .domains
+                            .iter()
+                            .find(|d| d.primary)
+                            .map(|d| d.target.clone())
+                            .unwrap_or_default(),
+                    ),
                 };
-                apps::apply(&self.state, &found.slug, changes).await
+                let new = NewDomain {
+                    domain: args.domain.trim().to_ascii_lowercase(),
+                    job,
+                    target,
+                    primary: false,
+                    dns_provider_id: None,
+                };
+                let list = domains::put(&found.domains, new);
+                apps::apply_domains(&self.state, &found.slug, list).await
             }
             .await,
         )

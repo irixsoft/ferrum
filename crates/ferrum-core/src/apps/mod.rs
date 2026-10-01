@@ -1,4 +1,5 @@
 pub mod commands;
+pub mod domains;
 pub mod env;
 pub mod packages;
 pub mod ports;
@@ -8,11 +9,11 @@ pub mod unit;
 pub mod vhost;
 
 use crate::detect;
-use crate::dns::validate_hostname;
 use crate::manifest::Manifest;
 use crate::runtime::{self, Commands, RuntimeKind};
 use crate::state::State;
 use crate::time;
+use domains::{Domain, NewDomain};
 use processes::{NewProcess, Process, WEB};
 use serde::{Deserialize, Serialize};
 use sqlx::Sqlite;
@@ -30,6 +31,8 @@ pub enum AppError {
     Invalid(String),
     #[error("A folder process has no program to run.")]
     NoProcess,
+    #[error("The application has no domain {0}.")]
+    DomainNotFound(String),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -87,7 +90,7 @@ pub struct App {
     pub processes: Vec<Process>,
     pub routes: Vec<Route>,
     pub packages: Vec<String>,
-    pub domains: Vec<String>,
+    pub domains: Vec<Domain>,
     pub current_release_id: Option<String>,
     pub created_at: String,
     pub updated_at: String,
@@ -130,10 +133,6 @@ impl App {
             })
             .or_else(|| self.port_processes().next().and_then(|p| p.port))
     }
-
-    pub fn primary_domain(&self) -> Option<&str> {
-        self.domains.first().map(String::as_str)
-    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -155,7 +154,7 @@ pub struct NewApp {
     pub processes: Vec<NewProcess>,
     pub routes: Vec<NewRoute>,
     pub packages: Vec<String>,
-    pub domains: Vec<String>,
+    pub domains: Vec<NewDomain>,
     pub env: Vec<env::EnvVar>,
     pub env_hints: Vec<env::EnvHint>,
 }
@@ -203,7 +202,7 @@ pub struct AppChanges {
     pub processes: Option<Vec<NewProcess>>,
     pub routes: Option<Vec<NewRoute>>,
     pub packages: Option<Vec<String>>,
-    pub domains: Option<Vec<String>>,
+    pub domains: Option<Vec<NewDomain>>,
 }
 
 pub fn valid_slug(slug: &str) -> bool {
@@ -320,12 +319,7 @@ pub fn validate(new: &NewApp) -> Result<(), AppError> {
             return Err(invalid(format!("{package} is not a valid package name.")));
         }
     }
-    for (i, domain) in new.domains.iter().enumerate() {
-        validate_hostname(domain).map_err(invalid)?;
-        if new.domains[..i].iter().any(|d| d == domain) {
-            return Err(invalid(format!("{domain} is listed twice.")));
-        }
-    }
+    domains::settle(&new.domains, &new.processes, &new.routes)?;
     for var in &new.env {
         env::valid_key(&var.key)?;
     }
@@ -345,6 +339,7 @@ pub fn validate(new: &NewApp) -> Result<(), AppError> {
 
 pub async fn create(state: &State, new: NewApp) -> anyhow::Result<App> {
     validate(&new)?;
+    let settled = domains::settle(&new.domains, &new.processes, &new.routes)?;
     let id = uuid::Uuid::new_v4().to_string();
     let mut tx = state.pool.begin_with("BEGIN IMMEDIATE").await?;
 
@@ -384,7 +379,8 @@ pub async fn create(state: &State, new: NewApp) -> anyhow::Result<App> {
     processes::write(&mut tx, &id, &new.processes).await?;
     write_routes(&mut tx, &id, &new.routes).await?;
     write_packages(&mut tx, &id, &new.packages).await?;
-    write_domains(&mut tx, &id, &new.domains).await?;
+    domains::check_providers(&mut tx, &settled).await?;
+    domains::write(&mut tx, &id, &settled).await?;
     for var in &new.env {
         env::set_in(&mut tx, &state.key, &id, &var.key, &var.value).await?;
     }
@@ -427,11 +423,14 @@ pub async fn update(state: &State, slug: &str, changes: AppChanges) -> anyhow::R
         processes,
         routes,
         packages: changes.packages.unwrap_or(current.packages),
-        domains: changes.domains.unwrap_or(current.domains),
+        domains: changes
+            .domains
+            .unwrap_or_else(|| current.domains.iter().map(NewDomain::from).collect()),
         env: Vec::new(),
         env_hints: Vec::new(),
     };
     validate(&merged)?;
+    let settled = domains::settle(&merged.domains, &merged.processes, &merged.routes)?;
 
     let mut tx = state.pool.begin_with("BEGIN IMMEDIATE").await?;
     let budget = merged.startup_budget_secs as i64;
@@ -478,10 +477,8 @@ pub async fn update(state: &State, slug: &str, changes: AppChanges) -> anyhow::R
         .execute(&mut *tx)
         .await?;
     write_packages(&mut tx, &current.id, &merged.packages).await?;
-    sqlx::query!("DELETE FROM app_domains WHERE app_id = ?", current.id)
-        .execute(&mut *tx)
-        .await?;
-    write_domains(&mut tx, &current.id, &merged.domains).await?;
+    domains::check_providers(&mut tx, &settled).await?;
+    domains::write(&mut tx, &current.id, &settled).await?;
     tx.commit().await?;
 
     by_slug(state, slug)
@@ -578,36 +575,6 @@ async fn write_packages(
     Ok(())
 }
 
-async fn write_domains(
-    tx: &mut sqlx::Transaction<'_, Sqlite>,
-    app_id: &str,
-    domains: &[String],
-) -> anyhow::Result<()> {
-    for (position, domain) in domains.iter().enumerate() {
-        let position = position as i64;
-        let primary = position == 0;
-        let inserted = sqlx::query!(
-            "INSERT INTO app_domains (domain, app_id, position, job, target, primary_domain) VALUES (?, ?, ?, 'serve', ?, ?)",
-            domain,
-            app_id,
-            position,
-            WEB,
-            primary
-        )
-        .execute(&mut **tx)
-        .await;
-        if let Err(e) = inserted {
-            if is_unique_violation(&e) {
-                return Err(
-                    invalid(format!("{domain} already belongs to another application.")).into(),
-                );
-            }
-            return Err(e.into());
-        }
-    }
-    Ok(())
-}
-
 fn is_unique_violation(e: &sqlx::Error) -> bool {
     matches!(e, sqlx::Error::Database(db) if db.kind() == sqlx::error::ErrorKind::UniqueViolation)
 }
@@ -632,7 +599,7 @@ pub async fn list(state: &State) -> anyhow::Result<Vec<App>> {
         let processes = processes::of(state, &r.id).await?;
         let routes = routes_of(state, &r.id).await?;
         let packages = packages_of(state, &r.id).await?;
-        let domains = domains_of(state, &r.id).await?;
+        let domains = domains::of(state, &r.id).await?;
         apps.push(App {
             id: r.id,
             slug: r.slug,
@@ -708,16 +675,6 @@ async fn packages_of(state: &State, app_id: &str) -> anyhow::Result<Vec<String>>
     Ok(rows.into_iter().map(|r| r.name).collect())
 }
 
-async fn domains_of(state: &State, app_id: &str) -> anyhow::Result<Vec<String>> {
-    let rows = sqlx::query!(
-        r#"SELECT domain AS "domain!" FROM app_domains WHERE app_id = ? ORDER BY primary_domain DESC, position"#,
-        app_id
-    )
-    .fetch_all(&state.pool)
-    .await?;
-    Ok(rows.into_iter().map(|r| r.domain).collect())
-}
-
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
@@ -766,9 +723,22 @@ pub(crate) mod tests {
                     websocket: *ws,
                 })
                 .collect(),
-            domains: vec![format!("{slug}.example.com")],
+            domains: vec![format!("{slug}.example.com").as_str().into()],
             ..NewApp::default()
         }
+    }
+
+    pub fn rows(list: &[NewDomain]) -> Vec<Domain> {
+        list.iter()
+            .map(|d| Domain {
+                domain: d.domain.clone(),
+                job: d.job,
+                target: d.target.clone(),
+                primary: d.primary,
+                wildcard: domains::is_wildcard(&d.domain),
+                dns_provider_id: d.dns_provider_id.clone(),
+            })
+            .collect()
     }
 
     pub fn route(path: &str, process: &str, websocket: bool) -> Route {
@@ -841,7 +811,11 @@ pub(crate) mod tests {
             processes: vec![process(WEB, 20000)],
             routes: vec![route("/", WEB, false)],
             packages: Vec::new(),
-            domains: vec![format!("{slug}.example.com")],
+            domains: rows(&[NewDomain {
+                primary: true,
+                target: WEB.into(),
+                ..format!("{slug}.example.com").as_str().into()
+            }]),
             current_release_id: None,
             created_at: "2026-09-02T00:00:00Z".into(),
             updated_at: "2026-09-02T00:00:00Z".into(),

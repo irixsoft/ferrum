@@ -1050,6 +1050,36 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_tag_that_drops_a_process_a_domain_serves_is_refused() {
+        let (_d, state) = state().await;
+        let p = Arc::new(FakePlatform::new());
+        p.serve_clone(&[(
+            "ferrum.toml",
+            "[processes.web]\nstart = \"bun run start\"\n",
+        )]);
+        let health = Health::serve(200).await;
+        let app = provisioned(&state, &p, "ledger", health.port, |new| {
+            new.follow_repo_file = true;
+            new.processes.push(NewProcess {
+                name: "admin".into(),
+                start: Some("bun run admin".into()),
+                ..NewProcess::default()
+            });
+            new.domains.push(crate::apps::domains::NewDomain {
+                target: "admin".into(),
+                .."admin.example.com".into()
+            });
+        })
+        .await;
+        let (outcome, d) = deploy(&ctx(&state, &p), &app, "abc1234").await;
+        assert_eq!(outcome, Outcome::Failed);
+        assert_eq!(
+            d.failure_reason.as_deref(),
+            Some("The tag has no process named admin, which admin.example.com points at.")
+        );
+    }
+
+    #[tokio::test]
     async fn a_procfile_is_honoured_when_there_is_no_ferrum_toml() {
         let (_d, state) = state().await;
         let p = Arc::new(FakePlatform::new());

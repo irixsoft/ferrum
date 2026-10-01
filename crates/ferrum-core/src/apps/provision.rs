@@ -147,10 +147,10 @@ fn render_for(platform: &dyn Platform, app: &App) -> String {
     let with_tls: Vec<String> = app
         .domains
         .iter()
-        .filter(|d| platform.file_exists(&acme::cert_dir(d).join("fullchain.pem")))
-        .cloned()
+        .filter(|d| platform.file_exists(&acme::cert_dir(&d.domain).join("fullchain.pem")))
+        .map(|d| d.domain.clone())
         .collect();
-    render_vhost(app, &app.domains, &with_tls)
+    render_vhost(app, &with_tls)
 }
 
 pub async fn write_env(state: &State, platform: &dyn Platform, app: &App) -> anyhow::Result<()> {

@@ -4,6 +4,7 @@ use crate::server::AppState;
 use axum::extract::{Path, State as Extract};
 use axum::http::StatusCode;
 use axum::{Json, Router, routing::get};
+use ferrum_core::apps::domains::{self, DomainChange, NewDomain};
 use ferrum_core::apps::{self, App, AppChanges, AppError, NewApp, env, packages, provision};
 use ferrum_core::deploy::{self, Outcome, maintenance, releases};
 use ferrum_core::detect::{self, DetectError, Detected};
@@ -33,6 +34,11 @@ pub fn router() -> Router<AppState> {
             axum::routing::post(retry_certificates),
         )
         .route("/api/apps/{slug}/restart", axum::routing::post(restart))
+        .route("/api/apps/{slug}/domains", axum::routing::post(add_domain))
+        .route(
+            "/api/apps/{slug}/domains/{domain}",
+            axum::routing::patch(change_domain).delete(remove_domain),
+        )
 }
 
 const RESTART_WHILE_DEPLOYING: &str =
@@ -268,6 +274,50 @@ async fn retry_certificates(
     certs::retry_now(&app.db, &found).await?;
     app.issue_certificates_later(found);
     Ok(StatusCode::ACCEPTED)
+}
+
+async fn add_domain(
+    Extract(app): Extract<AppState>,
+    _: Caller,
+    Path(slug): Path<String>,
+    Json(new): Json<NewDomain>,
+) -> ApiResult<Json<App>> {
+    let found = find(&app, &slug).await?;
+    let list = domains::put(&found.domains, new);
+    Ok(Json(apply_domains(&app, &slug, list).await?))
+}
+
+async fn change_domain(
+    Extract(app): Extract<AppState>,
+    _: Caller,
+    Path((slug, domain)): Path<(String, String)>,
+    Json(change): Json<DomainChange>,
+) -> ApiResult<Json<App>> {
+    let found = find(&app, &slug).await?;
+    let list = domains::change(&found.domains, &domain, change).map_err(|e| app_error(e.into()))?;
+    Ok(Json(apply_domains(&app, &slug, list).await?))
+}
+
+async fn remove_domain(
+    Extract(app): Extract<AppState>,
+    _: Caller,
+    Path((slug, domain)): Path<(String, String)>,
+) -> ApiResult<Json<App>> {
+    let found = find(&app, &slug).await?;
+    let list = domains::remove(&found.domains, &domain).map_err(|e| app_error(e.into()))?;
+    Ok(Json(apply_domains(&app, &slug, list).await?))
+}
+
+pub(crate) async fn apply_domains(
+    app: &AppState,
+    slug: &str,
+    list: Vec<NewDomain>,
+) -> ApiResult<App> {
+    let changes = AppChanges {
+        domains: Some(list),
+        ..AppChanges::default()
+    };
+    apply(app, slug, changes).await
 }
 
 async fn restart(
@@ -532,7 +582,9 @@ pub(crate) async fn replace_env(
 fn app_error(e: anyhow::Error) -> ApiError {
     match e.downcast_ref::<AppError>() {
         Some(AppError::SlugTaken(_)) => ApiError::conflict(e.to_string()),
-        Some(AppError::NotFound) => ApiError::not_found(e.to_string()),
+        Some(AppError::NotFound) | Some(AppError::DomainNotFound(_)) => {
+            ApiError::not_found(e.to_string())
+        }
         Some(AppError::Invalid(_)) | Some(AppError::NoProcess) => {
             ApiError::bad_request(e.to_string())
         }

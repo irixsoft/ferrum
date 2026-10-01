@@ -161,10 +161,10 @@ pub async fn statuses(
     app: &App,
 ) -> anyhow::Result<Vec<DomainCert>> {
     let mut out = Vec::with_capacity(app.domains.len());
-    for domain in &app.domains {
+    for d in &app.domains {
         out.push(DomainCert {
-            domain: domain.clone(),
-            status: status(state, platform, domain).await?,
+            domain: d.domain.clone(),
+            status: status(state, platform, &d.domain).await?,
         });
     }
     Ok(out)
@@ -172,8 +172,8 @@ pub async fn statuses(
 
 /// Clears the backoff so the next sweep tries at once.
 pub async fn retry_now(state: &State, app: &App) -> anyhow::Result<()> {
-    for domain in &app.domains {
-        clear(state, domain).await?;
+    for d in &app.domains {
+        clear(state, &d.domain).await?;
     }
     Ok(())
 }
@@ -187,6 +187,13 @@ async fn try_issue(
     renewing: bool,
 ) -> anyhow::Result<bool> {
     if !renewing && has_certificate(platform, domain) {
+        return Ok(false);
+    }
+    if apps::domains::is_wildcard(domain) {
+        tracing::info!(
+            domain,
+            "a wildcard certificate needs a DNS-01 challenge; skipped"
+        );
         return Ok(false);
     }
     let previous = attempt(state, domain).await?;
@@ -257,8 +264,8 @@ pub async fn issue_for(
     app: &App,
 ) -> anyhow::Result<bool> {
     let mut landed = false;
-    for domain in &app.domains {
-        landed |= try_issue(state, platform, issuance, domain, false).await?;
+    for d in &app.domains {
+        landed |= try_issue(state, platform, issuance, &d.domain, false).await?;
     }
     let refreshed = provision::refresh_vhost(platform, app)?;
     Ok(landed || refreshed)
@@ -379,6 +386,40 @@ pub(crate) mod tests {
                 .iter()
                 .any(|c| c.starts_with("write_file /etc/nginx"))
         );
+    }
+
+    #[tokio::test]
+    async fn a_wildcard_is_left_without_a_certificate_and_without_an_attempt() {
+        let (_d, state) = state().await;
+        let p = FakePlatform::new();
+        setup::set_email(&state, "me@example.com").await.unwrap();
+        sqlx::query("INSERT INTO dns_providers (id, name, kind, credentials) VALUES ('cf', 'Cloudflare', 'cloudflare', 'x')")
+            .execute(&state.pool)
+            .await
+            .unwrap();
+        let mut new = new_app("ledger", &[("/", "main", false)]);
+        let mut wildcard = apps::domains::NewDomain::from("*.ledger.example.com");
+        wildcard.dns_provider_id = Some("cf".into());
+        new.domains.push(wildcard);
+        let app = apps::create(&state, new).await.unwrap();
+        let issuance = Issuance::new(
+            unreachable_directory(),
+            Lookup::Fixed(vec![(
+                "ledger.example.com".into(),
+                vec![ip("198.51.100.1")],
+            )]),
+            Some(ip(HERE)),
+        );
+        issue_for(&state, &p, &issuance, &app).await.unwrap();
+        assert_eq!(
+            status(&state, &p, "*.ledger.example.com").await.unwrap(),
+            CertStatus::None
+        );
+        let tried: Vec<String> = sqlx::query_scalar("SELECT domain FROM cert_attempts")
+            .fetch_all(&state.pool)
+            .await
+            .unwrap();
+        assert_eq!(tried, ["ledger.example.com"]);
     }
 
     #[tokio::test]

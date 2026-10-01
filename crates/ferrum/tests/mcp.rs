@@ -599,15 +599,31 @@ async fn the_write_tools_change_the_box_the_way_the_routes_do() {
         json!({ "slug": "ledger", "domain": "Books.Example.com" }),
     )
     .await;
-    assert_eq!(
-        added["structuredContent"]["domains"],
-        json!(["ledger.example.com", "books.example.com"])
-    );
+    let names: Vec<&str> = added["structuredContent"]["domains"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|d| d["domain"].as_str().unwrap())
+        .collect();
+    assert_eq!(names, ["ledger.example.com", "books.example.com"]);
+    let redirected = call(
+        &h,
+        &token,
+        "add_domain",
+        json!({ "slug": "ledger", "domain": "www.ledger.example.com", "redirect_to": "ledger.example.com" }),
+    )
+    .await;
+    assert!(redirected["isError"] != true, "{redirected}");
     let shown = call(&h, &token, "get_app", json!({ "slug": "ledger" })).await;
     assert_eq!(
         shown["structuredContent"]["domains"][1],
-        "books.example.com"
+        json!({ "domain": "books.example.com", "job": "serve", "target": "web", "primary": false, "wildcard": false, "dns_provider_id": null })
     );
+    assert_eq!(
+        shown["structuredContent"]["domains"][2]["target"],
+        "ledger.example.com"
+    );
+    assert_eq!(shown["structuredContent"]["domains"][2]["job"], "redirect");
     let bad_domain = call(
         &h,
         &token,
