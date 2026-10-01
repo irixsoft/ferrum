@@ -46,7 +46,7 @@ import type {
   User,
   VersionInfo,
 } from "@/types/api";
-import type { DnsProvider, FerrumEvent, HelpTopic, PushDevice, PushPref, PushPrefs } from "@/types/api";
+import type { DnsProvider, FerrumEvent, HelpTopic, NewDnsProvider, PushDevice, PushPref, PushPrefs } from "@/types/api";
 
 export class ApiError extends Error {
   readonly status: number;
@@ -914,10 +914,18 @@ export function useTestPush() {
   return useInvalidating(keys.pushDevices, () => request<PushTried[]>("/push/test", { method: "POST" }));
 }
 
-/** A server without providers yet reads as an empty list rather than an error. */
 export function useDnsProviders() {
-  return useQuery({
-    queryKey: keys.dnsProviders,
-    queryFn: () => request<DnsProvider[]>("/dns-providers").catch((): DnsProvider[] => []),
-  });
+  return useQuery({ queryKey: keys.dnsProviders, queryFn: () => request<DnsProvider[]>("/dns-providers") });
+}
+
+export function useCreateDnsProvider() {
+  return useInvalidating(keys.dnsProviders, (provider: NewDnsProvider) =>
+    request<DnsProvider>("/dns-providers", body(provider)),
+  );
+}
+
+export function useRemoveDnsProvider() {
+  return useInvalidating(keys.dnsProviders, (id: string) =>
+    request<void>(`/dns-providers/${id}`, { method: "DELETE" }),
+  );
 }
