@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { Link } from "@tanstack/react-router";
 import { KeyRound, Plus } from "lucide-react";
 import {
   ApiError,
@@ -670,6 +671,11 @@ function About() {
             <a href={source} target="_blank" rel="noreferrer" className="text-accent hover:underline">
               github.com/irixsoft/ferrum
             </a>
+          </Row>
+          <Row label="Help">
+            <Link to="/help" className="text-accent hover:underline">
+              Conventions a repository follows to run here
+            </Link>
           </Row>
         </dl>
         <p className="text-[12.5px] text-ink-4 mt-4 leading-relaxed max-w-prose">
