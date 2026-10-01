@@ -167,7 +167,7 @@ export interface App {
   processes: Process[];
   routes: Route[];
   packages: string[];
-  domains: string[];
+  domains: Domain[];
   current_release_id: string | null;
   status: AppStatus;
   /** No deploy has ever gone live, so there is no unit to restart. */
@@ -246,7 +246,7 @@ export interface NewApp {
   processes: ProcessInput[];
   routes: RouteInput[];
   packages: string[];
-  domains: string[];
+  domains: DomainInput[];
   env: EnvVar[];
   env_hints: EnvHint[];
 }
