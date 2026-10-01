@@ -105,8 +105,8 @@ async fn a_fresh_install_knows_nothing_until_it_checks_and_then_shows_what_it_fo
     stage(
         &github,
         &downloads,
-        "v0.1.4",
-        "v0.1.4 (Security)",
+        "v0.2.4",
+        "v0.2.4 (Security)",
         "## What's Changed\n\nSecurity: session cookies could be replayed.\n",
         b"new ferrum",
         false,
@@ -114,12 +114,12 @@ async fn a_fresh_install_knows_nothing_until_it_checks_and_then_shows_what_it_fo
     let checked = h.post_with_cookie("/api/update/check", "", &cookie).await;
     assert_eq!(checked.status, StatusCode::OK, "{}", checked.json);
     let latest = &checked.json["latest"];
-    assert_eq!(latest["tag"], "v0.1.4");
-    assert_eq!(latest["version"], "0.1.4");
+    assert_eq!(latest["tag"], "v0.2.4");
+    assert_eq!(latest["version"], "0.2.4");
     assert_eq!(latest["security"], true);
     assert_eq!(
         latest["url"],
-        "https://github.com/irixsoft/ferrum/releases/tag/v0.1.4"
+        "https://github.com/irixsoft/ferrum/releases/tag/v0.2.4"
     );
     assert!(latest["notes"].as_str().unwrap().contains("replayed"));
     assert_eq!(latest["size_bytes"], 10);
@@ -135,7 +135,7 @@ async fn a_fresh_install_knows_nothing_until_it_checks_and_then_shows_what_it_fo
         "a check changes nothing on the box"
     );
 
-    let mut incomplete = release_json(&downloads.base, "v0.1.5", "v0.1.5", "", 10);
+    let mut incomplete = release_json(&downloads.base, "v0.2.5", "v0.2.5", "", 10);
     incomplete["assets"]
         .as_array_mut()
         .unwrap()
@@ -149,7 +149,7 @@ async fn a_fresh_install_knows_nothing_until_it_checks_and_then_shows_what_it_fo
     );
     let kept = h.get_with_cookie("/api/update", &cookie).await;
     assert_eq!(
-        kept.json["latest"]["tag"], "v0.1.4",
+        kept.json["latest"]["tag"], "v0.2.4",
         "a failed check keeps the last good answer"
     );
 
@@ -192,15 +192,15 @@ async fn nothing_newer_is_a_conflict_and_a_newer_release_is_installed_in_the_bac
     stage(
         &github,
         &downloads,
-        "v0.1.4",
-        "v0.1.4",
+        "v0.2.4",
+        "v0.2.4",
         "",
         b"new ferrum",
         false,
     );
     h.post_with_cookie("/api/update/check", "", &cookie).await;
     h.platform
-        .answer_self_check("ferrum 0.1.4 (build b, commit c)");
+        .answer_self_check("ferrum 0.2.4 (build b, commit c)");
     let accepted = h.post_with_cookie("/api/update", "", &cookie).await;
     assert_eq!(accepted.status, StatusCode::ACCEPTED, "{}", accepted.json);
     assert!(
@@ -233,7 +233,7 @@ async fn nothing_newer_is_a_conflict_and_a_newer_release_is_installed_in_the_bac
     assert_eq!(twice.status, StatusCode::CONFLICT, "{}", twice.json);
     assert_eq!(
         twice.json["error"],
-        "Ferrum v0.1.4 is installed and restarts in a moment."
+        "Ferrum v0.2.4 is installed and restarts in a moment."
     );
     assert_eq!(update_calls(&h).len(), 3);
 }
@@ -241,7 +241,7 @@ async fn nothing_newer_is_a_conflict_and_a_newer_release_is_installed_in_the_bac
 #[tokio::test]
 async fn a_tampered_signature_is_refused_and_a_good_release_can_follow() {
     let (h, cookie, github, downloads) = rig().await;
-    stage(&github, &downloads, "v0.1.4", "v0.1.4", "", b"forged", true);
+    stage(&github, &downloads, "v0.2.4", "v0.2.4", "", b"forged", true);
     h.post_with_cookie("/api/update/check", "", &cookie).await;
     let accepted = h.post_with_cookie("/api/update", "", &cookie).await;
     assert_eq!(accepted.status, StatusCode::ACCEPTED, "{}", accepted.json);
@@ -253,11 +253,11 @@ async fn a_tampered_signature_is_refused_and_a_good_release_can_follow() {
     assert!(!h.data_dir().join("update").exists());
 
     stage(
-        &github, &downloads, "v0.1.4", "v0.1.4", "", b"genuine", false,
+        &github, &downloads, "v0.2.4", "v0.2.4", "", b"genuine", false,
     );
     h.post_with_cookie("/api/update/check", "", &cookie).await;
     h.platform
-        .answer_self_check("ferrum 0.1.4 (build b, commit c)");
+        .answer_self_check("ferrum 0.2.4 (build b, commit c)");
     let accepted = h.post_with_cookie("/api/update", "", &cookie).await;
     assert_eq!(accepted.status, StatusCode::ACCEPTED, "{}", accepted.json);
     let done = settled(&h, &cookie).await;
