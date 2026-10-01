@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO dns_providers (id, name, kind, credentials) VALUES (?, ?, ?, ?)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 4
+    },
+    "nullable": []
+  },
+  "hash": "17fd6c53cc15a699f91171efe45cfb9abaffc151237c1a2d66cbfc90e8abce35"
+}

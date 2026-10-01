@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "DELETE FROM cert_attempts WHERE domain = ? AND renew_after IS NULL",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": []
+  },
+  "hash": "d4f1f140604f2a2d123862977287b97e7df97c1db915ecf379f6ae17a9082c44"
+}

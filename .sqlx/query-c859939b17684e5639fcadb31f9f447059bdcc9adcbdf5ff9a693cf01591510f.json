@@ -1,0 +1,20 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT domain FROM app_domains WHERE dns_provider_id = ? ORDER BY domain LIMIT 1",
+  "describe": {
+    "columns": [
+      {
+        "name": "domain",
+        "ordinal": 0,
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "c859939b17684e5639fcadb31f9f447059bdcc9adcbdf5ff9a693cf01591510f"
+}

@@ -1,0 +1,20 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT dns_provider_id FROM app_domains WHERE domain = ?",
+  "describe": {
+    "columns": [
+      {
+        "name": "dns_provider_id",
+        "ordinal": 0,
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      true
+    ]
+  },
+  "hash": "fd7898a5c1d0d3fd55616083e1373cde51f07c51e3c1d12fc812276deabd06d3"
+}

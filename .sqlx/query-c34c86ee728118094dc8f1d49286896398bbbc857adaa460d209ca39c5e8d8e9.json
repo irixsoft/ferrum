@@ -1,0 +1,26 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT kind, credentials FROM dns_providers WHERE id = ?",
+  "describe": {
+    "columns": [
+      {
+        "name": "kind",
+        "ordinal": 0,
+        "type_info": "Text"
+      },
+      {
+        "name": "credentials",
+        "ordinal": 1,
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "c34c86ee728118094dc8f1d49286896398bbbc857adaa460d209ca39c5e8d8e9"
+}

@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO cert_attempts (domain, attempts, renew_after) VALUES (?, 0, ?)\n         ON CONFLICT(domain) DO UPDATE SET renew_after = excluded.renew_after",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": []
+  },
+  "hash": "f025537ca18e821e895918c8b22c07f55307193a0d5c60966ea1691be8ecb408"
+}
