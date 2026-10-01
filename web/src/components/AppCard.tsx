@@ -4,20 +4,20 @@ import type { App } from "@/types/api";
 import { RuntimeMark } from "./RuntimeMark";
 import { StatusPill } from "./StatusPill";
 import { ago } from "@/lib/utils";
+import { limitsLine } from "@/lib/processes";
 
 export function AppCard({ app }: { app: App }) {
-  const primary = app.domains[0];
-  const isStatic = app.runtime === "static";
+  const primary = app.domains.find((d) => d.primary)?.domain;
 
   return (
     <Link
       to="/apps/$slug"
       params={{ slug: app.slug }}
-      className="group block bg-surface border border-line rounded-card p-4 hover:border-line-strong transition-colors duration-100"
+      className="group block min-w-0 bg-surface border border-line rounded-card p-4 hover:border-line-strong transition-colors duration-100"
     >
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
-          <h3 className="font-display text-[19px] text-ink leading-none">{app.name}</h3>
+          <h3 className="font-display text-[19px] text-ink leading-tight truncate">{app.name}</h3>
           <p className="mt-1.5 text-[13px] text-ink-3 truncate">{primary ?? "No domain yet"}</p>
         </div>
         <StatusPill status={app.status} neverLive={app.never_live} />
@@ -31,11 +31,7 @@ export function AppCard({ app }: { app: App }) {
         </span>
       </div>
 
-      <p className="mt-4 text-[12.5px] text-ink-4">
-        {isStatic
-          ? "Served by nginx from disk — no process, no memory limit."
-          : `Up to ${app.memory_mb} MB and ${app.cpu_percent}% CPU.`}
-      </p>
+      <p className="mt-4 text-[12.5px] text-ink-4">{limitsLine(app.processes, app.cpu_percent)}</p>
 
       <div className="mt-4 pt-3 border-t border-line flex items-center justify-between gap-2">
         <span className="text-[12.5px] text-ink-4 truncate">

@@ -2,6 +2,7 @@ use super::{
     ArchiveFormat, Commands, Detection, Health, Mirrors, PackageManager, Phase, Runtime,
     RuntimeKind, Source, Target, node, path_with, semver_like, version_prefix,
 };
+use crate::apps::processes::NewProcess;
 use crate::detect::RepoTree;
 use crate::github::Api;
 use anyhow::Context;
@@ -133,10 +134,9 @@ impl Runtime for Bun {
             commands: Commands {
                 install: Some(pm.install(true).to_string()),
                 build: has_build.then(|| pm.run("build")),
-                start,
                 migrate,
             },
-            output_dir: None,
+            processes: start.iter().map(|s| NewProcess::web(s, None)).collect(),
             health: Health::default(),
             package_manager: Some(pm),
         })
@@ -214,7 +214,7 @@ mod tests {
         let d = Bun.detect(&tree).unwrap();
         assert_eq!(d.confidence, 85);
         assert_eq!(d.version.as_deref(), Some("1.2.3"));
-        assert_eq!(d.commands.start.as_deref(), Some("bun run start"));
+        assert_eq!(d.start(), Some("bun run start"));
         assert!(d.commands.build.is_none());
         assert!(d.commands.migrate.is_none());
     }

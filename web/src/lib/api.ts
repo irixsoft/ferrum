@@ -10,6 +10,7 @@ import type {
   BuildLimits,
   BuildSettings,
   Database,
+  DatabaseRole,
   Deploy,
   DeployOutcome,
   Detected,
@@ -27,7 +28,9 @@ import type {
   MetricSeries,
   MintedToken,
   NewApp,
+  LabelChanges,
   NewDatabase,
+  NewRole,
   NginxFiles,
   PackageRemoval,
   PostgresStatus,
@@ -43,6 +46,7 @@ import type {
   User,
   VersionInfo,
 } from "@/types/api";
+import type { DnsProvider, FerrumEvent, HelpTopic, NewDnsProvider, PushDevice, PushPref, PushPrefs } from "@/types/api";
 
 export class ApiError extends Error {
   readonly status: number;
@@ -113,6 +117,14 @@ export const keys = {
   github: ["github"] as const,
   githubRepos: ["github", "repos"] as const,
   runtimes: ["runtimes"] as const,
+  events: ["events"] as const,
+  unread: ["events", "unread"] as const,
+  pushPrefs: ["push", "prefs"] as const,
+  pushDevices: ["push", "devices"] as const,
+  dnsProviders: ["dns-providers"] as const,
+  help: ["help"] as const,
+  helpTopic: (slug: string) => ["help", slug] as const,
+  roles: (name: string) => ["databases", name, "roles"] as const,
 };
 
 export function useMe(enabled = true) {
@@ -129,6 +141,23 @@ export function useVersion() {
   return useQuery({
     queryKey: keys.version,
     queryFn: () => request<VersionInfo>("/version"),
+    staleTime: Infinity,
+  });
+}
+
+export function useHelp() {
+  return useQuery({
+    queryKey: keys.help,
+    queryFn: () => request<HelpTopic[]>("/help"),
+    staleTime: Infinity,
+  });
+}
+
+export function useHelpTopic(slug: string | undefined) {
+  return useQuery({
+    queryKey: keys.helpTopic(slug ?? ""),
+    queryFn: () => request<HelpTopic>(`/help/${slug}`),
+    enabled: Boolean(slug),
     staleTime: Infinity,
   });
 }
@@ -239,10 +268,14 @@ export function useMetrics(scope: string, range: MetricRange) {
   });
 }
 
-export function useAppLogs(slug: string, source: LogSource, lines = 200, enabled = true) {
+const logQuery = (process: string | null, lines: number) =>
+  `lines=${lines}${process ? `&process=${encodeURIComponent(process)}` : ""}`;
+
+/** `process` names the command process whose journal the app log reads; nginx logs ignore it. */
+export function useAppLogs(slug: string, source: LogSource, process: string | null, lines = 200, enabled = true) {
   return useQuery({
-    queryKey: keys.logs(slug, source),
-    queryFn: () => request<AppLogLine[]>(`/apps/${slug}/logs?source=${source}&lines=${lines}`),
+    queryKey: [...keys.logs(slug, source), process] as const,
+    queryFn: () => request<AppLogLine[]>(`/apps/${slug}/logs?source=${source}&${logQuery(process, lines)}`),
     enabled,
   });
 }
@@ -465,6 +498,45 @@ export function useEnableExtension() {
   );
 }
 
+export function useRoles(name: string) {
+  return useQuery({
+    queryKey: keys.roles(name),
+    queryFn: () => request<DatabaseRole[]>(`/databases/${name}/roles`),
+  });
+}
+
+export function useCreateRole(name: string) {
+  return useInvalidating([keys.databases, keys.apps], (role: NewRole) =>
+    request<DatabaseRole>(`/databases/${name}/roles`, body(role)),
+  );
+}
+
+export function useRemoveRole(name: string) {
+  return useInvalidating([keys.databases, keys.apps], (role: string) =>
+    request<void>(`/databases/${name}/roles/${role}`, { method: "DELETE" }),
+  );
+}
+
+export function useRotateRole(name: string) {
+  return useInvalidating(keys.roles(name), (role: string) =>
+    request<DatabaseRole>(`/databases/${name}/roles/${role}/rotate`, { method: "POST" }),
+  );
+}
+
+/** Only a signed-in session gets an answer; an API token is refused. */
+export function useRoleUrl(name: string) {
+  return useMutation({
+    mutationFn: (role: string) =>
+      request<{ url: string }>(`/databases/${name}/roles/${role}/url`, { method: "POST" }),
+  });
+}
+
+export function useSetLabels(slug: string) {
+  return useInvalidating([keys.apps, keys.databases], (changes: LabelChanges) =>
+    request<void>(`/apps/${slug}/labels`, body(changes, "PATCH")),
+  );
+}
+
 export function useLinkDatabase(slug: string) {
   return useInvalidating([keys.apps, keys.databases], (name: string) =>
     request<void>(`/apps/${slug}/databases/${name}`, { method: "POST" }),
@@ -534,8 +606,8 @@ export function useRetryCertificate(slug: string) {
 }
 
 export function useRestartApp(slug: string) {
-  return useInvalidating([keys.apps, keys.app(slug)], () =>
-    request<void>(`/apps/${slug}/restart`, { method: "POST" }),
+  return useInvalidating([keys.apps, keys.app(slug)], (process?: string) =>
+    request<void>(`/apps/${slug}/restart`, process ? body({ process }) : { method: "POST" }),
   );
 }
 
@@ -573,6 +645,12 @@ export function useDisablePasswords() {
 export function useSetBuildLimits() {
   return useInvalidating(keys.builds, (limits: BuildLimits) =>
     request<BuildSettings>("/settings/builds", body(limits, "PUT")),
+  );
+}
+
+export function useSetTunnelUser() {
+  return useInvalidating(keys.postgres, (user: string) =>
+    request<void>("/settings/tunnel-user", body({ user }, "PUT")),
   );
 }
 
@@ -683,12 +761,13 @@ export async function followCommandLog(
 /** The last lines, then live ones from journald; ends only when `signal` aborts. */
 export async function followAppLog(
   slug: string,
+  process: string | null,
   lines: number,
   onLine: (line: AppLogLine) => void,
   signal?: AbortSignal,
 ): Promise<void> {
   await readFrames(
-    `/apps/${slug}/logs?follow=1&lines=${lines}`,
+    `/apps/${slug}/logs?follow=1&${logQuery(process, lines)}`,
     (event, data) => {
       if (event === "line") onLine(JSON.parse(data) as AppLogLine);
     },
@@ -776,4 +855,77 @@ export function useSignOut() {
     mutationFn: () => request<void>("/auth/logout", { method: "POST" }),
     onSuccess: () => client.clear(),
   });
+}
+
+export function useEvents(unreadOnly = false) {
+  return useQuery({
+    queryKey: [...keys.events, "list", unreadOnly] as const,
+    queryFn: () => request<FerrumEvent[]>(`/events?limit=50${unreadOnly ? "&unread=1" : ""}`),
+  });
+}
+
+export function useUnreadCount() {
+  return useQuery({
+    queryKey: keys.unread,
+    queryFn: () => request<{ count: number }>("/events/unread"),
+    refetchInterval: 15_000,
+  });
+}
+
+export function useMarkRead() {
+  return useInvalidating(keys.events, (which: { ids: string[] } | { all: true }) =>
+    request<void>("/events/read", body(which)),
+  );
+}
+
+export function usePushPrefs() {
+  return useQuery({ queryKey: keys.pushPrefs, queryFn: () => request<PushPrefs>("/push/prefs") });
+}
+
+export function useSetPushPref() {
+  return useInvalidating(keys.pushPrefs, (change: Partial<Record<PushPref, boolean>>) =>
+    request<PushPrefs>("/push/prefs", body(change, "PUT")),
+  );
+}
+
+export function usePushDevices() {
+  return useQuery({ queryKey: keys.pushDevices, queryFn: () => request<PushDevice[]>("/push/devices") });
+}
+
+export function useRegisterDevice() {
+  return useInvalidating(keys.pushDevices, (subscription: PushSubscriptionJSON) =>
+    request<PushDevice>("/push/devices", body(subscription)),
+  );
+}
+
+export function useUnregisterDevice() {
+  return useInvalidating(keys.pushDevices, (endpoint: string) =>
+    request<void>("/push/devices", body({ endpoint }, "DELETE")),
+  );
+}
+
+export interface PushTried {
+  id: string;
+  result: "delivered" | "gone" | "rejected" | "failed";
+  status: number | null;
+}
+
+export function useTestPush() {
+  return useInvalidating(keys.pushDevices, () => request<PushTried[]>("/push/test", { method: "POST" }));
+}
+
+export function useDnsProviders() {
+  return useQuery({ queryKey: keys.dnsProviders, queryFn: () => request<DnsProvider[]>("/dns-providers") });
+}
+
+export function useCreateDnsProvider() {
+  return useInvalidating(keys.dnsProviders, (provider: NewDnsProvider) =>
+    request<DnsProvider>("/dns-providers", body(provider)),
+  );
+}
+
+export function useRemoveDnsProvider() {
+  return useInvalidating(keys.dnsProviders, (id: string) =>
+    request<void>(`/dns-providers/${id}`, { method: "DELETE" }),
+  );
 }

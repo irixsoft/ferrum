@@ -4,7 +4,7 @@ use crate::server::AppState;
 use axum::extract::{Path, State as Extract};
 use axum::http::StatusCode;
 use axum::{Json, Router, routing::get};
-use ferrum_core::apps::unit::unit_name;
+use ferrum_core::apps::domains::{self, DomainChange, NewDomain};
 use ferrum_core::apps::{self, App, AppChanges, AppError, NewApp, env, packages, provision};
 use ferrum_core::deploy::{self, Outcome, maintenance, releases};
 use ferrum_core::detect::{self, DetectError, Detected};
@@ -20,6 +20,7 @@ pub fn router() -> Router<AppState> {
         .route("/api/apps/detect", axum::routing::post(inspect))
         .route("/api/apps/{slug}", get(show).patch(update).delete(remove))
         .route("/api/apps/{slug}/env", axum::routing::put(set_env))
+        .route("/api/apps/{slug}/labels", axum::routing::patch(set_labels))
         .route("/api/apps/{slug}/packages", get(package_removal))
         .route(
             "/api/apps/{slug}/databases/{name}",
@@ -34,6 +35,11 @@ pub fn router() -> Router<AppState> {
             axum::routing::post(retry_certificates),
         )
         .route("/api/apps/{slug}/restart", axum::routing::post(restart))
+        .route("/api/apps/{slug}/domains", axum::routing::post(add_domain))
+        .route(
+            "/api/apps/{slug}/domains/{domain}",
+            axum::routing::patch(change_domain).delete(remove_domain),
+        )
 }
 
 const RESTART_WHILE_DEPLOYING: &str =
@@ -62,11 +68,25 @@ async fn status_of(state: &AppState, app: &App) -> anyhow::Result<&'static str> 
             .is_some_and(|d| d.outcome == Some(Outcome::Failed));
         return Ok(if failed { "failed" } else { "new" });
     }
-    if !app.runtime.has_process() || state.platform.service_is_active(&unit_name(&app.slug)) {
-        Ok("live")
-    } else {
-        Ok("stopped")
-    }
+    let all_up = app
+        .command_processes()
+        .all(|p| state.platform.service_is_active(&p.unit_name(&app.slug)));
+    Ok(if all_up { "live" } else { "stopped" })
+}
+
+#[derive(Serialize)]
+pub(crate) struct ProcessStatus {
+    #[serde(flatten)]
+    process: apps::processes::Process,
+    active: bool,
+    memory_bytes: Option<u64>,
+    memory_peak_bytes: Option<u64>,
+}
+
+#[derive(Deserialize, Default)]
+#[serde(default)]
+struct RestartRequest {
+    process: Option<String>,
 }
 
 #[derive(Deserialize, Default)]
@@ -184,19 +204,38 @@ pub(crate) async fn detail(app: &AppState, found: &App) -> anyhow::Result<serde_
     let entries = env::entries(&app.db, &found.id).await?;
     let databases = postgres::names_for(&app.db, &found.id).await?;
     let instance = redis::for_app(&app.db, &found.id).await?;
-    let managed = env::managed_for(&app.db, found).await?.keys();
+    let managed = env::managed_for(&app.db, found).await?;
     let current = match &found.current_release_id {
         Some(id) => releases::by_id(&app.db, id).await?,
         None => None,
     };
     let status = status_of(app, found).await?;
     let certificates = certs::statuses(&app.db, app.platform.as_ref(), found).await?;
-    let resources = if found.runtime.has_process() {
-        app.platform.cgroup_stats(&unit_name(&found.slug))?
-    } else {
-        None
-    };
-    let cpu_pct = match resources {
+    let mut processes = Vec::with_capacity(found.processes.len());
+    let mut memory = None;
+    let mut peak = None;
+    for process in &found.processes {
+        let (active, stats) = if process.is_command() {
+            let unit = process.unit_name(&found.slug);
+            (
+                app.platform.service_is_active(&unit),
+                app.platform.cgroup_stats(&unit)?,
+            )
+        } else {
+            (false, None)
+        };
+        if let Some(s) = &stats {
+            memory = Some(memory.unwrap_or(0) + s.memory_current);
+            peak = Some(peak.unwrap_or(0) + s.memory_peak);
+        }
+        processes.push(ProcessStatus {
+            process: process.clone(),
+            active,
+            memory_bytes: stats.as_ref().map(|s| s.memory_current),
+            memory_peak_bytes: stats.as_ref().map(|s| s.memory_peak),
+        });
+    }
+    let cpu_pct = match memory {
         Some(_) => Some(
             metrics::latest(&app.db, &found.id)
                 .await?
@@ -206,8 +245,9 @@ pub(crate) async fn detail(app: &AppState, found: &App) -> anyhow::Result<serde_
         None => None,
     };
     let mut value = serde_json::to_value(found)?;
-    value["memory_bytes"] = resources.map(|s| s.memory_current).into();
-    value["memory_peak_bytes"] = resources.map(|s| s.memory_peak).into();
+    value["processes"] = serde_json::to_value(processes)?;
+    value["memory_bytes"] = memory.into();
+    value["memory_peak_bytes"] = peak.into();
     value["cpu_pct"] = cpu_pct.into();
     value["env"] = serde_json::to_value(entries)?;
     value["deployed"] = serde_json::Value::Bool(current.is_some());
@@ -217,7 +257,8 @@ pub(crate) async fn detail(app: &AppState, found: &App) -> anyhow::Result<serde_
     value["certificates"] = serde_json::to_value(certificates)?;
     value["databases"] = serde_json::to_value(databases)?;
     value["redis"] = serde_json::to_value(instance)?;
-    value["managed"] = serde_json::to_value(managed)?;
+    value["managed"] = serde_json::to_value(managed.keys())?;
+    value["managed_vars"] = serde_json::to_value(managed.labels())?;
     Ok(value)
 }
 
@@ -237,20 +278,92 @@ async fn retry_certificates(
     Ok(StatusCode::ACCEPTED)
 }
 
+async fn add_domain(
+    Extract(app): Extract<AppState>,
+    _: Caller,
+    Path(slug): Path<String>,
+    Json(new): Json<NewDomain>,
+) -> ApiResult<Json<App>> {
+    let found = find(&app, &slug).await?;
+    let list = domains::put(&found.domains, new);
+    Ok(Json(apply_domains(&app, &slug, list).await?))
+}
+
+async fn change_domain(
+    Extract(app): Extract<AppState>,
+    _: Caller,
+    Path((slug, domain)): Path<(String, String)>,
+    Json(change): Json<DomainChange>,
+) -> ApiResult<Json<App>> {
+    let found = find(&app, &slug).await?;
+    let list = domains::change(&found.domains, &domain, change).map_err(|e| app_error(e.into()))?;
+    Ok(Json(apply_domains(&app, &slug, list).await?))
+}
+
+async fn remove_domain(
+    Extract(app): Extract<AppState>,
+    _: Caller,
+    Path((slug, domain)): Path<(String, String)>,
+) -> ApiResult<Json<App>> {
+    let found = find(&app, &slug).await?;
+    let list = domains::remove(&found.domains, &domain).map_err(|e| app_error(e.into()))?;
+    Ok(Json(apply_domains(&app, &slug, list).await?))
+}
+
+pub(crate) async fn apply_domains(
+    app: &AppState,
+    slug: &str,
+    list: Vec<NewDomain>,
+) -> ApiResult<App> {
+    let changes = AppChanges {
+        domains: Some(list),
+        ..AppChanges::default()
+    };
+    apply(app, slug, changes).await
+}
+
 async fn restart(
     Extract(app): Extract<AppState>,
     _: Caller,
     Path(slug): Path<String>,
+    body: String,
 ) -> ApiResult<StatusCode> {
     let found = find(&app, &slug).await?;
-    restart_unit(&app, &found).await?;
+    let request: RestartRequest = if body.trim().is_empty() {
+        RestartRequest::default()
+    } else {
+        serde_json::from_str(&body).map_err(|e| ApiError::bad_request(e.to_string()))?
+    };
+    restart_unit(&app, &found, request.process.as_deref()).await?;
     Ok(StatusCode::ACCEPTED)
 }
 
-pub(crate) async fn restart_unit(app: &AppState, found: &App) -> ApiResult<()> {
-    if !found.runtime.has_process() {
+/// Restarts one named process, or every process when none is named.
+pub(crate) async fn restart_unit(
+    app: &AppState,
+    found: &App,
+    process: Option<&str>,
+) -> ApiResult<()> {
+    let targets: Vec<&apps::processes::Process> = match process {
+        Some(name) => match found.process(name) {
+            Some(p) if p.is_command() => vec![p],
+            Some(_) => {
+                return Err(ApiError::bad_request(format!(
+                    "{name} is a folder and has nothing to restart."
+                )));
+            }
+            None => {
+                return Err(ApiError::not_found(format!(
+                    "{} has no process named {name}.",
+                    found.slug
+                )));
+            }
+        },
+        None => found.command_processes().collect(),
+    };
+    if targets.is_empty() {
         return Err(ApiError::bad_request(
-            "A static site has no process to restart.",
+            "This application only serves folders and has nothing to restart.",
         ));
     }
     if deploy::running_for(&app.db, &found.id).await?.is_some() {
@@ -262,9 +375,11 @@ pub(crate) async fn restart_unit(app: &AppState, found: &App) -> ApiResult<()> {
             found.slug
         )));
     }
-    app.platform
-        .service(ServiceAction::Restart, &unit_name(&found.slug))
-        .map_err(|e| ApiError::bad_request(format!("The host refused the restart: {e}")))?;
+    for target in targets {
+        app.platform
+            .service(ServiceAction::Restart, &target.unit_name(&found.slug))
+            .map_err(|e| ApiError::bad_request(format!("The host refused the restart: {e}")))?;
+    }
     Ok(())
 }
 
@@ -280,9 +395,26 @@ async fn link_database(
     Path((slug, name)): Path<(String, String)>,
 ) -> ApiResult<StatusCode> {
     let found = find(&app, &slug).await?;
-    postgres::link(&app.db, &found.id, &name)
+    postgres::link_with_labels(&app.db, app.platform.as_ref(), &found, &name, None)
         .await
         .map_err(crate::routes::databases::db_error)?;
+    provision::write_env(&app.db, app.platform.as_ref(), &found).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn set_labels(
+    Extract(app): Extract<AppState>,
+    _: Caller,
+    Path(slug): Path<String>,
+    Json(changes): Json<env::LabelChanges>,
+) -> ApiResult<StatusCode> {
+    let found = find(&app, &slug).await?;
+    env::set_labels(&app.db, &found, &changes)
+        .await
+        .map_err(crate::routes::databases::db_error)?;
+    for name in postgres::names_for(&app.db, &found.id).await? {
+        crate::routes::databases::rewrite_linked(&app, &name).await?;
+    }
     provision::write_env(&app.db, app.platform.as_ref(), &found).await?;
     Ok(StatusCode::NO_CONTENT)
 }
@@ -469,7 +601,9 @@ pub(crate) async fn replace_env(
 fn app_error(e: anyhow::Error) -> ApiError {
     match e.downcast_ref::<AppError>() {
         Some(AppError::SlugTaken(_)) => ApiError::conflict(e.to_string()),
-        Some(AppError::NotFound) => ApiError::not_found(e.to_string()),
+        Some(AppError::NotFound) | Some(AppError::DomainNotFound(_)) => {
+            ApiError::not_found(e.to_string())
+        }
         Some(AppError::Invalid(_)) | Some(AppError::NoProcess) => {
             ApiError::bad_request(e.to_string())
         }

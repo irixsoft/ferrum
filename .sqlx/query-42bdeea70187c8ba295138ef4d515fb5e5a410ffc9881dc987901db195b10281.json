@@ -1,0 +1,20 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT app_id AS \"app_id!\" FROM app_databases WHERE database_id = ?",
+  "describe": {
+    "columns": [
+      {
+        "name": "app_id!",
+        "ordinal": 0,
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "42bdeea70187c8ba295138ef4d515fb5e5a410ffc9881dc987901db195b10281"
+}

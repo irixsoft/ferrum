@@ -1,0 +1,26 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT name AS \"name!\", memory_mb AS \"memory_mb!\" FROM app_processes WHERE app_id = ?",
+  "describe": {
+    "columns": [
+      {
+        "name": "name!",
+        "ordinal": 0,
+        "type_info": "Text"
+      },
+      {
+        "name": "memory_mb!",
+        "ordinal": 1,
+        "type_info": "Integer"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "d5589659feb84f2cb1b5e06b096f5a71ccf5a4c7d2a593fd03e441e49e4fb598"
+}

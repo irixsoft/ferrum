@@ -192,13 +192,13 @@ mod tests {
             Store::at("/var/lib/ferrum/runtimes"),
         );
         ctx.health_interval = Duration::from_millis(20);
+        ctx.settle = Duration::from_millis(30);
         ctx
     }
 
     async fn provisioned(state: &State, platform: &FakePlatform, slug: &str) -> App {
         let mut new = new_app(slug, &[("/", "main", false)]);
-        new.runtime = crate::runtime::RuntimeKind::Static;
-        new.output_dir = Some("dist".into());
+        new.processes = vec![crate::apps::processes::NewProcess::folder("web", "dist")];
         let app = apps::create(state, new).await.unwrap();
         crate::apps::provision::provision(state, platform, &app)
             .await

@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { Link } from "@tanstack/react-router";
 import { KeyRound, Plus } from "lucide-react";
 import {
   ApiError,
@@ -8,11 +9,13 @@ import {
   useCreateUser,
   useEnrollmentLink,
   useHost,
+  usePostgres,
   useRevokeSession,
   useRevokeToken,
   useSessions,
   useSetAutoUpdate,
   useSetBuildLimits,
+  useSetTunnelUser,
   useTokens,
   useUpdate,
   useUsers,
@@ -39,6 +42,8 @@ import { Row } from "@/components/ui/Row";
 import { Segmented } from "@/components/ui/Segmented";
 import { Tabs } from "@/components/ui/Tabs";
 import { GithubCard } from "@/features/settings/GithubCard";
+import { DnsProvidersCard } from "@/features/settings/DnsProvidersCard";
+import { NotificationsCard } from "@/features/settings/NotificationsCard";
 import { ago } from "@/lib/utils";
 
 type Tab = "people" | "tokens" | "connections" | "builds" | "appearance" | "about";
@@ -84,6 +89,7 @@ export function SettingsPage() {
       {tab === "about" && (
         <div className="grid gap-4">
           <Updates />
+          <NotificationsCard />
           <About />
         </div>
       )}
@@ -122,14 +128,14 @@ function People() {
         />
         <CardBody className="pb-3">
           {inviting ? (
-            <div className="flex gap-2 mb-4">
+            <div className="flex gap-2 mb-4 flex-wrap">
               <input
                 autoFocus
                 value={name}
                 onChange={(e) => setName(e.target.value)}
                 onKeyDown={(e) => e.key === "Enter" && invite()}
                 placeholder="Their name"
-                className="flex-1 h-9 px-3 bg-inset border border-line-strong rounded-control text-sm text-ink placeholder:text-ink-4"
+                className="flex-1 min-w-[160px] h-9 px-3 bg-inset border border-line-strong rounded-control text-sm text-ink placeholder:text-ink-4"
               />
               <Button variant="primary" onClick={invite} disabled={createUser.isPending}>
                 Create link
@@ -371,22 +377,71 @@ function ConnectAgent({ token }: { token: string | null }) {
 
 function Connections({ onTokens }: { onTokens: () => void }) {
   return (
-    <div className="grid gap-4 lg:grid-cols-2">
+    <div className="grid gap-4 lg:grid-cols-2 lg:items-start">
       <GithubCard />
 
-      <Card>
-        <CardHeader title="Your agent" hint="Ferrum is an MCP server; any agent with a token can drive it" />
-        <CardBody>
-          <p className="text-[13.5px] text-ink-2 leading-relaxed max-w-prose">
-            Create an API token and paste the snippet from{" "}
-            <button type="button" onClick={onTokens} className="text-accent hover:underline">
-              Connect your agent
-            </button>{" "}
-            under API tokens.
-          </p>
-        </CardBody>
-      </Card>
+      <div className="grid gap-4 min-w-0">
+        <Card>
+          <CardHeader title="Your agent" hint="Ferrum is an MCP server; any agent with a token can drive it" />
+          <CardBody>
+            <p className="text-[13.5px] text-ink-2 leading-relaxed max-w-prose">
+              Create an API token and paste the snippet from{" "}
+              <button type="button" onClick={onTokens} className="text-accent hover:underline">
+                Connect your agent
+              </button>{" "}
+              under API tokens.
+            </p>
+          </CardBody>
+        </Card>
+
+        <DnsProvidersCard />
+        <YourBox />
+      </div>
     </div>
+  );
+}
+
+function YourBox() {
+  const { data: postgres } = usePostgres();
+  const save = useSetTunnelUser();
+  const [user, setUser] = useState<string | null>(null);
+  const saved = postgres?.tunnel_user ?? "";
+  const value = user ?? saved;
+  const dirty = value.trim() !== saved;
+
+  return (
+    <Card>
+      <CardHeader title="Your box" hint="How you reach this server over SSH" />
+      <CardBody>
+        <label className="block text-[13px] text-ink-3 mb-1.5" htmlFor="tunnel-user">
+          SSH login for tunnels
+        </label>
+        <div className="flex items-center gap-2 flex-wrap">
+          <input
+            id="tunnel-user"
+            value={value}
+            onChange={(e) => setUser(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && dirty && save.mutate(value.trim())}
+            placeholder="ubuntu"
+            autoCapitalize="none"
+            autoCorrect="off"
+            spellCheck={false}
+            className="flex-1 min-w-0 basis-40 sm:max-w-72 h-9 px-3 bg-inset border border-line-strong rounded-control font-mono text-[13px] text-ink placeholder:text-ink-4"
+          />
+          <Button variant="primary" disabled={!dirty || save.isPending} onClick={() => save.mutate(value.trim())}>
+            Save
+          </Button>
+        </div>
+        {save.error ? <p className="text-[12.5px] text-fail mt-2">{message(save.error)}</p> : null}
+        {save.isSuccess && !dirty ? <p className="text-[12.5px] text-ok mt-2">Saved.</p> : null}
+      </CardBody>
+      <CardFoot>
+        <span>
+          This only changes the tunnel command shown on the Databases page. SSH access itself is
+          set up on the server.
+        </span>
+      </CardFoot>
+    </Card>
   );
 }
 
@@ -464,7 +519,7 @@ function Limit({
         min={min}
         max={max}
         onChange={onChange}
-        className="w-28 h-9 px-3 bg-inset border border-line-strong rounded-control font-mono text-sm text-ink text-right tnum"
+        className="w-24 sm:w-28 h-9 px-3 bg-inset border border-line-strong rounded-control font-mono text-sm text-ink text-right tnum"
       />
       <span className="text-[12.5px] text-ink-4 w-6">{unit}</span>
     </span>
@@ -618,6 +673,11 @@ function About() {
             <a href={source} target="_blank" rel="noreferrer" className="text-accent hover:underline">
               github.com/irixsoft/ferrum
             </a>
+          </Row>
+          <Row label="Help">
+            <Link to="/help" className="text-accent hover:underline">
+              Conventions a repository follows to run here
+            </Link>
           </Row>
         </dl>
         <p className="text-[12.5px] text-ink-4 mt-4 leading-relaxed max-w-prose">

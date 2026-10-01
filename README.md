@@ -12,14 +12,14 @@ GitHub → build → nginx → certificate → PostgreSQL → Redis — no glue,
 [![Platform: Ubuntu](https://img.shields.io/badge/Ubuntu-22.04%20%7C%2024.04%20·%20x86__64%20%7C%20arm64-lightgrey.svg)](https://github.com/irixsoft/ferrum/releases)
 [![Release](https://img.shields.io/github/v/release/irixsoft/ferrum)](https://github.com/irixsoft/ferrum/releases)
 
-[Install](#install) · [The panel](#the-panel) · [Features](#features) · [CLI](#cli-reference)
+[Install](#install) · [What a repository needs](#what-a-repository-needs) · [What you get](#what-you-get) · [CLI](#cli-reference)
 
 </div>
 
 ---
 
 A VPS is cheap. Running an app on it is not: nginx, a certificate that renews, a systemd unit
-per app, a database with a role that is not `postgres`, a firewall, a way to deploy without
+per process, a database with a role that is not `postgres`, a firewall, a way to deploy without
 SSHing in at midnight. Every one of those is a thing to learn, configure and keep alive.
 
 Ferrum is all of it in a single Rust binary. You run one install command on a fresh Ubuntu
@@ -52,7 +52,7 @@ in.
 To install a specific release instead of the latest, pass `FERRUM_VERSION`:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/irixsoft/ferrum/main/install.sh | sudo FERRUM_VERSION=v0.1.0 sh
+curl -fsSL https://raw.githubusercontent.com/irixsoft/ferrum/main/install.sh | sudo FERRUM_VERSION=v0.2.0 sh
 ```
 
 ### Before you start
@@ -68,93 +68,51 @@ Everything else is installed when you first need it: PostgreSQL the first time y
 database, Redis the first time an app asks for one, the firewall and fail2ban when you enable
 them on the System page.
 
-## The panel
+## What a repository needs
 
-Ferrum's panel is a web app that installs to a phone home screen or a desktop dock. You sign in
-with a passkey; there are no passwords.
+Nothing, for the common case: Ferrum reads `package.json` or the `.csproj`, works out the
+runtime, the install, build and start commands, the migration script and the variables the
+code reads, and prefills the form. Beyond that:
 
-**Apps**
+- Listen on `PORT` and `HOST` from the environment; `HOST` is always `127.0.0.1`.
+- A `ferrum.toml` at the root names the app's processes, their paths, its commands and the
+  variable names it reads its database under. Ferrum reads it on every deploy. A `Procfile`
+  works too.
+- An `Aptfile` lists the Ubuntu packages the app needs.
+- Push a tag to deploy it.
 
-- **Deploy from GitHub.** Connect your account, or an organisation, as a private GitHub App.
-  Pick a repository and a tag, and Ferrum inspects the code: it detects the runtime, the
-  install, build and start commands, the migration script, the port, and the environment
-  variables the code reads. Every field is prefilled and editable.
-- **Every tag you push deploys.** Tag a commit, and Ferrum clones, installs, builds, runs the
-  migration with the app paused, swaps the release in behind nginx, and checks the health
-  endpoint before it counts as live. Rolling back is one click, and can restore the database
-  snapshot the deploy took first.
-- **Node, Bun, .NET and static sites.** Toolchains are installed per version and shared between
-  apps. A Bun app builds and runs on Bun, with nothing else installed.
-- **Environment variables** with a file import: pick your `.env` and the rows fill in.
-  Nothing leaves your browser until you click Save.
-- **Domains and certificates.** Add a domain, and nginx and Let's Encrypt are configured for
-  it. Certificates renew on their own.
-- **Logs, resources and nginx** per app: the process log, access and error logs, memory and
-  CPU over time, and the generated nginx configuration with room for your own directives.
+Every convention is explained, with examples, under **Help** in the panel, and your AI agent
+can read the same pages through Ferrum's MCP server.
 
-**Databases**
+## What you get
 
-- **PostgreSQL** is installed on first use and pinned to that major version.
-- Every database gets **its own role and password**, injected into the linked app as
-  `DATABASE_URL`, and no other role can connect to it.
-- **Create a database from a dump.** Upload what `pg_dump` wrote, from any PostgreSQL host.
-  Ferrum turns on the extensions the dump needs, then loads it, and every table ends up owned
-  by the app's role.
-- **Extensions**: anything the server offers, including pgvector, searchable from the form.
-- **Redis** per app, password protected, with a memory limit and persistence.
+**Apps.** One app can be several processes from one build: a web server, a realtime server, a
+worker, a bot, a folder of built files served by nginx. Each gets its own systemd unit, port,
+log, memory limit and health check, and they deploy and roll back together. Node, Bun and .NET
+toolchains install per version, private to Ferrum.
 
-**System**
+**Deploys.** Every tag you push is cloned, built, migrated with a database snapshot taken first,
+checked for health per process, and swapped in behind nginx. A tag that would break the app is
+refused before anything is switched, and rolling back is one click.
 
-- **Firewall** with ufw, keeping SSH, 80 and 443 open, and only those.
-- **fail2ban** for SSH and nginx.
-- **Security updates** installed automatically.
-- **SSH hardening**: see the keys installed, then turn password login off.
+**Domains.** Each name serves a process or redirects to another name; several names can share a
+process, and a wildcard covers every subdomain. One Let's Encrypt certificate per name,
+renewed when the CA says to; wildcards through a Cloudflare or Route 53 token.
 
-**Settings**
+**Databases.** PostgreSQL installed on first use. Every database has an owner and can have
+restricted roles for code that must not bypass row-level security. Create blank or from a
+`pg_dump`, any extension the server offers, connect from your machine through the tunnel the
+panel shows you. Redis per app.
 
-- **People and passkeys**, with a link to hand a new person for their first passkey.
-- **API tokens** for the CLI and for agents.
-- **Your agent.** Ferrum is an MCP server. Give your AI agent a token, and it can deploy, read
-  logs, create databases and check the host, with a read-only token when that is all it should
-  do.
-- **Updates.** Ferrum checks for a new release daily and shows a banner. Install it with one
-  click, or turn automatic updates on. Every update is signature-verified before it replaces
-  the running binary, and the previous one is kept.
+**Host.** ufw, fail2ban, unattended security updates and SSH key-only login, each one click.
+nginx faces the network; the daemon listens on `127.0.0.1` only.
 
-Press `⌘K` anywhere for the command palette.
+**Notifications.** The panel installs to a phone, and tells you when a deploy was refused or
+went live, when something broke on its own, and when an update is waiting.
 
-## Features
-
-**Deploy**
-
-- One private GitHub App per account or organisation, read-only, created from the panel
-- Deploys on every pushed tag; manual deploy of any tag, branch or commit from the CLI
-- Runtime detection for Node, Bun, .NET and static sites, with editable results
-- Per-app system user, systemd unit, resource limits and health check
-- Migration step with the app paused and a database snapshot taken first
-- Instant rollback to any kept release
-
-**Data**
-
-- PostgreSQL, one role and password per database, connection limits per role
-- Create blank, or create from a `pg_dump` in custom or plain SQL format
-- Any extension the server offers; pgvector's package ships with the server
-- Redis per app with AOF persistence and `noeviction`
-
-**Host**
-
-- nginx in front of everything; the daemon itself listens on `127.0.0.1` only
-- Let's Encrypt certificates issued and renewed for the panel and every app domain
-- ufw, fail2ban, unattended security updates and SSH key-only login, each one click
-- Swap created at setup when the machine needs it
-
-**Operations**
-
-- Signed releases: the installer and the updater verify an Ed25519 signature before anything
-  runs
-- Self-updating from the panel or `ferrum update`, previous binary kept at
-  `/usr/local/bin/ferrum.prev`
-- A CLI that talks to the running daemon with a token, and an MCP server for your agent
+**Operations.** Signed releases verified before anything runs; self-updating from the panel or
+the CLI with the previous binary kept; a CLI and an MCP server for your agent, with read-only
+tokens when that is all it should do. Press `⌘K` anywhere for the command palette.
 
 ## CLI reference
 
@@ -167,7 +125,7 @@ Press `⌘K` anywhere for the command palette.
 | `ferrum deploy <app>` | Queues a deploy and follows its log. `--ref` picks a tag, branch or commit. |
 | `ferrum status` | Prints the host card the Dashboard shows. |
 | `ferrum logs <app>` | Prints an app's log. `--follow` streams it, `--source` picks app, access or error. |
-| `ferrum restart <app>` | Restarts an app's unit and prints its status. |
+| `ferrum restart <app>` | Restarts an app's processes and prints their status. |
 | `ferrum rollback <app>` | Rolls back to the previous release. `--to` picks one, `--restore` brings the database snapshot with it. |
 | `ferrum update` | Installs the latest release. `--check` only reports whether there is one. |
 | `ferrum version` | Prints the version, build id and commit this binary was built from. |
@@ -194,12 +152,13 @@ ferrum/
 │  ├─ ferrum-core/      # deploys, apps, databases, certificates, host state
 │  └─ ferrum-platform/  # everything that touches Ubuntu, behind one trait
 ├─ web/                 # the panel (React, Vite, Tailwind), embedded in the binary
+├─ help/                # the Help topics, embedded in the binary
 ├─ packaging/           # systemd unit, nginx templates, the release signing public key
 └─ install.sh           # the install command above
 ```
 
-The panel is compiled and embedded, so a running Ferrum has no static files to serve or keep
-in sync.
+The panel and the help are compiled in, so a running Ferrum has no static files to serve or
+keep in sync.
 
 ## Who it's for
 
@@ -211,7 +170,7 @@ It is not aimed at fleets, multi-tenant hosting or anything spanning more than o
 
 ## Status
 
-0.1.0 is the first stable release. Static Linux binaries for x86_64 and arm64 ship on the
+Static Linux binaries for x86_64 and arm64 ship on the
 [releases page](https://github.com/irixsoft/ferrum/releases), and the installer always fetches
 the latest.
 

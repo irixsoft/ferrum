@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE apps SET name = ?, git_ref = ?, root = ?, runtime = ?, toolchain = ?,\n                         runtime_version = ?, install_cmd = ?, build_cmd = ?, migrate_cmd = ?,\n                         startup_budget_secs = ?, cpu_percent = ?, pause_for_migrations = ?,\n                         follow_repo_file = ?, updated_at = datetime('now')\n         WHERE id = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 14
+    },
+    "nullable": []
+  },
+  "hash": "e7ddb2b8bb4daed9f1d3dd4ff0b342fbbee373067e931b238b4ba94ff7abe0dc"
+}

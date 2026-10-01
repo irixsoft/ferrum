@@ -133,3 +133,27 @@ async fn the_checklist_is_hidden_per_box_and_only_by_a_writer() {
         false
     );
 }
+
+#[tokio::test]
+async fn the_tunnel_hint_names_the_ssh_login_that_was_saved() {
+    let (h, cookie) = signed_in().await;
+    let saved = h
+        .put_with_cookie("/api/settings/tunnel-user", r#"{"user":"ubuntu"}"#, &cookie)
+        .await;
+    assert_eq!(saved.status, StatusCode::NO_CONTENT, "{}", saved.json);
+    let status = h.get_with_cookie("/api/postgres", &cookie).await;
+    assert_eq!(status.json["tunnel_user"], "ubuntu");
+    assert_eq!(
+        status.json["tunnel"],
+        "ssh -L 5432:127.0.0.1:5432 ubuntu@panel.example.com"
+    );
+
+    let refused = h
+        .put_with_cookie("/api/settings/tunnel-user", r#"{"user":"me@box"}"#, &cookie)
+        .await;
+    assert_eq!(refused.status, StatusCode::BAD_REQUEST, "{}", refused.json);
+    assert_eq!(
+        h.get_with_cookie("/api/postgres", &cookie).await.json["tunnel_user"],
+        "ubuntu"
+    );
+}

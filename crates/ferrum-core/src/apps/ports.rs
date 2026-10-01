@@ -92,14 +92,14 @@ mod tests {
         let b = create(&state, new_app("b", &[("/", "main", false)]))
             .await
             .unwrap();
-        assert_eq!(a.routes[0].port, 20000);
-        assert_eq!(b.routes[0].port, 20001);
+        assert_eq!(a.main_port(), Some(20000));
+        assert_eq!(b.main_port(), Some(20001));
 
         delete(&state, "a").await.unwrap();
         let c = create(&state, new_app("c", &[("/", "main", false)]))
             .await
             .unwrap();
-        assert_eq!(c.routes[0].port, 20000);
+        assert_eq!(c.main_port(), Some(20000));
     }
 
     #[tokio::test]

@@ -142,6 +142,7 @@ mod tests {
         assert!(conf.contains("http2 on;"));
         assert!(conf.contains("/var/lib/ferrum/certs/panel.example.com/fullchain.pem"));
         assert!(conf.contains("return 301 https://$host$request_uri;"));
+        assert!(conf.contains("Strict-Transport-Security \"max-age=31536000\" always;"));
     }
 
     #[test]

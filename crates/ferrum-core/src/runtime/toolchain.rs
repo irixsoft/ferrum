@@ -90,19 +90,17 @@ pub async fn find(
 /// The newest installed toolchain of the other tool an app's commands start with: Bun beside
 /// Node when a command starts with `bun`, and the reverse. Never installs one.
 pub async fn extra_for(state: &State, store: &Store, app: &App) -> anyhow::Result<Option<PathBuf>> {
-    let wanted = [
-        &app.commands.install,
-        &app.commands.build,
-        &app.commands.start,
-    ]
-    .into_iter()
-    .flatten()
-    .filter_map(|c| match c.split_whitespace().next() {
-        Some("bun" | "bunx") => Some(RuntimeKind::Bun),
-        Some("npm" | "npx" | "pnpm" | "yarn" | "node" | "corepack") => Some(RuntimeKind::Node),
-        _ => None,
-    })
-    .find(|k| *k != app.toolchain);
+    let wanted = [&app.commands.install, &app.commands.build]
+        .into_iter()
+        .flatten()
+        .map(String::as_str)
+        .chain(app.processes.iter().filter_map(|p| p.start()))
+        .filter_map(|c| match c.split_whitespace().next() {
+            Some("bun" | "bunx") => Some(RuntimeKind::Bun),
+            Some("npm" | "npx" | "pnpm" | "yarn" | "node" | "corepack") => Some(RuntimeKind::Node),
+            _ => None,
+        })
+        .find(|k| *k != app.toolchain);
     let Some(kind) = wanted else {
         return Ok(None);
     };
@@ -657,7 +655,7 @@ mod tests {
         let store = Store::at("/r");
         let app = crate::apps::tests::app("ledger");
         assert_eq!(app.toolchain, RuntimeKind::Node);
-        assert_eq!(app.commands.start.as_deref(), Some("bun run start"));
+        assert_eq!(app.processes[0].start(), Some("bun run start"));
         assert_eq!(extra_for(&state, &store, &app).await.unwrap(), None);
 
         for version in ["1.9.3", "1.10.0"] {
@@ -679,7 +677,9 @@ mod tests {
         let mut node_only = app.clone();
         node_only.commands.install = Some("npm ci".into());
         node_only.commands.build = None;
-        node_only.commands.start = Some("node server.js".into());
+        node_only.processes[0].kind = crate::apps::processes::ProcessKind::Command {
+            start: "node server.js".into(),
+        };
         assert_eq!(extra_for(&state, &store, &node_only).await.unwrap(), None);
     }
 

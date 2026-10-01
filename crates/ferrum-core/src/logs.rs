@@ -1,4 +1,4 @@
-use crate::apps::{App, unit::unit_name};
+use crate::apps::{App, processes::unit_name};
 use ferrum_platform::ubuntu::NGINX_LOG_DIR;
 use ferrum_platform::{JournalLine, Platform};
 use serde::{Deserialize, Serialize};
@@ -131,13 +131,14 @@ fn plain(text: &str) -> Line {
 pub fn tail(
     platform: &dyn Platform,
     app: &App,
+    process: &str,
     source: Source,
     lines: u32,
 ) -> anyhow::Result<Vec<Line>> {
     let lines = lines.clamp(1, MAX_LINES);
     Ok(match source {
         Source::App => platform
-            .journal_tail(&unit_name(&app.slug), lines)?
+            .journal_tail(&unit_name(&app.slug, process), lines)?
             .into_iter()
             .map(from_journal)
             .collect(),
@@ -155,9 +156,14 @@ pub fn tail(
 }
 
 /// Journald follows; dropping the receiver ends `journalctl` within a second.
-pub fn follow(platform: Arc<dyn Platform>, app: &App, lines: u32) -> mpsc::Receiver<Line> {
+pub fn follow(
+    platform: Arc<dyn Platform>,
+    app: &App,
+    process: &str,
+    lines: u32,
+) -> mpsc::Receiver<Line> {
     let (tx, rx) = mpsc::channel(CHANNEL);
-    let unit = unit_name(&app.slug);
+    let unit = unit_name(&app.slug, process);
     let lines = lines.clamp(1, MAX_LINES);
     tokio::task::spawn_blocking(move || {
         let result = platform.journal_follow(
@@ -265,7 +271,7 @@ mod tests {
         let p = FakePlatform::new();
         let a = app("ledger");
         p.journal(
-            "ferrum-app-ledger",
+            "ferrum-app-ledger-web",
             &[(6, "Listening"), (3, "boom"), (6, "hi\u{fffd}")],
         );
         p.write_file(
@@ -274,28 +280,33 @@ mod tests {
             0o644,
         )
         .unwrap();
-        let app_lines = tail(&p, &a, Source::App, 2).unwrap();
+        let app_lines = tail(&p, &a, "web", Source::App, 2).unwrap();
         assert_eq!(app_lines.len(), 2);
         assert_eq!(
             (app_lines[0].level, app_lines[0].text.as_str()),
             ("error", "boom")
         );
         assert!(app_lines[1].at.ends_with('Z'));
-        let errors = tail(&p, &a, Source::Error, 200).unwrap();
+        let errors = tail(&p, &a, "web", Source::Error, 200).unwrap();
         assert_eq!(errors.len(), 2);
         assert_eq!(errors[1].text, "two");
-        assert!(tail(&p, &a, Source::Access, 200).unwrap().is_empty());
-        assert!(tail(&p, &app("nope"), Source::App, 200).unwrap().is_empty());
+        assert!(tail(&p, &a, "web", Source::Access, 200).unwrap().is_empty());
+        assert!(
+            tail(&p, &app("nope"), "web", Source::App, 200)
+                .unwrap()
+                .is_empty()
+        );
+        assert!(tail(&p, &a, "jobs", Source::App, 200).unwrap().is_empty());
     }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn a_follow_ends_when_its_receiver_is_dropped() {
         let p = Arc::new(FakePlatform::new());
-        p.journal("ferrum-app-ledger", &[(6, "one"), (6, "two")]);
-        let mut rx = follow(p.clone(), &app("ledger"), 1);
+        p.journal("ferrum-app-ledger-web", &[(6, "one"), (6, "two")]);
+        let mut rx = follow(p.clone(), &app("ledger"), "web", 1);
         let first = rx.recv().await.unwrap();
         assert_eq!(first.text, "two");
-        p.journal("ferrum-app-ledger", &[(4, "three")]);
+        p.journal("ferrum-app-ledger-web", &[(4, "three")]);
         let live = rx.recv().await.unwrap();
         assert_eq!((live.level, live.text.as_str()), ("warn", "three"));
         drop(rx);

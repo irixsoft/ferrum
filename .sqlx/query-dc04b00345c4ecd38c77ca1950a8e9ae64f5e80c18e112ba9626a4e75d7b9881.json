@@ -1,0 +1,20 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT name AS \"name!\" FROM database_roles WHERE database_id = ? AND env_label = ?",
+  "describe": {
+    "columns": [
+      {
+        "name": "name!",
+        "ordinal": 0,
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "dc04b00345c4ecd38c77ca1950a8e9ae64f5e80c18e112ba9626a4e75d7b9881"
+}

@@ -1,8 +1,10 @@
 use super::{HOST, INTERVAL, Sample, cpu, now, prune, record};
-use crate::apps::{self, unit::unit_name};
+use crate::apps::{self, App};
+use crate::deploy;
+use crate::events::{self, Kind};
 use crate::state::State;
 use ferrum_platform::{Platform, ProcStat};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::task::JoinHandle;
@@ -20,6 +22,7 @@ pub struct Sampler {
     platform: Arc<dyn Platform>,
     host: Option<Reading>,
     units: HashMap<String, (u64, Instant)>,
+    broken: HashSet<String>,
     ticks: u64,
 }
 
@@ -30,6 +33,7 @@ impl Sampler {
             platform,
             host: None,
             units: HashMap::new(),
+            broken: HashSet::new(),
             ticks: 0,
         }
     }
@@ -70,33 +74,80 @@ impl Sampler {
         record(&self.state, HOST, &sample).await
     }
 
+    /// One sample per app: its processes' memory added up, their CPU shares added up.
     async fn sample_apps(&mut self) -> anyhow::Result<()> {
         let at = now();
         for app in apps::list(&self.state).await? {
-            if !app.runtime.has_process() {
+            let mut memory = 0;
+            let mut peak = 0;
+            let mut cpu_pct = 0.0;
+            let mut ready = false;
+            for process in app.command_processes() {
+                let unit = process.unit_name(&app.slug);
+                let Some(stats) = self.platform.cgroup_stats(&unit)? else {
+                    self.units.remove(&unit);
+                    self.watch(&app, &unit).await?;
+                    continue;
+                };
+                self.broken.remove(&unit);
+                let seen = Instant::now();
+                memory += stats.memory_current;
+                peak += stats.memory_peak;
+                if let Some((prev_usec, prev_at)) =
+                    self.units.insert(unit, (stats.cpu_usage_usec, seen))
+                {
+                    cpu_pct += cpu::cgroup_percent(prev_usec, stats.cpu_usage_usec, seen - prev_at);
+                    ready = true;
+                }
+            }
+            if !ready {
                 continue;
             }
-            let unit = unit_name(&app.slug);
-            let Some(stats) = self.platform.cgroup_stats(&unit)? else {
-                self.units.remove(&unit);
-                continue;
-            };
-            let seen = Instant::now();
-            let Some((prev_usec, prev_at)) = self.units.insert(unit, (stats.cpu_usage_usec, seen))
-            else {
-                continue;
-            };
             let sample = Sample {
                 at,
-                cpu_pct: cpu::cgroup_percent(prev_usec, stats.cpu_usage_usec, seen - prev_at),
-                memory_bytes: stats.memory_current,
-                memory_peak_bytes: Some(stats.memory_peak),
+                cpu_pct,
+                memory_bytes: memory,
+                memory_peak_bytes: Some(peak),
                 disk_used_bytes: None,
                 net_rx_bytes: None,
                 net_tx_bytes: None,
             };
             record(&self.state, &app.id, &sample).await?;
         }
+        Ok(())
+    }
+
+    /// A released app whose unit is down while no deploy holds it broke on its own; said once.
+    async fn watch(&mut self, app: &App, unit: &str) -> anyhow::Result<()> {
+        if app.current_release_id.is_none() {
+            self.broken.remove(unit);
+            return Ok(());
+        }
+        let platform = self.platform.clone();
+        let name = unit.to_string();
+        if tokio::task::spawn_blocking(move || platform.service_is_active(&name)).await? {
+            self.broken.remove(unit);
+            return Ok(());
+        }
+        if self.broken.contains(unit) || deploy::running_for(&self.state, &app.id).await?.is_some()
+        {
+            return Ok(());
+        }
+        self.broken.insert(unit.to_string());
+        let link = format!("/apps/{}", app.slug);
+        events::emit(
+            &self.state,
+            Kind::BrokeOnItsOwn,
+            Some(&app.id),
+            &app.slug,
+            &format!(
+                "{} is not running ({}), and no deploy stopped it.",
+                app.name,
+                unit.rsplit('-').next().unwrap_or(unit)
+            ),
+            Some(&link),
+        )
+        .await;
         Ok(())
     }
 }
@@ -130,11 +181,10 @@ mod tests {
             .await
             .unwrap();
         let mut docs = new_app("docs", &[("/", "main", false)]);
-        docs.runtime = crate::runtime::RuntimeKind::Static;
-        docs.output_dir = Some("dist".into());
+        docs.processes = vec![crate::apps::processes::NewProcess::folder("web", "dist")];
         apps::create(&state, docs).await.unwrap();
         platform.set_cgroup(
-            "ferrum-app-ledger",
+            "ferrum-app-ledger-web",
             CgroupStats {
                 memory_current: 90_000_000,
                 memory_peak: 120_000_000,
@@ -154,7 +204,7 @@ mod tests {
         });
         platform.set_net(1500, 2000);
         platform.set_cgroup(
-            "ferrum-app-ledger",
+            "ferrum-app-ledger-web",
             CgroupStats {
                 memory_current: 95_000_000,
                 memory_peak: 125_000_000,
@@ -183,12 +233,72 @@ mod tests {
         );
         assert!(series(&state, HOST, 3600, 60).await.unwrap().t.len() == 1);
 
-        platform.clear_cgroup("ferrum-app-ledger");
+        platform.clear_cgroup("ferrum-app-ledger-web");
         sampler.tick().await.unwrap();
         assert_eq!(
             latest(&state, &app.id).await.unwrap().unwrap().at,
             ledger.at
         );
         assert!(sampler.units.is_empty(), "a stopped unit forgets its delta");
+    }
+
+    async fn broke(state: &State) -> usize {
+        events::list(state, 50, false)
+            .await
+            .unwrap()
+            .into_iter()
+            .filter(|e| e.kind == "broke_on_its_own")
+            .count()
+    }
+
+    #[tokio::test]
+    async fn a_released_app_that_stops_outside_a_deploy_is_reported_once_until_it_runs_again() {
+        let (dir, state) = state().await;
+        let platform = Arc::new(FakePlatform::new());
+        let unit = "ferrum-app-ledger-web";
+        let app = apps::create(&state, new_app("ledger", &[("/", "main", false)]))
+            .await
+            .unwrap();
+        let mut sampler = Sampler::new(state.clone(), platform.clone());
+
+        sampler.tick().await.unwrap();
+        assert_eq!(broke(&state).await, 0, "never released, never running");
+
+        let release = deploy::releases::record(&state, &app, dir.path(), "main", "abc", None)
+            .await
+            .unwrap();
+        deploy::releases::set_current(&state, &app.id, Some(&release.id))
+            .await
+            .unwrap();
+        let running = deploy::create(
+            &state,
+            &app,
+            deploy::Trigger::Manual,
+            "main",
+            &deploy::Commit::default(),
+        )
+        .await
+        .unwrap();
+        deploy::enter(&state, &running.id, deploy::DeployState::Restarting)
+            .await
+            .unwrap();
+        sampler.tick().await.unwrap();
+        assert_eq!(broke(&state).await, 0, "a deploy is restarting it");
+
+        deploy::finish(&state, &running.id, deploy::Outcome::Live, None, None)
+            .await
+            .unwrap();
+        sampler.tick().await.unwrap();
+        sampler.tick().await.unwrap();
+        assert_eq!(broke(&state).await, 1);
+        let event = &events::list(&state, 1, false).await.unwrap()[0];
+        assert_eq!(event.app_id.as_deref(), Some(app.id.as_str()));
+        assert_eq!(event.link.as_deref(), Some("/apps/ledger"));
+
+        platform.set_active(unit);
+        sampler.tick().await.unwrap();
+        platform.set_inactive(unit);
+        sampler.tick().await.unwrap();
+        assert_eq!(broke(&state).await, 2, "running again re-arms it");
     }
 }

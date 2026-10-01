@@ -217,7 +217,8 @@ async fn creating_an_app_provisions_it_and_returns_never_deployed() {
         .await;
     assert_eq!(res.status, StatusCode::CREATED, "{}", res.json);
     assert_eq!(res.json["slug"], "ledger");
-    assert!(res.json["routes"][0]["port"].as_u64().unwrap() >= 20000);
+    assert!(res.json["processes"][0]["port"].as_u64().unwrap() >= 20000);
+    assert_eq!(res.json["processes"][0]["kind"], "command");
     assert!(
         h.platform
             .calls()
@@ -306,17 +307,23 @@ async fn updating_an_app_reprovisions_it() {
     let res = h
         .patch_with_cookie(
             "/api/apps/ledger",
-            r#"{"memory_mb":1024,"routes":[{"path":"/","port_name":"main"},{"path":"/ws","port_name":"ws","websocket":true}]}"#,
+            r#"{"processes":[{"name":"web","start":"bun run start","memory_mb":1024},{"name":"ws","start":"bun run ws"}],"routes":[{"path":"/","process":"web"},{"path":"/ws","process":"ws","websocket":true}]}"#,
             &cookie,
         )
         .await;
     assert_eq!(res.status, StatusCode::OK, "{}", res.json);
-    assert_eq!(res.json["memory_mb"], 1024);
+    assert_eq!(res.json["processes"][0]["memory_mb"], 1024);
+    assert_eq!(res.json["processes"][1]["name"], "ws");
     let unit = h
         .platform
-        .written("/etc/systemd/system/ferrum-app-ledger.service")
+        .written("/etc/systemd/system/ferrum-app-ledger-web.service")
         .unwrap();
     assert!(unit.contains("MemoryMax=1024M"));
+    assert!(
+        h.platform
+            .written("/etc/systemd/system/ferrum-app-ledger-ws.service")
+            .is_some()
+    );
     let vhost = h
         .platform
         .written("/etc/nginx/conf.d/ferrum-ledger.conf")
@@ -324,7 +331,11 @@ async fn updating_an_app_reprovisions_it() {
     assert!(vhost.contains("location /ws {"));
 
     let bad = h
-        .patch_with_cookie("/api/apps/ledger", r#"{"memory_mb":1}"#, &cookie)
+        .patch_with_cookie(
+            "/api/apps/ledger",
+            r#"{"processes":[{"name":"web","start":"bun run start","memory_mb":1}]}"#,
+            &cookie,
+        )
         .await;
     assert_eq!(bad.status, StatusCode::BAD_REQUEST);
 }
@@ -516,6 +527,113 @@ async fn a_read_only_token_can_list_apps_and_nothing_else() {
             .await
             .status,
         StatusCode::FORBIDDEN
+    );
+}
+
+#[tokio::test]
+async fn a_name_serves_a_process_or_redirects_and_the_site_follows_each_change() {
+    let (h, cookie, _github) = signed_in_and_connected().await;
+    h.pretend_toolchain(RuntimeKind::Node, "22.11.0").await;
+    let mut body: serde_json::Value = serde_json::from_str(&new_app_json("ledger")).unwrap();
+    body["processes"]
+        .as_array_mut()
+        .unwrap()
+        .push(serde_json::json!({ "name": "admin", "start": "bun run admin" }));
+    let created = h
+        .post_with_cookie("/api/apps", &body.to_string(), &cookie)
+        .await;
+    assert_eq!(created.status, StatusCode::CREATED, "{}", created.json);
+    assert_eq!(
+        created.json["domains"],
+        serde_json::json!([{ "domain": "ledger.example.com", "job": "serve", "target": "web", "primary": true, "wildcard": false, "dns_provider_id": null }]),
+        "a bare string is a served name, and the first is primary"
+    );
+    let admin_port = created.json["processes"][1]["port"].as_u64().unwrap();
+    let site = || {
+        h.platform
+            .written("/etc/nginx/conf.d/ferrum-ledger.conf")
+            .unwrap()
+    };
+
+    let added = h
+        .post_with_cookie(
+            "/api/apps/ledger/domains",
+            r#"{"domain":"admin.ledger.example.com","target":"admin"}"#,
+            &cookie,
+        )
+        .await;
+    assert_eq!(added.status, StatusCode::OK, "{}", added.json);
+    let v = site();
+    let admin = &v[v.find("server_name admin.ledger.example.com;").unwrap()..];
+    assert!(admin.contains(&format!("proxy_pass http://127.0.0.1:{admin_port};")));
+
+    let redirect = h
+        .post_with_cookie(
+            "/api/apps/ledger/domains",
+            r#"{"domain":"www.ledger.example.com","job":"redirect","target":"ledger.example.com"}"#,
+            &cookie,
+        )
+        .await;
+    assert_eq!(redirect.status, StatusCode::OK, "{}", redirect.json);
+    assert!(site().contains("return 301 $scheme://ledger.example.com$request_uri;"));
+
+    let loop_back = h
+        .post_with_cookie(
+            "/api/apps/ledger/domains",
+            r#"{"domain":"old.ledger.example.com","job":"redirect","target":"www.ledger.example.com"}"#,
+            &cookie,
+        )
+        .await;
+    assert_eq!(
+        loop_back.status,
+        StatusCode::BAD_REQUEST,
+        "{}",
+        loop_back.json
+    );
+
+    let moved = h
+        .patch_with_cookie(
+            "/api/apps/ledger/domains/admin.ledger.example.com",
+            r#"{"primary":true}"#,
+            &cookie,
+        )
+        .await;
+    assert_eq!(moved.status, StatusCode::OK, "{}", moved.json);
+    assert_eq!(
+        moved.json["domains"][0]["domain"],
+        "admin.ledger.example.com"
+    );
+    assert_eq!(moved.json["domains"][0]["primary"], true);
+    assert_eq!(moved.json["domains"][1]["primary"], false);
+
+    let primary_gone = h
+        .delete_with_cookie("/api/apps/ledger/domains/admin.ledger.example.com", &cookie)
+        .await;
+    assert_eq!(
+        primary_gone.status,
+        StatusCode::BAD_REQUEST,
+        "{}",
+        primary_gone.json
+    );
+    let target_gone = h
+        .delete_with_cookie("/api/apps/ledger/domains/ledger.example.com", &cookie)
+        .await;
+    assert_eq!(
+        target_gone.status,
+        StatusCode::BAD_REQUEST,
+        "www still redirects to it: {}",
+        target_gone.json
+    );
+    let removed = h
+        .delete_with_cookie("/api/apps/ledger/domains/www.ledger.example.com", &cookie)
+        .await;
+    assert_eq!(removed.status, StatusCode::OK, "{}", removed.json);
+    assert!(!site().contains("www.ledger.example.com"));
+    assert_eq!(
+        h.delete_with_cookie("/api/apps/ledger/domains/nope.example.com", &cookie)
+            .await
+            .status,
+        StatusCode::NOT_FOUND
     );
 }
 

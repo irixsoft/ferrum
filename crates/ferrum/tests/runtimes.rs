@@ -133,6 +133,25 @@ async fn versions_resolve_from_each_vendor() {
 }
 
 #[tokio::test]
+async fn each_toolchain_names_the_apps_that_run_on_it() {
+    let (h, cookie) = signed_in().await;
+    h.create_app("ledger", &cookie).await;
+    h.pretend_toolchain(RuntimeKind::Bun, "1.2.0").await;
+    let listed = h.get_with_cookie("/api/runtimes", &cookie).await;
+    assert_eq!(listed.status, StatusCode::OK, "{}", listed.json);
+    let installed = listed.json["installed"].as_array().unwrap();
+    let used_by = |kind: &str| {
+        installed
+            .iter()
+            .find(|t| t["kind"] == kind)
+            .unwrap_or_else(|| panic!("no {kind} in {installed:#?}"))["used_by"]
+            .clone()
+    };
+    assert_eq!(used_by("node"), serde_json::json!(["ledger"]));
+    assert_eq!(used_by("bun"), serde_json::json!([]));
+}
+
+#[tokio::test]
 async fn a_read_only_token_can_see_runtimes_but_not_install_them() {
     let (h, _cookie) = signed_in().await;
     let token = h.machine_token(true).await;

@@ -3,7 +3,7 @@ resolver = "3"
 members = ["crates/ferrum", "crates/ferrum-core", "crates/ferrum-platform"]
 
 [workspace.package]
-version = "0.1.2"
+version = "0.2.0"
 edition = "2024"
 license = "AGPL-3.0-only"
 repository = "https://github.com/irixsoft/ferrum"
@@ -16,12 +16,14 @@ base64 = "0.22"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 clap = { version = "4", features = ["derive"] }
 hickory-resolver = "0.26"
+hkdf = "0.12"
 hmac = "0.12"
 jsonwebtoken = { version = "10", default-features = false, features = ["use_pem", "rust_crypto"] }
 mimalloc = { version = "0.1", default-features = false }
 instant-acme = { version = "0.8", default-features = false, features = ["hyper-rustls", "ring", "rcgen", "time", "x509-parser"] }
 mime_guess = "2"
 octocrab = "0.54"
+p256 = { version = "0.13", features = ["ecdh", "pkcs8"] }
 rand = "0.9"
 rcgen = "0.14"
 rust-embed = { version = "8", features = ["debug-embed"] }
@@ -34,7 +36,7 @@ sha2 = "0.10"
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "sqlite", "migrate", "macros"] }
 thiserror = "2"
 time = "0.3"
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "fs", "process"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "fs", "process", "sync"] }
 tower-http = { version = "0.6", features = ["trace"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }

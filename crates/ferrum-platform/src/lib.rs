@@ -116,6 +116,7 @@ pub enum ServiceAction {
     DisableNow,
     Mask,
     DaemonReload,
+    ResetFailed,
 }
 
 impl ServiceAction {
@@ -132,6 +133,7 @@ impl ServiceAction {
             Self::DisableNow => "disable-now",
             Self::Mask => "mask",
             Self::DaemonReload => "daemon-reload",
+            Self::ResetFailed => "reset-failed",
         }
     }
 }

@@ -21,7 +21,7 @@ import { ChartKey, MetricChart, type Band } from "@/components/MetricChart";
 import { Meter } from "@/components/ui/Meter";
 import { useShell } from "@/shells/useShell";
 import { PageTitle } from "@/components/PageTitle";
-import { RuntimeMark, runtimeLabel } from "@/components/RuntimeMark";
+import { RuntimeMark } from "@/components/RuntimeMark";
 import { NEVER_LIVE, StatusPill } from "@/components/StatusPill";
 import { DeployLadder, DeployRail } from "@/components/DeployLadder";
 import { Card, CardBody, CardFoot, CardHeader } from "@/components/ui/Card";
@@ -32,7 +32,7 @@ import { Row } from "@/components/ui/Row";
 import { Tabs } from "@/components/ui/Tabs";
 import { Sheet } from "@/components/ui/Sheet";
 import { Segmented } from "@/components/ui/Segmented";
-import { ConfigForm, draftFromApp, toChanges, type Draft } from "./ConfigForm";
+import { ConfigForm, draftFromApp, toChanges, type Draft, type Sources } from "./ConfigForm";
 import { DataCard } from "./DataCard";
 import { DeployLog } from "./DeployLog";
 import { EnvironmentPanel } from "./EnvironmentPanel";
@@ -72,7 +72,8 @@ export function AppDetailPage({ slug }: { slug: string }) {
     );
   }
 
-  const primary = app.domains[0];
+  const primary = app.domains.find((d) => d.primary)?.domain;
+  const hasCommand = app.processes.some((p) => p.kind === "command");
   const active = deploys.find((d) => d.state !== null);
   const deployLabel = active
     ? active.state === "Queued" && active.queue_position
@@ -97,12 +98,12 @@ export function AppDetailPage({ slug }: { slug: string }) {
             ) : restart.isSuccess && !restart.isPending ? (
               <span className="text-[12.5px] text-ok">Restarted.</span>
             ) : null}
-            {app.runtime !== "static" ? (
+            {hasCommand ? (
               <Button
                 size="md"
                 variant="ghost"
                 disabled={active !== undefined || app.never_live || restart.isPending}
-                title={app.never_live ? NEVER_LIVE : "systemctl restart the unit"}
+                title={app.never_live ? NEVER_LIVE : "systemctl restart every process"}
                 onClick={() => restart.mutate(undefined)}
               >
                 Restart
@@ -146,12 +147,12 @@ export function AppDetailPage({ slug }: { slug: string }) {
           { value: "environment", label: "Environment", count: app.env.filter((e) => e.set).length },
           { value: "deploys", label: "Deploys", count: deploys.length || undefined },
           { value: "logs", label: "Logs" },
-          ...(app.runtime !== "static" ? [{ value: "run" as const, label: "Run" }] : []),
+          ...(hasCommand ? [{ value: "run" as const, label: "Run" }] : []),
           { value: "nginx", label: "nginx" },
         ]}
       />
 
-      {tab === "overview" && <Overview app={app} />}
+      {tab === "overview" && <Overview app={app} deploying={active !== undefined} />}
       {tab === "configuration" && <Configuration key={app.updated_at} app={app} />}
       {tab === "environment" && (
         <EnvironmentPanel
@@ -159,19 +160,20 @@ export function AppDetailPage({ slug }: { slug: string }) {
           slug={app.slug}
           entries={app.env}
           managed={app.managed}
-          routes={app.routes}
+          processes={app.processes}
         />
       )}
       {tab === "deploys" && <Deploys app={app} deploys={deploys} />}
-      {tab === "logs" && <LogPanel slug={app.slug} hasProcess={app.runtime !== "static"} />}
+      {tab === "logs" && <LogPanel slug={app.slug} processes={app.processes} />}
       {tab === "run" && <RunPanel slug={app.slug} neverLive={app.never_live} deploying={active !== undefined} />}
       {tab === "nginx" && <NginxPanel slug={app.slug} />}
     </>
   );
 }
 
-function Overview({ app }: { app: AppDetail }) {
-  const isStatic = app.runtime === "static";
+function Overview({ app, deploying }: { app: AppDetail; deploying: boolean }) {
+  const commands = app.processes.filter((p) => p.kind === "command");
+  const memoryLimit = commands.reduce((sum, p) => sum + p.memory_mb, 0);
   const retry = useRetryCertificate(app.slug);
   const { data: host } = useHost();
   return (
@@ -192,17 +194,14 @@ function Overview({ app }: { app: AppDetail }) {
                   <span className="font-mono text-[13px]">{app.root}</span>
                 </Row>
               ) : null}
-              {isStatic ? (
-                <Row label="Built with">{runtimeLabel(app.toolchain)} {app.runtime_version}</Row>
-              ) : null}
+              <Row label="Repo file" hint="ferrum.toml or Procfile">
+                {app.follow_repo_file ? "Followed on every deploy" : <span className="text-ink-4">Not followed</span>}
+              </Row>
               <Row label="Install">
                 <Command value={app.commands.install} />
               </Row>
               <Row label="Build">
                 <Command value={app.commands.build} />
-              </Row>
-              <Row label={isStatic ? "Output directory" : "Start"}>
-                <Command value={isStatic ? app.output_dir : app.commands.start} />
               </Row>
               <Row label="Migrations" hint={app.commands.migrate ? undefined : "no migrations will run"}>
                 <Command value={app.commands.migrate} />
@@ -222,32 +221,29 @@ function Overview({ app }: { app: AppDetail }) {
           </CardBody>
         </Card>
 
+        <Processes app={app} deploying={deploying} />
+
         <Card>
-          <CardHeader title="Routes" hint="Each named port is reserved and injected as an env var" />
+          <CardHeader title="Paths" hint="Which process answers each path, on every served name" />
           <CardBody>
-            {isStatic ? (
-              <p className="text-[13.5px] text-ink-3">
-                Static output is served straight from disk. There is no process and no port.
-              </p>
-            ) : (
-              <ul className="divide-y divide-line">
-                {app.routes.map((r) => (
-                  <li key={r.path} className="flex items-center gap-3 py-2.5">
-                    <Code>{r.path}</Code>
-                    <span className="text-ink-4">→</span>
-                    <span className="font-mono text-[13px] text-ink-2">
-                      {r.port_name === "main" ? "PORT" : `${r.port_name.toUpperCase()}_PORT`}={r.port}
-                    </span>
-                    {r.websocket ? (
-                      <Badge tone="accent" className="ml-auto">
-                        WebSocket
-                      </Badge>
-                    ) : null}
-                  </li>
-                ))}
-              </ul>
-            )}
+            <ul className="divide-y divide-line">
+              {app.routes.map((r) => (
+                <li key={r.path} className="flex items-center gap-3 py-2.5 min-w-0">
+                  <Code className="truncate">{r.path}</Code>
+                  <span className="text-ink-4">→</span>
+                  <span className="font-mono text-[13px] text-ink-2 truncate">{r.process}</span>
+                  {r.websocket ? (
+                    <Badge tone="accent" className="ml-auto">
+                      WebSocket
+                    </Badge>
+                  ) : null}
+                </li>
+              ))}
+            </ul>
           </CardBody>
+          <CardFoot>
+            <span>A process without a path answers /.</span>
+          </CardFoot>
         </Card>
 
         <DataCard app={app} />
@@ -276,11 +272,11 @@ function Overview({ app }: { app: AppDetail }) {
               <Row label="Directory">
                 <Code>/var/lib/ferrum/apps/{app.slug}</Code>
               </Row>
-              {isStatic ? null : (
-                <Row label="Unit" hint={app.current_release ? undefined : "inactive until the first deploy"}>
-                  <Code>ferrum-app-{app.slug}.service</Code>
+              {commands.length ? (
+                <Row label="Units" hint={app.current_release ? undefined : "inactive until the first deploy"}>
+                  <Code>ferrum-app-{app.slug}-&lt;process&gt;.service</Code>
                 </Row>
-              )}
+              ) : null}
               <Row label="nginx">
                 <Code>ferrum-{app.slug}.conf</Code>
               </Row>
@@ -288,26 +284,27 @@ function Overview({ app }: { app: AppDetail }) {
           </CardBody>
         </Card>
 
-        {isStatic ? null : <Resources app={app} />}
+        {commands.length ? <Resources app={app} limitMb={memoryLimit} /> : null}
 
-        {isStatic ? null : (
+        {commands.length ? (
           <Card>
-            <CardHeader title="Limits" hint="Real cgroup limits from the systemd unit" />
+            <CardHeader title="Limits" hint="Real cgroup limits from the systemd units" />
             <CardBody>
               <dl>
-                <Row label="Memory">{app.memory_mb} MB</Row>
-                <Row label="CPU quota">{app.cpu_percent}%</Row>
-                <Row label="Health check">
-                  <Code>{app.health.path}</Code>
+                <Row label="Memory" hint={commands.length > 1 ? `summed over ${commands.length} processes` : undefined}>
+                  {memoryLimit} MB
                 </Row>
-                <Row label="Startup budget">{app.health.startup_budget_secs}s</Row>
+                <Row label="CPU quota" hint="for each unit">
+                  {app.cpu_percent}%
+                </Row>
+                <Row label="Startup budget">{app.startup_budget_secs}s</Row>
                 <Row label="Traffic during migrations">
                   {app.pause_for_migrations ? "Paused" : "Kept flowing"}
                 </Row>
               </dl>
             </CardBody>
           </Card>
-        )}
+        ) : null}
 
         <Card>
           <CardHeader
@@ -326,19 +323,25 @@ function Overview({ app }: { app: AppDetail }) {
               <p className="text-[13.5px] text-ink-3">No domain yet. Add one under Configuration.</p>
             ) : (
               <ul className="divide-y divide-line">
-                {app.certificates.map((c, i) => (
-                  <li key={c.domain} className="py-2.5">
-                    <div className="flex items-center gap-2">
-                      <span className="text-[13.5px] text-ink truncate">{c.domain}</span>
-                      {i === 0 ? <Badge>Primary</Badge> : <Badge>Redirects</Badge>}
-                      <Certificate status={c.status} />
-                      {host?.certificates_staging && c.status.kind === "issued" ? <StagingBadge /> : null}
-                    </div>
-                    {c.status.kind === "waiting_for_dns" || c.status.kind === "failed" ? (
-                      <p className="text-[12px] text-ink-4 mt-1">{c.status.detail}</p>
-                    ) : null}
-                  </li>
-                ))}
+                {app.domains.map((d) => {
+                  const status = app.certificates.find((c) => c.domain === d.domain)?.status;
+                  return (
+                    <li key={d.domain} className="py-2.5">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <span className="font-mono text-[13px] text-ink truncate">{d.domain}</span>
+                        {d.primary ? <Badge>Primary</Badge> : null}
+                        <span className="text-[12.5px] text-ink-3">
+                          {d.job === "serve" ? "serves" : "redirects to"} <Code>{d.target}</Code>
+                        </span>
+                        {status ? <Certificate status={status} /> : null}
+                        {host?.certificates_staging && status?.kind === "issued" ? <StagingBadge /> : null}
+                      </div>
+                      {status?.kind === "waiting_for_dns" || status?.kind === "failed" ? (
+                        <p className="text-[12px] text-ink-4 mt-1">{status.detail}</p>
+                      ) : null}
+                    </li>
+                  );
+                })}
               </ul>
             )}
             {retry.error ? <p className="text-[12.5px] text-fail mt-2">{message(retry.error)}</p> : null}
@@ -349,11 +352,90 @@ function Overview({ app }: { app: AppDetail }) {
   );
 }
 
-/** Memory and CPU straight from the unit's cgroup, with the last hour sampled every 10 seconds. */
-function Resources({ app }: { app: AppDetail }) {
+function Processes({ app, deploying }: { app: AppDetail; deploying: boolean }) {
+  const restart = useRestartApp(app.slug);
+  return (
+    <Card>
+      <CardHeader title="Processes" hint="Each command runs as its own unit; nginx serves each folder" />
+      <CardBody>
+        <ul className="divide-y divide-line">
+          {app.processes.map((p) => {
+            const command = p.kind === "command";
+            const what = command ? p.start : p.static_dir;
+            return (
+              <li key={p.name} className="py-3 grid gap-1.5 min-w-0">
+                <div className="flex items-center gap-2 flex-wrap">
+                  <span className="font-mono text-[13.5px] text-ink">{p.name}</span>
+                  <Badge>{command ? "Command" : "Folder"}</Badge>
+                  {command ? (
+                    <Badge tone={p.active ? "ok" : app.never_live ? "neutral" : "fail"}>
+                      {p.active ? "Active" : "Stopped"}
+                    </Badge>
+                  ) : null}
+                  {command ? (
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      className="ml-auto"
+                      disabled={deploying || app.never_live || restart.isPending}
+                      title={app.never_live ? NEVER_LIVE : `systemctl restart ferrum-app-${app.slug}-${p.name}`}
+                      onClick={() => restart.mutate(p.name)}
+                    >
+                      Restart
+                    </Button>
+                  ) : null}
+                </div>
+                <p className="text-[12.5px] text-ink-3 min-w-0 break-all">
+                  {what ? <Code>{what}</Code> : <span className="text-ink-4">None</span>}
+                  {p.dir ? (
+                    <>
+                      {" "}
+                      in <Code>{p.dir}</Code>
+                    </>
+                  ) : null}
+                </p>
+                <p className="text-[12.5px] text-ink-3 flex flex-wrap gap-x-3 gap-y-1">
+                  {p.port !== null ? (
+                    <span className="font-mono tnum">PORT={p.port}</span>
+                  ) : (
+                    <span>{command ? "No port" : "Served by nginx"}</span>
+                  )}
+                  {p.health_path ? (
+                    <span>
+                      Health <span className="font-mono">{p.health_path}</span>
+                    </span>
+                  ) : null}
+                  {command ? (
+                    <span className="tnum">
+                      {p.memory_bytes !== null ? `${bytes(p.memory_bytes)} of ` : ""}
+                      {p.memory_mb} MB
+                    </span>
+                  ) : null}
+                </p>
+              </li>
+            );
+          })}
+        </ul>
+        {restart.error ? (
+          <p className="text-[12.5px] text-fail mt-2">{message(restart.error)}</p>
+        ) : restart.isSuccess && restart.variables ? (
+          <p className="text-[12.5px] text-ok mt-2">{restart.variables} restarted.</p>
+        ) : null}
+      </CardBody>
+      {app.follow_repo_file ? (
+        <CardFoot>
+          <span>The repo&apos;s file decides these on every deploy; memory limits stay under Configuration.</span>
+        </CardFoot>
+      ) : null}
+    </Card>
+  );
+}
+
+/** Memory and CPU straight from the units' cgroups, with the last hour sampled every 10 seconds. */
+function Resources({ app, limitMb }: { app: AppDetail; limitMb: number }) {
   const { data: series } = useMetrics(app.slug, "1h");
   const [band, setBand] = useState<"memory" | "cpu">("memory");
-  const limit = app.memory_mb * MB;
+  const limit = limitMb * MB;
   const running = app.memory_bytes !== null;
   const used = app.memory_bytes ?? 0;
   const peak = app.memory_peak_bytes ?? 0;
@@ -363,7 +445,7 @@ function Resources({ app }: { app: AppDetail }) {
     <Card>
       <CardHeader
         title="Resources"
-        hint={running ? "From the unit's cgroup, exact rather than sampled" : "No process is running"}
+        hint={running ? "From the units' cgroups, exact rather than sampled" : "No process is running"}
         action={
           <Segmented
             value={band}
@@ -380,7 +462,7 @@ function Resources({ app }: { app: AppDetail }) {
           <div className="flex items-baseline justify-between mb-1.5">
             <span className="text-[13px] text-ink-3">Memory</span>
             <span className="font-mono text-[12.5px] text-ink-4 tnum">
-              {running ? `${bytes(used)} now · ${bytes(peak)} peak · ${app.memory_mb} MB limit` : `${app.memory_mb} MB limit`}
+              {running ? `${bytes(used)} now · ${bytes(peak)} peak · ${limitMb} MB limit` : `${limitMb} MB limit`}
             </span>
           </div>
           <Meter value={share} tone={share > 90 ? "fail" : share > 75 ? "run" : "accent"} />
@@ -438,6 +520,9 @@ function Command({ value }: { value: string | null }) {
   return value ? <Code>{value}</Code> : <span className="text-ink-4">None</span>;
 }
 
+const FILE = "from the repo's file";
+const fromFile: Sources = { follow_repo_file: FILE, install: FILE, build: FILE, migrate: FILE };
+
 function Configuration({ app }: { app: AppDetail }) {
   const navigate = useNavigate();
   const [draft, setDraft] = useState<Draft>(() => draftFromApp(app));
@@ -449,7 +534,13 @@ function Configuration({ app }: { app: AppDetail }) {
 
   return (
     <div className="grid gap-4">
-      <ConfigForm draft={draft} repository={app.repository} onChange={setDraft} creating={false} />
+      <ConfigForm
+        draft={draft}
+        repository={app.repository}
+        onChange={setDraft}
+        sources={app.follow_repo_file ? fromFile : undefined}
+        creating={false}
+      />
       <Card>
         <CardBody className="pt-5 flex items-center gap-3 flex-wrap">
           <Button variant="primary" onClick={() => update.mutate(toChanges(draft))} disabled={update.isPending}>

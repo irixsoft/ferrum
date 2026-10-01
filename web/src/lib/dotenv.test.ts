@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { describeImport, importDotenv, parseDotenv, routePortKeys } from "./dotenv";
+import { describeImport, importDotenv, parseDotenv, processPortKeys } from "./dotenv";
 import type { EnvRow } from "@/features/apps/EnvironmentPanel";
 
 const vars = (text: string) => parseDotenv(text).vars;
@@ -55,6 +55,17 @@ const row = (key: string, extra: Partial<EnvRow> = {}): EnvRow => ({
   ...extra,
 });
 
+test("processPortKeys names every process that listens, stored or drafted", () => {
+  expect(
+    processPortKeys([
+      { name: "web", port: 20000 },
+      { name: "admin_ui", port: true },
+      { name: "jobs", port: null },
+      { name: "site", port: false },
+    ]),
+  ).toEqual(["WEB_PORT", "ADMIN_UI_PORT"]);
+});
+
 describe("importDotenv", () => {
   test("fills matching rows, adds the rest, and skips what Ferrum sets", () => {
     const rows = [
@@ -64,7 +75,16 @@ describe("importDotenv", () => {
     const parsed = parseDotenv(
       "STRIPE_KEY=sk_live\nSMTP_HOST=smtp\nNEW_ONE=1\nPORT=3000\nWS_PORT=1\nANALYTICS_DATABASE_URL=x\nREDIS_URL=y\n",
     );
-    const result = importDotenv(rows, parsed, routePortKeys([{ port_name: "main" }, { port_name: "ws" }]));
+    const result = importDotenv(
+      rows,
+      parsed,
+      processPortKeys([
+        { name: "web", port: 20000 },
+        { name: "ws", port: true },
+        { name: "jobs", port: null },
+        { name: "admin", port: false },
+      ]),
+    );
     expect(result.rows).toEqual([
       row("STRIPE_KEY", { value: "sk_live", stored: true }),
       row("SMTP_HOST", { value: "smtp", source: "from .env.example" }),

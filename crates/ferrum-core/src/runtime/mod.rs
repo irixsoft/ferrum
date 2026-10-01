@@ -4,6 +4,7 @@ pub mod node;
 pub mod static_site;
 pub mod toolchain;
 
+use crate::apps::processes::NewProcess;
 use crate::detect::RepoTree;
 use anyhow::Context;
 use ferrum_platform::{Arch, Platform};
@@ -17,32 +18,22 @@ use std::path::Path;
 pub enum RuntimeKind {
     Node,
     Bun,
-    Static,
     Dotnet,
 }
 
 impl RuntimeKind {
-    pub const ALL: [RuntimeKind; 4] = [Self::Node, Self::Bun, Self::Static, Self::Dotnet];
+    pub const ALL: [RuntimeKind; 3] = [Self::Node, Self::Bun, Self::Dotnet];
 
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Node => "node",
             Self::Bun => "bun",
-            Self::Static => "static",
             Self::Dotnet => "dotnet",
         }
     }
 
     pub fn parse(s: &str) -> Option<Self> {
         Self::ALL.into_iter().find(|k| k.as_str() == s)
-    }
-
-    pub fn has_process(self) -> bool {
-        self != Self::Static
-    }
-
-    pub fn installs_toolchain(self) -> bool {
-        self != Self::Static
     }
 }
 
@@ -110,7 +101,6 @@ impl PackageManager {
 pub struct Commands {
     pub install: Option<String>,
     pub build: Option<String>,
-    pub start: Option<String>,
     pub migrate: Option<String>,
 }
 
@@ -137,9 +127,19 @@ pub struct Detection {
     pub confidence: u8,
     pub reasons: Vec<String>,
     pub commands: Commands,
-    pub output_dir: Option<String>,
+    pub processes: Vec<NewProcess>,
     pub health: Health,
     pub package_manager: Option<PackageManager>,
+}
+
+impl Detection {
+    pub fn start(&self) -> Option<&str> {
+        self.processes.first().and_then(|p| p.start.as_deref())
+    }
+
+    pub fn output_dir(&self) -> Option<&str> {
+        self.processes.first().and_then(|p| p.static_dir.as_deref())
+    }
 }
 
 /// Where toolchains come from. Tests point every one at a local server.
@@ -205,20 +205,14 @@ pub trait Runtime: Send + Sync {
     fn env_for(&self, phase: Phase, toolchain: &Path, port: Option<u16>) -> Vec<(String, String)>;
 }
 
-pub fn all() -> [&'static dyn Runtime; 4] {
-    [
-        &node::Node,
-        &bun::Bun,
-        &static_site::Static,
-        &dotnet::Dotnet,
-    ]
+pub fn all() -> [&'static dyn Runtime; 3] {
+    [&node::Node, &bun::Bun, &dotnet::Dotnet]
 }
 
 pub fn by_kind(kind: RuntimeKind) -> &'static dyn Runtime {
     match kind {
         RuntimeKind::Node => &node::Node,
         RuntimeKind::Bun => &bun::Bun,
-        RuntimeKind::Static => &static_site::Static,
         RuntimeKind::Dotnet => &dotnet::Dotnet,
     }
 }
@@ -263,7 +257,7 @@ mod tests {
     #[test]
     fn every_runtime_has_a_distinct_kind() {
         let kinds: HashSet<_> = all().iter().map(|r| r.kind()).collect();
-        assert_eq!(kinds.len(), 4);
+        assert_eq!(kinds.len(), 3);
         for kind in RuntimeKind::ALL {
             assert_eq!(by_kind(kind).kind(), kind);
             assert_eq!(RuntimeKind::parse(kind.as_str()), Some(kind));
@@ -286,11 +280,5 @@ mod tests {
         assert!(semver_like("9.0", 2));
         assert!(!semver_like("9.0.1", 2));
         assert!(!semver_like("a.b.c", 3));
-    }
-
-    #[test]
-    fn only_static_sites_are_processless() {
-        assert!(!RuntimeKind::Static.has_process());
-        assert!(RuntimeKind::Node.has_process());
     }
 }

@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "DELETE FROM app_processes WHERE app_id = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": []
+  },
+  "hash": "e81d22dc755b5586a702e9e86c8bf25d34f8607850e86eb62530598381d1c061"
+}

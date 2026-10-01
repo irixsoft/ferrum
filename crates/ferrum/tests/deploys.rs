@@ -31,7 +31,7 @@ async fn a_manual_deploy_resolves_the_branch_head_runs_and_streams_its_log() {
     h.force_port("ledger", health.port).await;
     h.platform
         .script_run("bun run build", &["Compiled"], Exit::Code(0));
-    h.platform.set_active("ferrum-app-ledger");
+    h.platform.set_active("ferrum-app-ledger-web");
 
     let res = h
         .post_with_cookie("/api/apps/ledger/deploys", "", &cookie)
@@ -98,7 +98,7 @@ async fn an_app_says_it_has_never_gone_live_until_a_deploy_does() {
     h.create_app("ledger", &cookie).await;
     let health = StubHealth::start(200).await;
     h.force_port("ledger", health.port).await;
-    h.platform.set_active("ferrum-app-ledger");
+    h.platform.set_active("ferrum-app-ledger-web");
 
     let fresh = h.get_with_cookie("/api/apps/ledger", &cookie).await;
     assert_eq!(fresh.json["status"], "new");

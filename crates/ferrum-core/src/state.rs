@@ -11,6 +11,7 @@ pub struct State {
     pub pool: SqlitePool,
     pub data_dir: std::path::PathBuf,
     pub key: Arc<Key>,
+    pub events_tx: Option<tokio::sync::mpsc::UnboundedSender<crate::events::Event>>,
 }
 
 static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("./migrations");
@@ -47,6 +48,7 @@ impl State {
             pool,
             data_dir: data_dir.to_path_buf(),
             key: Arc::new(key),
+            events_tx: None,
         };
         let sealed = secrets::migrate(&state)
             .await

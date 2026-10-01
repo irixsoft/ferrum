@@ -14,9 +14,11 @@ jsonwebtoken.workspace = true
 secrecy.workspace = true
 ferrum-platform = { path = "../ferrum-platform" }
 hickory-resolver.workspace = true
+hkdf.workspace = true
 hmac.workspace = true
 instant-acme.workspace = true
 octocrab.workspace = true
+p256.workspace = true
 rand.workspace = true
 rcgen.workspace = true
 reqwest.workspace = true

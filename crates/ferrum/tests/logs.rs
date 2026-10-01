@@ -12,7 +12,7 @@ async fn the_tail_comes_from_journald_or_nginx_with_three_levels() {
     let (h, cookie) = signed_in().await;
     h.create_app("ledger", &cookie).await;
     h.platform.journal(
-        "ferrum-app-ledger",
+        "ferrum-app-ledger-web",
         &[
             (6, "Listening on 127.0.0.1:20000"),
             (4, "slow query"),
@@ -79,7 +79,7 @@ async fn the_tail_comes_from_journald_or_nginx_with_three_levels() {
 async fn a_follow_streams_live_lines_and_ends_journalctl_when_the_client_leaves() {
     let (h, cookie) = signed_in().await;
     h.create_app("ledger", &cookie).await;
-    h.platform.journal("ferrum-app-ledger", &[(6, "first")]);
+    h.platform.journal("ferrum-app-ledger-web", &[(6, "first")]);
     let req = Request::builder()
         .uri("/api/apps/ledger/logs?follow=1&lines=1")
         .header(header::ACCEPT, "text/event-stream")
@@ -107,7 +107,7 @@ async fn a_follow_streams_live_lines_and_ends_journalctl_when_the_client_leaves(
         text.push_str(&String::from_utf8_lossy(&chunk));
     }
     assert!(text.contains("event: line"), "{text}");
-    h.platform.journal("ferrum-app-ledger", &[(3, "later")]);
+    h.platform.journal("ferrum-app-ledger-web", &[(3, "later")]);
     while !text.contains("later") {
         let chunk = tokio::time::timeout(wait, body.next())
             .await
@@ -147,7 +147,7 @@ async fn a_restart_is_refused_for_static_sites_undeployed_apps_and_during_a_depl
     h.force_port("ledger", health.port).await;
     h.platform
         .script_run("bun run build", &["Compiled"], Exit::Code(0));
-    h.platform.set_active("ferrum-app-ledger");
+    h.platform.set_active("ferrum-app-ledger-web");
     let gate = h.platform.gate("bun run build");
     let queued = h
         .post_with_cookie("/api/apps/ledger/deploys", "", &cookie)

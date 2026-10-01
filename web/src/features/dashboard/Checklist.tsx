@@ -93,7 +93,7 @@ export function Checklist({ host }: { host: HostStatus }) {
               <span className={row.done ? "text-[13.5px] text-ink-4 line-through" : "text-[13.5px] text-ink"}>
                 {row.label}
               </span>
-              {row.done ? null : <span className="ml-auto flex items-center gap-3">{action(row)}</span>}
+              {row.done ? null : <span className="ml-auto flex flex-wrap items-center justify-end gap-3 min-w-0 max-w-full">{action(row)}</span>}
             </li>
           ))}
         </ul>

@@ -10,7 +10,7 @@ async fn two_ticks_of_the_sampler_put_the_host_and_the_app_on_their_charts() {
     let (h, cookie) = signed_in().await;
     h.create_app("ledger", &cookie).await;
     h.platform.set_cgroup(
-        "ferrum-app-ledger",
+        "ferrum-app-ledger-web",
         CgroupStats {
             memory_current: 100 * 1024 * 1024,
             memory_peak: 150 * 1024 * 1024,
@@ -29,7 +29,7 @@ async fn two_ticks_of_the_sampler_put_the_host_and_the_app_on_their_charts() {
         total_ticks: 5000,
     });
     h.platform.set_cgroup(
-        "ferrum-app-ledger",
+        "ferrum-app-ledger-web",
         CgroupStats {
             memory_current: 100 * 1024 * 1024,
             memory_peak: 150 * 1024 * 1024,

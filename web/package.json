@@ -1,7 +1,7 @@
 {
   "name": "ferrum-panel",
   "private": true,
-  "version": "0.1.2",
+  "version": "0.2.0",
   "type": "module",
   "license": "AGPL-3.0-only",
   "scripts": {
@@ -21,6 +21,7 @@
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "lucide-react": "^0.544.0",
+    "marked": "^18.0.14",
     "react": "^19.1.1",
     "react-dom": "^19.1.1",
     "tailwind-merge": "^3.3.1",
@@ -37,6 +38,8 @@
     "tailwindcss": "^4.1.13",
     "typescript": "^5.9.2",
     "vite": "^7.1.7",
-    "vite-plugin-pwa": "^1.0.3"
+    "vite-plugin-pwa": "^1.0.3",
+    "workbox-precaching": "^7.4.1",
+    "workbox-routing": "^7.4.1"
   }
 }

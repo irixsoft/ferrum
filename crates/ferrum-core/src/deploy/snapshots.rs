@@ -76,7 +76,7 @@ pub async fn restore(
         .ok_or_else(|| anyhow::anyhow!("The database of that snapshot no longer exists."))?;
     platform.postgres_sql(MAINTENANCE_DB, &sql::recreate_database(&db.name, &db.role))?;
     platform.postgres_restore(&db.name, Path::new(&snapshot.path), None, None)?;
-    Ok(())
+    postgres::roles::regrant(state, platform, &db).await
 }
 
 pub async fn prune(
@@ -227,5 +227,25 @@ mod tests {
                 .starts_with("postgres_restore ledger_prod /var/lib/ferrum/snapshots/ledger_prod/")
         );
         assert!(restore(&state, &p, "nope").await.is_err());
+
+        let db = postgres::by_name(&state, "ledger_prod")
+            .await
+            .unwrap()
+            .unwrap();
+        let role = postgres::NewRole {
+            name: "app".into(),
+            ..postgres::NewRole::default()
+        };
+        postgres::roles::create(&state, &p, &db, role)
+            .await
+            .unwrap();
+        restore(&state, &p, &taken[0].id).await.unwrap();
+        let calls = p.calls();
+        assert!(calls[calls.len() - 2].starts_with("postgres_restore ledger_prod "));
+        assert_eq!(
+            calls.last().unwrap(),
+            "postgres_sql postgres GRANT CONNECT ON DATABASE \"ledger_prod\" TO \"ledger_prod_app\";\n",
+            "the recreated database lets its roles connect again"
+        );
     }
 }

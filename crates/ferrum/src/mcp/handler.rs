@@ -4,8 +4,9 @@ use crate::server::AppState;
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::tool::ToolCallContext;
 use rmcp::model::{
-    CallToolRequestParams, CallToolResult, ContentBlock, Implementation, ListToolsResult,
-    PaginatedRequestParams, ServerCapabilities, ServerInfo, Tool,
+    CallToolRequestParams, CallToolResult, ContentBlock, Implementation, ListResourcesResult,
+    ListToolsResult, PaginatedRequestParams, ReadResourceRequestParams, ReadResourceResult,
+    Resource, ResourceContents, ServerCapabilities, ServerInfo, Tool,
 };
 use rmcp::service::RequestContext;
 use rmcp::{ErrorData as McpError, RoleServer, ServerHandler};
@@ -17,7 +18,11 @@ const INSTRUCTIONS: &str = "Ferrum runs the applications and databases on one Ub
 The read tools report on applications, deploys, logs, metrics, certificates, databases and the \
 host; the write tools set environment variables, edit custom nginx directives, restart, deploy, \
 roll back, create databases, add domains and adjust resource limits. Deleting anything, managing \
-people and hardening the host stay in the panel.";
+people and hardening the host stay in the panel. The help resources (ferrum://help/...) are the \
+conventions a repository follows to run here: ferrum.toml, processes, domains, the Aptfile, \
+environment variables, databases and roles; read them before preparing a repository.";
+
+const HELP_SCHEME: &str = "ferrum://help/";
 
 pub struct Ferrum {
     pub(super) state: AppState,
@@ -70,13 +75,51 @@ pub(super) fn finish<T: Serialize>(outcome: Result<T, ApiError>) -> ToolResult {
 
 impl ServerHandler for Ferrum {
     fn get_info(&self) -> ServerInfo {
-        let mut info = ServerInfo::new(ServerCapabilities::builder().enable_tools().build());
+        let mut info = ServerInfo::new(
+            ServerCapabilities::builder()
+                .enable_tools()
+                .enable_resources()
+                .build(),
+        );
         let mut implementation = Implementation::default();
         implementation.name = "ferrum".into();
         implementation.version = crate::cli::VERSION.into();
         info.server_info = implementation;
         info.instructions = Some(INSTRUCTIONS.into());
         info
+    }
+
+    async fn list_resources(
+        &self,
+        _: Option<PaginatedRequestParams>,
+        _: RequestContext<RoleServer>,
+    ) -> Result<ListResourcesResult, McpError> {
+        let resources = crate::help::list()
+            .into_iter()
+            .map(|t| {
+                let mut resource = Resource::new(format!("{HELP_SCHEME}{}", t.slug), t.slug);
+                resource.title = Some(t.title);
+                resource.mime_type = Some("text/markdown".into());
+                resource
+            })
+            .collect();
+        Ok(ListResourcesResult::with_all_items(resources))
+    }
+
+    async fn read_resource(
+        &self,
+        request: ReadResourceRequestParams,
+        _: RequestContext<RoleServer>,
+    ) -> Result<ReadResourceResult, McpError> {
+        let topic = request
+            .uri
+            .strip_prefix(HELP_SCHEME)
+            .and_then(crate::help::get)
+            .ok_or_else(|| McpError::resource_not_found(request.uri.clone(), None))?;
+        Ok(ReadResourceResult::new(vec![ResourceContents::text(
+            topic.body.unwrap_or_default(),
+            request.uri,
+        )]))
     }
 
     async fn list_tools(

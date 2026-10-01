@@ -1,0 +1,20 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT renew_after FROM cert_attempts WHERE domain = ?",
+  "describe": {
+    "columns": [
+      {
+        "name": "renew_after",
+        "ordinal": 0,
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      true
+    ]
+  },
+  "hash": "93b37ac46fadbb149ee5a99d5e3259e2b49ceed3c6b912830c54e9299a776133"
+}

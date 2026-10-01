@@ -1,0 +1,26 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT a.id AS \"id!\", a.slug AS \"slug!\" FROM app_domains d\n           JOIN apps a ON a.id = d.app_id WHERE d.domain = ?",
+  "describe": {
+    "columns": [
+      {
+        "name": "id!",
+        "ordinal": 0,
+        "type_info": "Text"
+      },
+      {
+        "name": "slug!",
+        "ordinal": 1,
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "c581d039d8089506a0080f962a66302bd95b04774c3c38338e1105d0f0505c4f"
+}

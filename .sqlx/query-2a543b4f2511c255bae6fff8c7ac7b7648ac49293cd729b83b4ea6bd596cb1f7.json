@@ -1,0 +1,20 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT count(*) FROM events WHERE kind = ? AND app_id IS ? AND subject = ? AND read_at IS NULL",
+  "describe": {
+    "columns": [
+      {
+        "name": "count(*)",
+        "ordinal": 0,
+        "type_info": "Integer"
+      }
+    ],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "2a543b4f2511c255bae6fff8c7ac7b7648ac49293cd729b83b4ea6bd596cb1f7"
+}

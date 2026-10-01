@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO push_prefs (user_id, kind, enabled) VALUES (?, ?, ?)\n         ON CONFLICT(user_id, kind) DO UPDATE SET enabled = excluded.enabled",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": []
+  },
+  "hash": "24a44b9ca41c67e0c77973cb21d731007a355648d440772390bde4191f3e8818"
+}

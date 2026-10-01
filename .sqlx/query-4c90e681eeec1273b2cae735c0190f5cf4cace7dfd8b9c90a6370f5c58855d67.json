@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE redis_instances SET env_label = ? WHERE app_id = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": []
+  },
+  "hash": "4c90e681eeec1273b2cae735c0190f5cf4cace7dfd8b9c90a6370f5c58855d67"
+}

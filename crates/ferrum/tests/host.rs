@@ -83,7 +83,7 @@ async fn an_app_reports_its_cgroup_only_while_the_unit_exists() {
     assert!(idle.json["cpu_pct"].is_null());
 
     h.platform.set_cgroup(
-        "ferrum-app-ledger",
+        "ferrum-app-ledger-web",
         CgroupStats {
             memory_current: 90_000_000,
             memory_peak: 120_000_000,

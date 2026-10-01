@@ -9,6 +9,7 @@ import {
   useEnableUpdates,
   useHost,
   useMetrics,
+  useRuntimes,
   useSecurity,
   useUnban,
 } from "@/lib/api";
@@ -16,7 +17,8 @@ import type { JobStatus, Security } from "@/types/api";
 import { PageTitle } from "@/components/PageTitle";
 import { EnableButton, enableFailure } from "@/components/EnableButton";
 import { ChartKey, MetricChart, type Band } from "@/components/MetricChart";
-import { Card, CardBody, CardHeader } from "@/components/ui/Card";
+import { RuntimeMark } from "@/components/RuntimeMark";
+import { Card, CardBody, CardFoot, CardHeader } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
 import { Badge } from "@/components/ui/Badge";
 import { Code } from "@/components/ui/Code";
@@ -24,7 +26,7 @@ import { Meter } from "@/components/ui/Meter";
 import { Row } from "@/components/ui/Row";
 import { Segmented } from "@/components/ui/Segmented";
 import { Sheet } from "@/components/ui/Sheet";
-import { ago, pct, uptime } from "@/lib/utils";
+import { ago, bytes, pct, uptime } from "@/lib/utils";
 import { useRange } from "@/lib/range";
 
 const BANDS: Record<"cpu" | "memory", Band[]> = {
@@ -53,7 +55,7 @@ export function SystemPage() {
       <PageTitle above={`${host.os} · ${host.arch} · up ${uptime(host.uptime_secs)}`} title="System" />
 
       <div className="grid gap-4 lg:grid-cols-12">
-        <div className="lg:col-span-8">
+        <div className="lg:col-span-8 min-w-0">
           <Card>
             <CardHeader
               title="Load"
@@ -82,7 +84,7 @@ export function SystemPage() {
           </Card>
         </div>
 
-        <div className="lg:col-span-4">
+        <div className="lg:col-span-4 min-w-0">
           <Card>
             <CardHeader title="Capacity" />
             <CardBody className="space-y-4">
@@ -99,24 +101,24 @@ export function SystemPage() {
 
         {security ? (
           <>
-            <div className="lg:col-span-5">
+            <div className="lg:col-span-5 min-w-0">
               <Firewall firewall={security.firewall} job={security.jobs.firewall} />
             </div>
 
-            <div className="lg:col-span-7">
+            <div className="lg:col-span-7 min-w-0">
               <Bans bans={security.bans} job={security.jobs.fail2ban} />
             </div>
 
-            <div className="lg:col-span-5">
+            <div className="lg:col-span-5 min-w-0">
               <Updates updates={security.updates} job={security.jobs.updates} />
             </div>
 
-            <div className="lg:col-span-7">
+            <div className="lg:col-span-7 min-w-0">
               <Ssh ssh={security.ssh} hostname={host.hostname} />
             </div>
           </>
         ) : securityError ? (
-          <div className="lg:col-span-12">
+          <div className="lg:col-span-12 min-w-0">
             <Card>
               <CardHeader title="Hardening" hint="The host did not answer" />
               <CardBody>
@@ -125,8 +127,54 @@ export function SystemPage() {
             </Card>
           </div>
         ) : null}
+
+        <div className="lg:col-span-12 min-w-0">
+          <Runtimes />
+        </div>
       </div>
     </>
+  );
+}
+
+function Runtimes() {
+  const { data } = useRuntimes();
+  if (!data) return null;
+
+  return (
+    <Card>
+      <CardHeader title="Runtimes" hint="Toolchains installed for your apps, one directory per version" />
+      <CardBody className="pb-3">
+        {data.installed.length === 0 ? (
+          <p className="text-[13px] text-ink-3">None yet. The first app that needs one installs it.</p>
+        ) : (
+          <ul>
+            {data.installed.map((t) => (
+              <li key={`${t.kind}-${t.version}`} className="py-3 border-b border-line last:border-0 min-w-0">
+                <div className="flex items-center gap-x-3 gap-y-1 flex-wrap">
+                  <RuntimeMark runtime={t.kind} version={t.version} />
+                  <span className="text-[12.5px] text-ink-3">
+                    {t.used_by.length ? `used by ${t.used_by.join(", ")}` : "not used"}
+                  </span>
+                  <span className="ml-auto text-[12.5px] text-ink-4 tnum">{bytes(t.size_bytes)}</span>
+                </div>
+                <div className="flex items-center gap-2 mt-2">
+                  <Code className="flex-1 min-w-0 break-all">{t.path}</Code>
+                  <Button size="sm" variant="ghost" onClick={() => navigator.clipboard?.writeText(t.path)}>
+                    Copy
+                  </Button>
+                </div>
+              </li>
+            ))}
+          </ul>
+        )}
+      </CardBody>
+      <CardFoot>
+        <span>
+          Toolchains are private to Ferrum and are never on the system PATH. Run one over SSH with its
+          full path.
+        </span>
+      </CardFoot>
+    </Card>
   );
 }
 

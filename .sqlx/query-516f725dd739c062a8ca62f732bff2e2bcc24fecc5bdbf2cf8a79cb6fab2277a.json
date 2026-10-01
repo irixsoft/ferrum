@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE database_roles SET password = ? WHERE id = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": []
+  },
+  "hash": "516f725dd739c062a8ca62f732bff2e2bcc24fecc5bdbf2cf8a79cb6fab2277a"
+}

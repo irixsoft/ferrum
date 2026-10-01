@@ -2,6 +2,7 @@ use super::{
     Commands, Detection, Health, Mirrors, Phase, Runtime, RuntimeKind, Source, Target, path_with,
     semver_like,
 };
+use crate::apps::processes::NewProcess;
 use crate::detect::RepoTree;
 use std::path::Path;
 
@@ -124,12 +125,11 @@ impl Runtime for Dotnet {
             commands: Commands {
                 install: None,
                 build: Some(project.publish()),
-                start: Some(project.start()),
                 migrate: project
                     .uses_ef
                     .then(|| "dotnet ef database update".to_string()),
             },
-            output_dir: None,
+            processes: vec![NewProcess::web(&project.start(), None)],
             health: Health {
                 path: "/".into(),
                 startup_budget_secs: STARTUP_BUDGET_SECS,
@@ -203,7 +203,7 @@ mod tests {
             d.commands.build.as_deref(),
             Some("dotnet publish Api/Api.csproj -c Release -o out")
         );
-        assert_eq!(d.commands.start.as_deref(), Some("dotnet out/Api.dll"));
+        assert_eq!(d.start(), Some("dotnet out/Api.dll"));
         assert_eq!(d.health.startup_budget_secs, 120);
         assert!(d.commands.migrate.is_none());
         assert_eq!(d.confidence, 80);
@@ -221,7 +221,7 @@ mod tests {
             d.commands.build.as_deref(),
             Some("dotnet publish -c Release -o out")
         );
-        assert_eq!(d.commands.start.as_deref(), Some("dotnet out/ShopWeb.dll"));
+        assert_eq!(d.start(), Some("dotnet out/ShopWeb.dll"));
         assert_eq!(
             d.commands.migrate.as_deref(),
             Some("dotnet ef database update")
@@ -235,7 +235,7 @@ mod tests {
             ("Web/Web.csproj", r#"<Project Sdk="Microsoft.NET.Sdk.Web">"#),
         ]);
         let d = Dotnet.detect(&tree).unwrap();
-        assert_eq!(d.commands.start.as_deref(), Some("dotnet out/Web.dll"));
+        assert_eq!(d.start(), Some("dotnet out/Web.dll"));
     }
 
     #[test]

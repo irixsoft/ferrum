@@ -1,0 +1,32 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT path AS \"path!\", process AS \"process!\", websocket AS \"websocket!: bool\"\n           FROM app_routes WHERE app_id = ? ORDER BY length(path), path",
+  "describe": {
+    "columns": [
+      {
+        "name": "path!",
+        "ordinal": 0,
+        "type_info": "Text"
+      },
+      {
+        "name": "process!",
+        "ordinal": 1,
+        "type_info": "Text"
+      },
+      {
+        "name": "websocket!: bool",
+        "ordinal": 2,
+        "type_info": "Integer"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "fa888f85064eada42d5a1b0240afdf565511d704402fc2053955466f75a8878f"
+}

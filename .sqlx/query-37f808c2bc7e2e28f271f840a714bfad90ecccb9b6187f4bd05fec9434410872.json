@@ -1,0 +1,62 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT id, kind, app_id, subject, sentence, link, created_at, read_at\n               FROM events WHERE read_at IS NULL ORDER BY created_at DESC, id DESC LIMIT ?",
+  "describe": {
+    "columns": [
+      {
+        "name": "id",
+        "ordinal": 0,
+        "type_info": "Text"
+      },
+      {
+        "name": "kind",
+        "ordinal": 1,
+        "type_info": "Text"
+      },
+      {
+        "name": "app_id",
+        "ordinal": 2,
+        "type_info": "Text"
+      },
+      {
+        "name": "subject",
+        "ordinal": 3,
+        "type_info": "Text"
+      },
+      {
+        "name": "sentence",
+        "ordinal": 4,
+        "type_info": "Text"
+      },
+      {
+        "name": "link",
+        "ordinal": 5,
+        "type_info": "Text"
+      },
+      {
+        "name": "created_at",
+        "ordinal": 6,
+        "type_info": "Text"
+      },
+      {
+        "name": "read_at",
+        "ordinal": 7,
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false,
+      false,
+      true,
+      false,
+      false,
+      true,
+      false,
+      true
+    ]
+  },
+  "hash": "37f808c2bc7e2e28f271f840a714bfad90ecccb9b6187f4bd05fec9434410872"
+}

@@ -10,6 +10,7 @@ import { Card } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { ago } from "@/lib/utils";
+import { limitsLine } from "@/lib/processes";
 
 export function AppsPage() {
   const { data: apps = [], isLoading } = useApps();
@@ -71,7 +72,7 @@ export function AppsPage() {
                     <Link to="/apps/$slug" params={{ slug: app.slug }} className="block">
                       <span className="text-[14px] font-medium text-ink">{app.name}</span>
                       <span className="block text-[12.5px] text-ink-4 truncate">
-                        {app.domains[0] ?? "No domain"}
+                        {app.domains.find((d) => d.primary)?.domain ?? "No domain"}
                       </span>
                     </Link>
                   </td>
@@ -82,14 +83,8 @@ export function AppsPage() {
                     {app.repository}
                     <span className="text-ink-4"> @ {app.git_ref}</span>
                   </td>
-                  <td className="px-3 py-3 text-[12.5px] text-ink-3">
-                    {app.runtime === "static" ? (
-                      <span className="text-ink-4">No process</span>
-                    ) : (
-                      <span className="font-mono tnum">
-                        {app.memory_mb} MB · {app.cpu_percent}%
-                      </span>
-                    )}
+                  <td className="px-3 py-3 text-[12.5px] text-ink-3 tnum">
+                    {limitsLine(app.processes, app.cpu_percent)}
                   </td>
                   <td className="px-3 py-3 text-[12.5px] text-ink-3">{ago(app.created_at)}</td>
                   <td className="px-5 py-3 text-right">

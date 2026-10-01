@@ -571,6 +571,7 @@ impl Platform for Ubuntu {
             ServiceAction::DaemonReload => vec!["systemctl", "daemon-reload"],
             ServiceAction::EnableNow => vec!["systemctl", "enable", "--now", unit],
             ServiceAction::DisableNow => vec!["systemctl", "disable", "--now", unit],
+            ServiceAction::ResetFailed => vec!["systemctl", "reset-failed", unit],
             other => vec!["systemctl", other.as_str(), unit],
         };
         exec::run(&argv).map(|_| ())

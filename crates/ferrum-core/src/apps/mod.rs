@@ -1,22 +1,26 @@
 pub mod commands;
+pub mod domains;
 pub mod env;
 pub mod packages;
 pub mod ports;
+pub mod processes;
 pub mod provision;
 pub mod unit;
 pub mod vhost;
 
 use crate::detect;
-use crate::dns::validate_hostname;
-use crate::runtime::{self, Commands, Health, RuntimeKind};
+use crate::manifest::Manifest;
+use crate::runtime::{self, Commands, RuntimeKind};
 use crate::state::State;
 use crate::time;
+use domains::{Domain, NewDomain};
+use ferrum_platform::Platform;
+use processes::{NewProcess, Process, WEB};
 use serde::{Deserialize, Serialize};
 use sqlx::Sqlite;
 
 pub const SLUG_MAX: usize = 40;
 const NAME_MAX: usize = 80;
-const PORT_NAME_MAX: usize = 16;
 
 #[derive(Debug, thiserror::Error)]
 pub enum AppError {
@@ -26,22 +30,23 @@ pub enum AppError {
     NotFound,
     #[error("{0}")]
     Invalid(String),
-    #[error("A static site has no process to run.")]
+    #[error("A folder process has no program to run.")]
     NoProcess,
+    #[error("The application has no domain {0}.")]
+    DomainNotFound(String),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Route {
     pub path: String,
-    pub port_name: String,
-    pub port: u16,
+    pub process: String,
     pub websocket: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NewRoute {
     pub path: String,
-    pub port_name: String,
+    pub process: String,
     #[serde(default)]
     pub websocket: bool,
 }
@@ -50,8 +55,18 @@ impl NewRoute {
     pub fn main() -> Self {
         Self {
             path: "/".into(),
-            port_name: "main".into(),
+            process: WEB.into(),
             websocket: false,
+        }
+    }
+}
+
+impl From<&Route> for NewRoute {
+    fn from(r: &Route) -> Self {
+        Self {
+            path: r.path.clone(),
+            process: r.process.clone(),
+            websocket: r.websocket,
         }
     }
 }
@@ -69,30 +84,55 @@ pub struct App {
     pub toolchain: RuntimeKind,
     pub runtime_version: String,
     pub commands: Commands,
-    pub output_dir: Option<String>,
-    pub health: Health,
-    pub memory_mb: u32,
+    pub startup_budget_secs: u32,
     pub cpu_percent: u32,
     pub pause_for_migrations: bool,
+    pub follow_repo_file: bool,
+    pub processes: Vec<Process>,
     pub routes: Vec<Route>,
     pub packages: Vec<String>,
-    pub domains: Vec<String>,
+    pub domains: Vec<Domain>,
     pub current_release_id: Option<String>,
     pub created_at: String,
     pub updated_at: String,
 }
 
 impl App {
-    pub fn main_port(&self) -> Option<u16> {
-        self.routes
-            .iter()
-            .find(|r| r.path == "/")
-            .or(self.routes.first())
-            .map(|r| r.port)
+    pub fn process(&self, name: &str) -> Option<&Process> {
+        self.processes.iter().find(|p| p.name == name)
     }
 
-    pub fn primary_domain(&self) -> Option<&str> {
-        self.domains.first().map(String::as_str)
+    pub fn command_processes(&self) -> impl Iterator<Item = &Process> {
+        self.processes.iter().filter(|p| p.is_command())
+    }
+
+    pub fn port_processes(&self) -> impl Iterator<Item = &Process> {
+        self.processes.iter().filter(|p| p.port.is_some())
+    }
+
+    pub fn port_of(&self, process: &str) -> Option<u16> {
+        self.process(process).and_then(|p| p.port)
+    }
+
+    /// Each port process with its port, in order.
+    pub fn ports(&self) -> Vec<(String, u16)> {
+        self.processes
+            .iter()
+            .filter_map(|p| p.port.map(|port| (p.name.clone(), port)))
+            .collect()
+    }
+
+    /// The port behind `/`: `web`'s when it has one, else the root route's process, else the
+    /// first process with a port.
+    pub fn main_port(&self) -> Option<u16> {
+        self.port_of(WEB)
+            .or_else(|| {
+                self.routes
+                    .iter()
+                    .find(|r| r.path == "/")
+                    .and_then(|r| self.port_of(&r.process))
+            })
+            .or_else(|| self.port_processes().next().and_then(|p| p.port))
     }
 }
 
@@ -108,14 +148,14 @@ pub struct NewApp {
     pub toolchain: RuntimeKind,
     pub runtime_version: String,
     pub commands: Commands,
-    pub output_dir: Option<String>,
-    pub health: Health,
-    pub memory_mb: u32,
+    pub startup_budget_secs: u32,
     pub cpu_percent: u32,
     pub pause_for_migrations: bool,
+    pub follow_repo_file: bool,
+    pub processes: Vec<NewProcess>,
     pub routes: Vec<NewRoute>,
     pub packages: Vec<String>,
-    pub domains: Vec<String>,
+    pub domains: Vec<NewDomain>,
     pub env: Vec<env::EnvVar>,
     pub env_hints: Vec<env::EnvHint>,
 }
@@ -132,11 +172,11 @@ impl Default for NewApp {
             toolchain: RuntimeKind::Node,
             runtime_version: String::new(),
             commands: Commands::default(),
-            output_dir: None,
-            health: Health::default(),
-            memory_mb: 512,
+            startup_budget_secs: 60,
             cpu_percent: 100,
             pause_for_migrations: true,
+            follow_repo_file: false,
+            processes: Vec::new(),
             routes: vec![NewRoute::main()],
             packages: Vec::new(),
             domains: Vec::new(),
@@ -156,14 +196,14 @@ pub struct AppChanges {
     pub toolchain: Option<RuntimeKind>,
     pub runtime_version: Option<String>,
     pub commands: Option<Commands>,
-    pub output_dir: Option<String>,
-    pub health: Option<Health>,
-    pub memory_mb: Option<u32>,
+    pub startup_budget_secs: Option<u32>,
     pub cpu_percent: Option<u32>,
     pub pause_for_migrations: Option<bool>,
+    pub follow_repo_file: Option<bool>,
+    pub processes: Option<Vec<NewProcess>>,
     pub routes: Option<Vec<NewRoute>>,
     pub packages: Option<Vec<String>>,
-    pub domains: Option<Vec<String>>,
+    pub domains: Option<Vec<NewDomain>>,
 }
 
 pub fn valid_slug(slug: &str) -> bool {
@@ -174,16 +214,6 @@ pub fn valid_slug(slug: &str) -> bool {
             .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || *b == b'-')
         && !slug.starts_with('-')
         && !slug.ends_with('-')
-}
-
-fn valid_port_name(name: &str) -> bool {
-    let bytes = name.as_bytes();
-    name != crate::redis::PORT_NAME
-        && (1..=PORT_NAME_MAX).contains(&bytes.len())
-        && bytes[0].is_ascii_lowercase()
-        && bytes
-            .iter()
-            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || *b == b'_')
 }
 
 fn valid_path(path: &str) -> bool {
@@ -211,7 +241,8 @@ fn invalid(message: impl Into<String>) -> AppError {
     AppError::Invalid(message.into())
 }
 
-pub fn validate(new: &NewApp) -> Result<(), AppError> {
+/// Returns the settled domain rows, so a caller that goes on to write does not settle twice.
+pub fn validate(new: &NewApp) -> Result<Vec<NewDomain>, AppError> {
     if !valid_slug(&new.slug) {
         return Err(invalid(
             "A slug is 1 to 40 characters of lowercase letters, digits and hyphens, and cannot start or end with a hyphen.",
@@ -229,12 +260,7 @@ pub fn validate(new: &NewApp) -> Result<(), AppError> {
     if new.root.starts_with('/') || new.root.contains("..") {
         return Err(invalid("The root directory is relative to the repository."));
     }
-    if !new.toolchain.installs_toolchain() {
-        return Err(invalid(
-            "A static site is built with Node, Bun or .NET; pick one.",
-        ));
-    }
-    if new.runtime.has_process() && new.toolchain != new.runtime {
+    if new.toolchain != new.runtime {
         return Err(invalid("The toolchain must match the runtime."));
     }
     if !runtime::by_kind(new.toolchain).valid_version(&new.runtime_version) {
@@ -243,36 +269,23 @@ pub fn validate(new: &NewApp) -> Result<(), AppError> {
             new.runtime_version, new.toolchain
         )));
     }
-    if new.runtime.has_process() {
-        if new
-            .commands
-            .start
-            .as_deref()
-            .unwrap_or("")
-            .trim()
-            .is_empty()
-        {
-            return Err(invalid("A server application needs a start command."));
+    if new.processes.is_empty() {
+        return Err(invalid("An application needs at least one process."));
+    }
+    for (i, process) in new.processes.iter().enumerate() {
+        processes::validate(process).map_err(invalid)?;
+        if new.processes[..i].iter().any(|p| p.name == process.name) {
+            return Err(invalid(format!(
+                "The process {} is listed twice.",
+                process.name
+            )));
         }
-    } else {
-        if new
-            .commands
-            .build
-            .as_deref()
-            .unwrap_or("")
-            .trim()
-            .is_empty()
-        {
-            return Err(invalid("A static site needs a build command."));
-        }
-        match new.output_dir.as_deref().map(str::trim) {
-            Some(dir) if !dir.is_empty() && !dir.starts_with('/') && !dir.contains("..") => {}
-            _ => {
-                return Err(invalid(
-                    "A static site needs an output directory inside the build.",
-                ));
-            }
-        }
+    }
+    let build = new.commands.build.as_deref().unwrap_or("").trim();
+    if new.processes.iter().any(NewProcess::is_folder) && build.is_empty() {
+        return Err(invalid(
+            "A folder process needs a build command that produces it.",
+        ));
     }
     if new.routes.is_empty() {
         return Err(invalid("An application needs at least one route."));
@@ -284,10 +297,16 @@ pub fn validate(new: &NewApp) -> Result<(), AppError> {
                 route.path
             )));
         }
-        if !valid_port_name(&route.port_name) {
+        let Some(target) = new.processes.iter().find(|p| p.name == route.process) else {
             return Err(invalid(format!(
-                "{} is not a valid port name; use lowercase letters, digits and underscores, and not redis.",
-                route.port_name
+                "The route {} points at {}, which is not one of the processes.",
+                route.path, route.process
+            )));
+        };
+        if !target.is_folder() && !target.port {
+            return Err(invalid(format!(
+                "The route {} points at {}, which has no port to receive it.",
+                route.path, route.process
             )));
         }
         if new.routes[..i].iter().any(|r| r.path == route.path) {
@@ -302,48 +321,36 @@ pub fn validate(new: &NewApp) -> Result<(), AppError> {
             return Err(invalid(format!("{package} is not a valid package name.")));
         }
     }
-    for (i, domain) in new.domains.iter().enumerate() {
-        validate_hostname(domain).map_err(invalid)?;
-        if new.domains[..i].iter().any(|d| d == domain) {
-            return Err(invalid(format!("{domain} is listed twice.")));
-        }
-    }
+    let settled = domains::settle(&new.domains, &new.processes, &new.routes)?;
     for var in &new.env {
         env::valid_key(&var.key)?;
     }
     for hint in &new.env_hints {
         env::valid_key(&hint.key)?;
     }
-    if !(64..=65_536).contains(&new.memory_mb) {
-        return Err(invalid("Memory must be between 64 MB and 64 GB."));
-    }
     if !(10..=1600).contains(&new.cpu_percent) {
         return Err(invalid("CPU must be between 10% and 1600%."));
     }
-    if !new.health.path.starts_with('/') {
-        return Err(invalid("The health check path must start with /."));
-    }
-    if !(5..=3600).contains(&new.health.startup_budget_secs) {
+    if !(5..=3600).contains(&new.startup_budget_secs) {
         return Err(invalid(
             "The startup budget must be between 5 and 3600 seconds.",
         ));
     }
-    Ok(())
+    Ok(settled)
 }
 
 pub async fn create(state: &State, new: NewApp) -> anyhow::Result<App> {
-    validate(&new)?;
+    let settled = validate(&new)?;
     let id = uuid::Uuid::new_v4().to_string();
     let mut tx = state.pool.begin_with("BEGIN IMMEDIATE").await?;
 
-    let health_budget = new.health.startup_budget_secs as i64;
-    let memory = new.memory_mb as i64;
+    let budget = new.startup_budget_secs as i64;
     let cpu = new.cpu_percent as i64;
     let inserted = sqlx::query!(
         "INSERT INTO apps (id, slug, name, repository, git_ref, tracking, root, runtime, toolchain,
-                           runtime_version, install_cmd, build_cmd, start_cmd, migrate_cmd, output_dir,
-                           health_path, startup_budget_secs, memory_mb, cpu_percent, pause_for_migrations)
-         VALUES (?, ?, ?, ?, ?, 'releases', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                           runtime_version, install_cmd, build_cmd, migrate_cmd, startup_budget_secs,
+                           cpu_percent, pause_for_migrations, follow_repo_file)
+         VALUES (?, ?, ?, ?, ?, 'releases', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         id,
         new.slug,
         new.name,
@@ -355,14 +362,11 @@ pub async fn create(state: &State, new: NewApp) -> anyhow::Result<App> {
         new.runtime_version,
         new.commands.install,
         new.commands.build,
-        new.commands.start,
         new.commands.migrate,
-        new.output_dir,
-        new.health.path,
-        health_budget,
-        memory,
+        budget,
         cpu,
         new.pause_for_migrations,
+        new.follow_repo_file,
     )
     .execute(&mut *tx)
     .await;
@@ -373,9 +377,11 @@ pub async fn create(state: &State, new: NewApp) -> anyhow::Result<App> {
         return Err(e.into());
     }
 
+    processes::write(&mut tx, &id, &new.processes).await?;
     write_routes(&mut tx, &id, &new.routes).await?;
     write_packages(&mut tx, &id, &new.packages).await?;
-    write_domains(&mut tx, &id, &new.domains).await?;
+    domains::check_providers(&mut tx, &settled).await?;
+    domains::write(&mut tx, &id, &settled).await?;
     for var in &new.env {
         env::set_in(&mut tx, &state.key, &id, &var.key, &var.value).await?;
     }
@@ -389,17 +395,13 @@ pub async fn create(state: &State, new: NewApp) -> anyhow::Result<App> {
 
 pub async fn update(state: &State, slug: &str, changes: AppChanges) -> anyhow::Result<App> {
     let current = by_slug(state, slug).await?.ok_or(AppError::NotFound)?;
-    let routes: Vec<NewRoute> = match &changes.routes {
-        Some(routes) => routes.clone(),
-        None => current
-            .routes
-            .iter()
-            .map(|r| NewRoute {
-                path: r.path.clone(),
-                port_name: r.port_name.clone(),
-                websocket: r.websocket,
-            })
-            .collect(),
+    let processes: Vec<NewProcess> = match changes.processes {
+        Some(processes) => processes,
+        None => current.processes.iter().map(NewProcess::from).collect(),
+    };
+    let routes: Vec<NewRoute> = match changes.routes {
+        Some(routes) => routes,
+        None => current.routes.iter().map(NewRoute::from).collect(),
     };
     let merged = NewApp {
         slug: current.slug.clone(),
@@ -411,35 +413,33 @@ pub async fn update(state: &State, slug: &str, changes: AppChanges) -> anyhow::R
         toolchain: changes.toolchain.unwrap_or(current.toolchain),
         runtime_version: changes.runtime_version.unwrap_or(current.runtime_version),
         commands: changes.commands.unwrap_or(current.commands),
-        output_dir: match changes.output_dir {
-            Some(dir) if dir.trim().is_empty() => None,
-            Some(dir) => Some(dir),
-            None => current.output_dir,
-        },
-        health: changes.health.unwrap_or(current.health),
-        memory_mb: changes.memory_mb.unwrap_or(current.memory_mb),
+        startup_budget_secs: changes
+            .startup_budget_secs
+            .unwrap_or(current.startup_budget_secs),
         cpu_percent: changes.cpu_percent.unwrap_or(current.cpu_percent),
         pause_for_migrations: changes
             .pause_for_migrations
             .unwrap_or(current.pause_for_migrations),
+        follow_repo_file: changes.follow_repo_file.unwrap_or(current.follow_repo_file),
+        processes,
         routes,
         packages: changes.packages.unwrap_or(current.packages),
-        domains: changes.domains.unwrap_or(current.domains),
+        domains: changes
+            .domains
+            .unwrap_or_else(|| current.domains.iter().map(NewDomain::from).collect()),
         env: Vec::new(),
         env_hints: Vec::new(),
     };
-    validate(&merged)?;
+    let settled = validate(&merged)?;
 
     let mut tx = state.pool.begin_with("BEGIN IMMEDIATE").await?;
-    let health_budget = merged.health.startup_budget_secs as i64;
-    let memory = merged.memory_mb as i64;
+    let budget = merged.startup_budget_secs as i64;
     let cpu = merged.cpu_percent as i64;
     sqlx::query!(
         "UPDATE apps SET name = ?, git_ref = ?, root = ?, runtime = ?, toolchain = ?,
-                         runtime_version = ?, install_cmd = ?, build_cmd = ?, start_cmd = ?,
-                         migrate_cmd = ?, output_dir = ?, health_path = ?, startup_budget_secs = ?,
-                         memory_mb = ?, cpu_percent = ?, pause_for_migrations = ?,
-                         updated_at = datetime('now')
+                         runtime_version = ?, install_cmd = ?, build_cmd = ?, migrate_cmd = ?,
+                         startup_budget_secs = ?, cpu_percent = ?, pause_for_migrations = ?,
+                         follow_repo_file = ?, updated_at = datetime('now')
          WHERE id = ?",
         merged.name,
         merged.git_ref,
@@ -449,14 +449,11 @@ pub async fn update(state: &State, slug: &str, changes: AppChanges) -> anyhow::R
         merged.runtime_version,
         merged.commands.install,
         merged.commands.build,
-        merged.commands.start,
         merged.commands.migrate,
-        merged.output_dir,
-        merged.health.path,
-        health_budget,
-        memory,
+        budget,
         cpu,
         merged.pause_for_migrations,
+        merged.follow_repo_file,
         current.id,
     )
     .execute(&mut *tx)
@@ -465,8 +462,14 @@ pub async fn update(state: &State, slug: &str, changes: AppChanges) -> anyhow::R
     sqlx::query!("DELETE FROM app_routes WHERE app_id = ?", current.id)
         .execute(&mut *tx)
         .await?;
+    processes::write(&mut tx, &current.id, &merged.processes).await?;
     write_routes(&mut tx, &current.id, &merged.routes).await?;
-    let mut kept: Vec<&str> = merged.routes.iter().map(|r| r.port_name.as_str()).collect();
+    let mut kept: Vec<&str> = merged
+        .processes
+        .iter()
+        .filter(|p| p.port && !p.is_folder())
+        .map(|p| p.name.as_str())
+        .collect();
     kept.push(crate::redis::PORT_NAME);
     ports::release_unused(&mut tx, &current.id, &kept).await?;
 
@@ -474,15 +477,61 @@ pub async fn update(state: &State, slug: &str, changes: AppChanges) -> anyhow::R
         .execute(&mut *tx)
         .await?;
     write_packages(&mut tx, &current.id, &merged.packages).await?;
-    sqlx::query!("DELETE FROM app_domains WHERE app_id = ?", current.id)
-        .execute(&mut *tx)
-        .await?;
-    write_domains(&mut tx, &current.id, &merged.domains).await?;
+    domains::check_providers(&mut tx, &settled).await?;
+    domains::write(&mut tx, &current.id, &settled).await?;
     tx.commit().await?;
 
     by_slug(state, slug)
         .await?
         .ok_or_else(|| AppError::NotFound.into())
+}
+
+/// The repo's file replaces the process list and paths when it states them, and each command
+/// it states; everything it is silent on keeps its stored value. `[database]` speaks for the
+/// first linked database only, so two databases never claim the same labels.
+pub async fn apply_manifest(
+    state: &State,
+    platform: &dyn Platform,
+    app: &App,
+    manifest: &Manifest,
+) -> anyhow::Result<App> {
+    if let Some(spec) = &manifest.database
+        && let Some(first) = crate::postgres::names_for(state, &app.id).await?.first()
+    {
+        crate::postgres::link_with_labels(state, platform, app, first, Some(spec)).await?;
+    }
+    if let Some(label) = manifest.redis.as_ref().and_then(|r| r.url.as_deref()) {
+        crate::redis::set_label(state, &app.id, label).await?;
+    }
+    let mut commands = app.commands.clone();
+    if manifest.commands.install.is_some() {
+        commands.install = manifest.commands.install.clone();
+    }
+    if manifest.commands.build.is_some() {
+        commands.build = manifest.commands.build.clone();
+    }
+    if manifest.commands.migrate.is_some() {
+        commands.migrate = manifest.commands.migrate.clone();
+    }
+    let (processes, routes) = if manifest.states_processes() {
+        (
+            Some(manifest.processes.clone()),
+            Some(manifest.routes.clone()),
+        )
+    } else {
+        (None, None)
+    };
+    update(
+        state,
+        &app.slug,
+        AppChanges {
+            commands: Some(commands),
+            processes,
+            routes,
+            ..AppChanges::default()
+        },
+    )
+    .await
 }
 
 pub async fn set_git_ref(state: &State, id: &str, git_ref: &str) -> anyhow::Result<()> {
@@ -509,12 +558,12 @@ async fn write_routes(
     routes: &[NewRoute],
 ) -> anyhow::Result<()> {
     for route in routes {
-        ports::allocate(tx, app_id, &route.port_name).await?;
         sqlx::query!(
-            "INSERT INTO app_routes (app_id, path, port_name, websocket) VALUES (?, ?, ?, ?)",
+            "INSERT INTO app_routes (app_id, path, port_name, process, websocket) VALUES (?, ?, ?, ?, ?)",
             app_id,
             route.path,
-            route.port_name,
+            route.process,
+            route.process,
             route.websocket,
         )
         .execute(&mut **tx)
@@ -540,33 +589,6 @@ async fn write_packages(
     Ok(())
 }
 
-async fn write_domains(
-    tx: &mut sqlx::Transaction<'_, Sqlite>,
-    app_id: &str,
-    domains: &[String],
-) -> anyhow::Result<()> {
-    for (position, domain) in domains.iter().enumerate() {
-        let position = position as i64;
-        let inserted = sqlx::query!(
-            "INSERT INTO app_domains (domain, app_id, position) VALUES (?, ?, ?)",
-            domain,
-            app_id,
-            position
-        )
-        .execute(&mut **tx)
-        .await;
-        if let Err(e) = inserted {
-            if is_unique_violation(&e) {
-                return Err(
-                    invalid(format!("{domain} already belongs to another application.")).into(),
-                );
-            }
-            return Err(e.into());
-        }
-    }
-    Ok(())
-}
-
 fn is_unique_violation(e: &sqlx::Error) -> bool {
     matches!(e, sqlx::Error::Database(db) if db.kind() == sqlx::error::ErrorKind::UniqueViolation)
 }
@@ -576,10 +598,10 @@ pub async fn list(state: &State) -> anyhow::Result<Vec<App>> {
         r#"SELECT id AS "id!", slug AS "slug!", name AS "name!", repository AS "repository!",
                   git_ref AS "git_ref!", root AS "root!",
                   runtime AS "runtime!: RuntimeKind", toolchain AS "toolchain!: RuntimeKind",
-                  runtime_version AS "runtime_version!", install_cmd, build_cmd, start_cmd, migrate_cmd,
-                  output_dir, health_path AS "health_path!", startup_budget_secs AS "startup_budget_secs!",
-                  memory_mb AS "memory_mb!", cpu_percent AS "cpu_percent!",
-                  pause_for_migrations AS "pause_for_migrations!: bool", current_release_id,
+                  runtime_version AS "runtime_version!", install_cmd, build_cmd, migrate_cmd,
+                  startup_budget_secs AS "startup_budget_secs!", cpu_percent AS "cpu_percent!",
+                  pause_for_migrations AS "pause_for_migrations!: bool",
+                  follow_repo_file AS "follow_repo_file!: bool", current_release_id,
                   created_at AS "created_at!", updated_at AS "updated_at!"
            FROM apps ORDER BY name, slug"#
     )
@@ -588,9 +610,10 @@ pub async fn list(state: &State) -> anyhow::Result<Vec<App>> {
 
     let mut apps = Vec::with_capacity(rows.len());
     for r in rows {
+        let processes = processes::of(state, &r.id).await?;
         let routes = routes_of(state, &r.id).await?;
         let packages = packages_of(state, &r.id).await?;
-        let domains = domains_of(state, &r.id).await?;
+        let domains = domains::of(state, &r.id).await?;
         apps.push(App {
             id: r.id,
             slug: r.slug,
@@ -604,17 +627,13 @@ pub async fn list(state: &State) -> anyhow::Result<Vec<App>> {
             commands: Commands {
                 install: r.install_cmd,
                 build: r.build_cmd,
-                start: r.start_cmd,
                 migrate: r.migrate_cmd,
             },
-            output_dir: r.output_dir,
-            health: Health {
-                path: r.health_path,
-                startup_budget_secs: r.startup_budget_secs as u32,
-            },
-            memory_mb: r.memory_mb as u32,
+            startup_budget_secs: r.startup_budget_secs as u32,
             cpu_percent: r.cpu_percent as u32,
             pause_for_migrations: r.pause_for_migrations,
+            follow_repo_file: r.follow_repo_file,
+            processes,
             routes,
             packages,
             domains,
@@ -644,10 +663,8 @@ pub async fn by_repository(state: &State, repository: &str) -> anyhow::Result<Ve
 
 async fn routes_of(state: &State, app_id: &str) -> anyhow::Result<Vec<Route>> {
     let rows = sqlx::query!(
-        r#"SELECT r.path AS "path!", r.port_name AS "port_name!", r.websocket AS "websocket!: bool",
-                  p.port AS "port!"
-           FROM app_routes r JOIN app_ports p ON p.app_id = r.app_id AND p.name = r.port_name
-           WHERE r.app_id = ? ORDER BY length(r.path), r.path"#,
+        r#"SELECT path AS "path!", process AS "process!", websocket AS "websocket!: bool"
+           FROM app_routes WHERE app_id = ? ORDER BY length(path), path"#,
         app_id
     )
     .fetch_all(&state.pool)
@@ -656,8 +673,7 @@ async fn routes_of(state: &State, app_id: &str) -> anyhow::Result<Vec<Route>> {
         .into_iter()
         .map(|r| Route {
             path: r.path,
-            port_name: r.port_name,
-            port: r.port as u16,
+            process: r.process,
             websocket: r.websocket,
         })
         .collect())
@@ -673,23 +689,34 @@ async fn packages_of(state: &State, app_id: &str) -> anyhow::Result<Vec<String>>
     Ok(rows.into_iter().map(|r| r.name).collect())
 }
 
-async fn domains_of(state: &State, app_id: &str) -> anyhow::Result<Vec<String>> {
-    let rows = sqlx::query!(
-        r#"SELECT domain AS "domain!" FROM app_domains WHERE app_id = ? ORDER BY position"#,
-        app_id
-    )
-    .fetch_all(&state.pool)
-    .await?;
-    Ok(rows.into_iter().map(|r| r.domain).collect())
-}
-
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+    use crate::apps::processes::ProcessKind;
     pub use crate::github::tests::state;
     use std::collections::HashSet;
 
+    /// `(path, process, websocket)` rows; `main` is spelled `web`, and every other process
+    /// named gets its own port and a start command of its own.
     pub fn new_app(slug: &str, routes: &[(&str, &str, bool)]) -> NewApp {
+        let name = |n: &str| {
+            if n == "main" {
+                WEB.to_string()
+            } else {
+                n.to_string()
+            }
+        };
+        let mut processes = vec![NewProcess::web("bun run start", None)];
+        for (_, n, _) in routes {
+            let n = name(n);
+            if !processes.iter().any(|p| p.name == n) {
+                processes.push(NewProcess {
+                    name: n.clone(),
+                    start: Some(format!("bun run {n}")),
+                    ..NewProcess::default()
+                });
+            }
+        }
         NewApp {
             slug: slug.into(),
             name: slug.into(),
@@ -699,28 +726,79 @@ pub(crate) mod tests {
             commands: Commands {
                 install: Some("bun install --frozen-lockfile".into()),
                 build: Some("bun run build".into()),
-                start: Some("bun run start".into()),
                 migrate: None,
             },
+            processes,
             routes: routes
                 .iter()
-                .map(|(path, name, ws)| NewRoute {
+                .map(|(path, n, ws)| NewRoute {
                     path: path.to_string(),
-                    port_name: name.to_string(),
+                    process: name(n),
                     websocket: *ws,
                 })
                 .collect(),
-            domains: vec![format!("{slug}.example.com")],
+            domains: vec![format!("{slug}.example.com").as_str().into()],
             ..NewApp::default()
         }
     }
 
-    pub fn route(path: &str, name: &str, port: u16, websocket: bool) -> Route {
+    pub fn rows(list: &[NewDomain]) -> Vec<Domain> {
+        list.iter()
+            .map(|d| Domain {
+                domain: d.domain.clone(),
+                job: d.job,
+                target: d.target.clone(),
+                primary: d.primary,
+                wildcard: domains::is_wildcard(&d.domain),
+                dns_provider_id: d.dns_provider_id.clone(),
+            })
+            .collect()
+    }
+
+    pub fn route(path: &str, process: &str, websocket: bool) -> Route {
         Route {
             path: path.into(),
-            port_name: name.into(),
-            port,
+            process: process.into(),
             websocket,
+        }
+    }
+
+    pub fn process(name: &str, port: u16) -> Process {
+        Process {
+            name: name.into(),
+            kind: ProcessKind::Command {
+                start: "bun run start".into(),
+            },
+            dir: String::new(),
+            port: Some(port),
+            health_path: None,
+            memory_mb: 512,
+        }
+    }
+
+    pub fn worker(name: &str, start: &str) -> Process {
+        Process {
+            name: name.into(),
+            kind: ProcessKind::Command {
+                start: start.into(),
+            },
+            dir: String::new(),
+            port: None,
+            health_path: None,
+            memory_mb: 512,
+        }
+    }
+
+    pub fn folder(name: &str, static_dir: &str) -> Process {
+        Process {
+            name: name.into(),
+            kind: ProcessKind::Folder {
+                static_dir: static_dir.into(),
+            },
+            dir: String::new(),
+            port: None,
+            health_path: None,
+            memory_mb: 512,
         }
     }
 
@@ -738,17 +816,20 @@ pub(crate) mod tests {
             commands: Commands {
                 install: Some("bun install --frozen-lockfile".into()),
                 build: Some("bun run build".into()),
-                start: Some("bun run start".into()),
                 migrate: None,
             },
-            output_dir: None,
-            health: Health::default(),
-            memory_mb: 512,
+            startup_budget_secs: 60,
             cpu_percent: 100,
             pause_for_migrations: true,
-            routes: vec![route("/", "main", 20000, false)],
+            follow_repo_file: false,
+            processes: vec![process(WEB, 20000)],
+            routes: vec![route("/", WEB, false)],
             packages: Vec::new(),
-            domains: vec![format!("{slug}.example.com")],
+            domains: rows(&[NewDomain {
+                primary: true,
+                target: WEB.into(),
+                ..format!("{slug}.example.com").as_str().into()
+            }]),
             current_release_id: None,
             created_at: "2026-09-02T00:00:00Z".into(),
             updated_at: "2026-09-02T00:00:00Z".into(),
@@ -756,7 +837,7 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
-    async fn creating_an_app_allocates_one_port_per_named_route() {
+    async fn creating_an_app_allocates_one_port_per_port_process() {
         let (_d, state) = state().await;
         let app = create(
             &state,
@@ -764,15 +845,16 @@ pub(crate) mod tests {
         )
         .await
         .unwrap();
-        let ports: HashSet<u16> = app.routes.iter().map(|r| r.port).collect();
+        let ports: HashSet<u16> = app.port_processes().filter_map(|p| p.port).collect();
         assert_eq!(ports.len(), 2);
         assert!(ports.iter().all(|p| ports::RANGE.contains(p)));
-        assert_eq!(app.main_port(), Some(app.routes[0].port));
+        assert_eq!(app.main_port(), app.port_of("web"));
         assert!(app.routes[1].websocket);
+        assert_eq!(app.routes[1].process, "ws");
     }
 
     #[tokio::test]
-    async fn two_routes_can_share_a_named_port() {
+    async fn two_routes_can_point_at_the_same_process() {
         let (_d, state) = state().await;
         let app = create(
             &state,
@@ -780,7 +862,11 @@ pub(crate) mod tests {
         )
         .await
         .unwrap();
-        assert_eq!(app.routes[0].port, app.routes[1].port);
+        assert_eq!(app.processes.len(), 1);
+        assert_eq!(
+            app.port_of(&app.routes[0].process),
+            app.port_of(&app.routes[1].process)
+        );
     }
 
     #[tokio::test]
@@ -792,11 +878,32 @@ pub(crate) mod tests {
         let b = create(&state, new_app("b", &[("/", "main", false)]))
             .await
             .unwrap();
-        assert_ne!(a.routes[0].port, b.routes[0].port);
+        assert_ne!(a.main_port(), b.main_port());
     }
 
     #[tokio::test]
-    async fn deleting_an_app_frees_its_ports_and_its_env() {
+    async fn a_worker_and_a_folder_get_no_port() {
+        let (_d, state) = state().await;
+        let mut new = new_app("ledger", &[("/", "main", false)]);
+        new.processes
+            .push(NewProcess::worker("jobs", "bun run jobs"));
+        new.processes
+            .push(NewProcess::folder("admin", "apps/admin/dist"));
+        let app = create(&state, new).await.unwrap();
+        assert_eq!(app.processes.len(), 3);
+        assert_eq!(app.port_of("jobs"), None);
+        assert_eq!(app.port_of("admin"), None);
+        assert!(app.process("admin").unwrap().static_dir().is_some());
+        assert_eq!(app.command_processes().count(), 2);
+        let ports: i64 = sqlx::query_scalar("SELECT count(*) FROM app_ports")
+            .fetch_one(&state.pool)
+            .await
+            .unwrap();
+        assert_eq!(ports, 1);
+    }
+
+    #[tokio::test]
+    async fn deleting_an_app_frees_its_ports_its_processes_and_its_env() {
         let (_d, state) = state().await;
         let app = create(&state, new_app("ledger", &[("/", "main", false)]))
             .await
@@ -804,23 +911,21 @@ pub(crate) mod tests {
         env::set(&state, &app.id, "SECRET", "x").await.unwrap();
         assert!(delete(&state, "ledger").await.unwrap());
         assert!(!delete(&state, "ledger").await.unwrap());
-        let ports: i64 = sqlx::query_scalar("SELECT count(*) FROM app_ports")
-            .fetch_one(&state.pool)
-            .await
-            .unwrap();
-        let vars: i64 = sqlx::query_scalar("SELECT count(*) FROM app_env")
-            .fetch_one(&state.pool)
-            .await
-            .unwrap();
-        let domains: i64 = sqlx::query_scalar("SELECT count(*) FROM app_domains")
-            .fetch_one(&state.pool)
-            .await
-            .unwrap();
-        let hints: i64 = sqlx::query_scalar("SELECT count(*) FROM app_env_hints")
-            .fetch_one(&state.pool)
-            .await
-            .unwrap();
-        assert_eq!((ports, vars, domains, hints), (0, 0, 0, 0));
+        let mut counts = Vec::new();
+        for table in [
+            "app_ports",
+            "app_env",
+            "app_domains",
+            "app_env_hints",
+            "app_processes",
+        ] {
+            let n: i64 = sqlx::query_scalar(&format!("SELECT count(*) FROM {table}"))
+                .fetch_one(&state.pool)
+                .await
+                .unwrap();
+            counts.push(n);
+        }
+        assert_eq!(counts, [0, 0, 0, 0, 0]);
     }
 
     #[tokio::test]
@@ -943,12 +1048,36 @@ pub(crate) mod tests {
         assert!(create(&state, bad_version).await.is_err());
 
         let mut no_start = new_app("a", &[("/", "main", false)]);
-        no_start.commands.start = None;
+        no_start.processes[0].start = None;
         assert!(create(&state, no_start).await.is_err());
 
-        let mut static_without_output = new_app("a", &[("/", "main", false)]);
-        static_without_output.runtime = RuntimeKind::Static;
-        assert!(create(&state, static_without_output).await.is_err());
+        let mut no_processes = new_app("a", &[("/", "main", false)]);
+        no_processes.processes.clear();
+        assert!(create(&state, no_processes).await.is_err());
+
+        let mut folder_without_build = new_app("a", &[("/", "main", false)]);
+        folder_without_build.processes = vec![NewProcess::folder("web", "dist")];
+        folder_without_build.commands.build = None;
+        assert!(create(&state, folder_without_build).await.is_err());
+
+        let mut route_to_nobody = new_app("a", &[("/", "main", false)]);
+        route_to_nobody.routes.push(NewRoute {
+            path: "/live".into(),
+            process: "realtime".into(),
+            websocket: true,
+        });
+        assert!(create(&state, route_to_nobody).await.is_err());
+
+        let mut route_to_a_worker = new_app("a", &[("/", "main", false)]);
+        route_to_a_worker
+            .processes
+            .push(NewProcess::worker("jobs", "bun run jobs"));
+        route_to_a_worker.routes.push(NewRoute {
+            path: "/jobs".into(),
+            process: "jobs".into(),
+            websocket: false,
+        });
+        assert!(create(&state, route_to_a_worker).await.is_err());
 
         let mut bad_domain = new_app("a", &[("/", "main", false)]);
         bad_domain.domains = vec!["203.0.113.9".into()];
@@ -956,7 +1085,7 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
-    async fn updating_routes_keeps_ports_that_survive_and_frees_the_rest() {
+    async fn updating_processes_keeps_ports_that_survive_and_frees_the_rest() {
         let (_d, state) = state().await;
         let app = create(
             &state,
@@ -966,19 +1095,28 @@ pub(crate) mod tests {
         .unwrap();
         let main_port = app.main_port().unwrap();
 
+        let mut web = NewProcess::web("bun run start", Some("/healthz"));
+        web.memory_mb = Some(1024);
         let updated = update(
             &state,
             "ledger",
             AppChanges {
+                processes: Some(vec![
+                    web,
+                    NewProcess {
+                        name: "metrics".into(),
+                        start: Some("bun run metrics".into()),
+                        ..NewProcess::default()
+                    },
+                ]),
                 routes: Some(vec![
                     NewRoute::main(),
                     NewRoute {
                         path: "/metrics".into(),
-                        port_name: "metrics".into(),
+                        process: "metrics".into(),
                         websocket: false,
                     },
                 ]),
-                memory_mb: Some(1024),
                 ..AppChanges::default()
             },
         )
@@ -987,10 +1125,13 @@ pub(crate) mod tests {
         assert_eq!(
             updated.main_port(),
             Some(main_port),
-            "the main port must not change"
+            "the web port must not change"
         );
-        assert_eq!(updated.memory_mb, 1024);
-        assert!(updated.routes.iter().all(|r| r.port_name != "ws"));
+        let web = updated.process("web").unwrap();
+        assert_eq!(web.memory_mb, 1024);
+        assert_eq!(web.health_path.as_deref(), Some("/healthz"));
+        assert!(updated.process("ws").is_none());
+        assert!(updated.port_of("metrics").is_some());
         let count: i64 = sqlx::query_scalar("SELECT count(*) FROM app_ports")
             .fetch_one(&state.pool)
             .await
@@ -1000,34 +1141,132 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
-    async fn an_update_that_fails_validation_changes_nothing() {
-        let (_d, state) = state().await;
-        create(&state, new_app("ledger", &[("/", "main", false)]))
-            .await
-            .unwrap();
-        let e = update(
-            &state,
-            "ledger",
-            AppChanges {
-                memory_mb: Some(1),
-                ..AppChanges::default()
-            },
-        )
-        .await
-        .unwrap_err();
-        assert!(e.downcast_ref::<AppError>().is_some());
-        assert_eq!(
-            by_slug(&state, "ledger").await.unwrap().unwrap().memory_mb,
-            512
-        );
-    }
-
-    #[tokio::test]
-    async fn timestamps_are_unambiguous_utc() {
+    async fn a_manifest_replaces_the_processes_but_keeps_memory_limits_and_unstated_commands() {
         let (_d, state) = state().await;
         let app = create(&state, new_app("ledger", &[("/", "main", false)]))
             .await
             .unwrap();
-        assert!(app.created_at.ends_with('Z'), "{}", app.created_at);
+        let mut web = NewProcess::web("bun run start", None);
+        web.memory_mb = Some(2048);
+        update(
+            &state,
+            "ledger",
+            AppChanges {
+                processes: Some(vec![web]),
+                ..AppChanges::default()
+            },
+        )
+        .await
+        .unwrap();
+
+        let toml = crate::manifest::parse_toml(
+            "migrate = \"bun run db:migrate\"\n[processes.web]\nstart = \"bun run serve\"\ndir = \"apps/web\"\n[processes.realtime]\nstart = \"bun run rt\"\nport = true\npath = \"/live\"\nwebsocket = true\n[processes.jobs]\nstart = \"bun run jobs\"\n",
+        )
+        .unwrap();
+        let manifest = crate::manifest::from_toml(&toml);
+        let p = ferrum_platform::FakePlatform::new();
+        let applied = apply_manifest(&state, &p, &app, &manifest).await.unwrap();
+
+        let web = applied.process("web").unwrap();
+        assert_eq!(web.start(), Some("bun run serve"));
+        assert_eq!(web.dir, "apps/web");
+        assert_eq!(web.memory_mb, 2048, "the limit belongs to the server");
+        assert_eq!(applied.port_of("web"), app.port_of("web"));
+        assert!(applied.port_of("realtime").is_some());
+        assert_eq!(applied.port_of("jobs"), None);
+        let live = applied.routes.iter().find(|r| r.path == "/live").unwrap();
+        assert_eq!(live.process, "realtime");
+        assert!(live.websocket);
+        assert_eq!(
+            applied.commands.migrate.as_deref(),
+            Some("bun run db:migrate")
+        );
+        assert_eq!(
+            applied.commands.build.as_deref(),
+            Some("bun run build"),
+            "a command the file does not state is kept"
+        );
+
+        let silent = crate::manifest::from_toml(
+            &crate::manifest::parse_toml("packages = [\"ffmpeg\"]\n").unwrap(),
+        );
+        let kept = apply_manifest(&state, &p, &applied, &silent).await.unwrap();
+        assert_eq!(
+            kept.processes.len(),
+            3,
+            "a file silent on processes changes none"
+        );
+        assert!(p.sql().is_empty(), "no [database], no psql");
+    }
+
+    #[tokio::test]
+    async fn a_database_section_labels_the_first_link_creates_its_roles_and_keeps_dropped_ones() {
+        let (_d, state) = state().await;
+        let p = ferrum_platform::FakePlatform::new();
+        let app = create(&state, new_app("ledger", &[("/", "main", false)]))
+            .await
+            .unwrap();
+        let db = crate::postgres::create(&state, &p, crate::postgres::tests::new("ledger_prod"))
+            .await
+            .unwrap();
+        crate::postgres::create(&state, &p, crate::postgres::tests::new("analytics"))
+            .await
+            .unwrap();
+        crate::postgres::roles::create(
+            &state,
+            &p,
+            &db,
+            crate::postgres::NewRole {
+                name: "legacy".into(),
+                ..crate::postgres::NewRole::default()
+            },
+        )
+        .await
+        .unwrap();
+        crate::postgres::link(&state, &app.id, "ledger_prod")
+            .await
+            .unwrap();
+        crate::postgres::link(&state, &app.id, "analytics")
+            .await
+            .unwrap();
+        p.set_active("ferrum-redis-ledger");
+        crate::redis::request(&state, &p, &app, 64).await.unwrap();
+
+        let manifest = crate::manifest::from_toml(
+            &crate::manifest::parse_toml(
+                "[database]\nurl = \"DATABASE_ADMIN_URL\"\n[database.roles.app]\nurl = \"DATABASE_URL\"\n[redis]\nurl = \"CACHE_URL\"\n",
+            )
+            .unwrap(),
+        );
+        apply_manifest(&state, &p, &app, &manifest).await.unwrap();
+
+        assert!(
+            p.sql()
+                .iter()
+                .any(|s| s.contains("CREATE ROLE \"ledger_prod_app\""))
+        );
+        assert!(
+            !p.sql().iter().any(|s| s.contains("analytics_app")),
+            "only the first link"
+        );
+        assert_eq!(
+            env::managed_for(&state, &app).await.unwrap().keys(),
+            [
+                "DATABASE_ADMIN_URL",
+                "DATABASE_URL",
+                "DATABASE_URL_LEGACY",
+                "ANALYTICS_DATABASE_URL",
+                "CACHE_URL"
+            ]
+        );
+        let notices = crate::events::list(&state, 10, true).await.unwrap();
+        assert_eq!(notices.len(), 1);
+        assert_eq!(notices[0].kind, "role_kept");
+        assert_eq!(notices[0].subject, "ledger_prod_legacy");
+        assert!(
+            notices[0].sentence.contains("ledger_prod_legacy"),
+            "{}",
+            notices[0].sentence
+        );
     }
 }

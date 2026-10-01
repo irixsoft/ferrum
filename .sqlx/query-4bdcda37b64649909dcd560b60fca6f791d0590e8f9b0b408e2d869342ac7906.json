@@ -1,0 +1,20 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT password AS \"password!\" FROM database_roles WHERE id = ?",
+  "describe": {
+    "columns": [
+      {
+        "name": "password!",
+        "ordinal": 0,
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "4bdcda37b64649909dcd560b60fca6f791d0590e8f9b0b408e2d869342ac7906"
+}

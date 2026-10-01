@@ -223,6 +223,9 @@ fn router(state: AppState) -> Router {
         .merge(crate::routes::settings::router())
         .merge(crate::routes::nginx::router())
         .merge(crate::routes::update::router())
+        .merge(crate::routes::notifications::router())
+        .merge(crate::routes::dns_providers::router())
+        .merge(crate::routes::help::router())
         .route_layer(axum::middleware::from_fn_with_state(
             state.clone(),
             crate::auth::require_caller,
@@ -244,7 +247,12 @@ fn router(state: AppState) -> Router {
 }
 
 pub async fn serve(data_dir: &Path) -> anyhow::Result<()> {
-    let state = State::open(data_dir).await?;
+    let mut state = State::open(data_dir).await?;
+    ferrum_core::push::ensure_vapid(&state).await?;
+    state.events_tx = Some(ferrum_core::push::spawn_fanout(
+        state.clone(),
+        ferrum_core::http::client(),
+    ));
     let deps = Deps {
         directory: ferrum_core::acme::directory(&state).await?,
         hostname: ferrum_core::setup::hostname(&state).await?,
@@ -268,6 +276,11 @@ pub async fn serve(data_dir: &Path) -> anyhow::Result<()> {
         Ok(0) => {}
         Ok(n) => tracing::info!(instances = n, "redis configuration refreshed"),
         Err(e) => tracing::warn!(error = %e, "refreshing the redis configuration"),
+    }
+    match ferrum_core::apps::provision::migrate_units(&state, deps.platform.as_ref()).await {
+        Ok(0) => {}
+        Ok(n) => tracing::info!(apps = n, "app units moved to one per process"),
+        Err(e) => tracing::warn!(error = %e, "moving app units to one per process"),
     }
     let app_state = AppState::new(state.clone(), deps);
     ferrum_core::certs::spawn_sweeper(

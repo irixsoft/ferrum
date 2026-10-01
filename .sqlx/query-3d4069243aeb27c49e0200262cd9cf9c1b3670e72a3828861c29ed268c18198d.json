@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE events SET read_at = datetime('now') WHERE id = ? AND read_at IS NULL",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": []
+  },
+  "hash": "3d4069243aeb27c49e0200262cd9cf9c1b3670e72a3828861c29ed268c18198d"
+}

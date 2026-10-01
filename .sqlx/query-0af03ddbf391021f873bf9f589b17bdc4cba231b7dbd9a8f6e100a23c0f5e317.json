@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE database_roles SET env_label = ? WHERE id = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": []
+  },
+  "hash": "0af03ddbf391021f873bf9f589b17bdc4cba231b7dbd9a8f6e100a23c0f5e317"
+}

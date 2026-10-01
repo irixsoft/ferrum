@@ -2,6 +2,8 @@ import { Link, useRouterState } from "@tanstack/react-router";
 import type { ReactNode } from "react";
 import { Moon, Sun } from "lucide-react";
 import { Wordmark } from "@/components/Brand";
+import { Bell } from "@/components/Bell";
+import { PushOffer } from "@/components/PushOffer";
 import { ConnectionBanner } from "@/components/ConnectionBanner";
 import { UpdateBanner } from "@/components/UpdateBanner";
 import { DeployRail } from "@/components/DeployLadder";
@@ -55,6 +57,8 @@ export function DesktopShell({ children }: { children: ReactNode }) {
               </Pill>
             ))}
 
+            <Bell />
+
             <PillIcon
               label={`Switch to ${resolved === "dark" ? "light" : "dark"} theme`}
               onClick={() => setTheme(resolved === "dark" ? "light" : "dark")}
@@ -78,16 +82,12 @@ export function DesktopShell({ children }: { children: ReactNode }) {
             ))}
 
             <div className="mt-auto flex flex-col items-center gap-3">
-              <a
-                href="https://github.com/irixsoft/ferrum#readme"
-                target="_blank"
-                rel="noreferrer"
-                aria-label={HELP.label}
-                title={HELP.label}
-                className="h-12 w-12 grid place-items-center rounded-full bg-surface border border-line text-ink-3 hover:text-ink hover:border-line-strong transition-colors duration-100"
-              >
-                <HELP.icon size={19} strokeWidth={1.8} />
-              </a>
+              <RailButton
+                to={HELP.to}
+                label={HELP.label}
+                icon={HELP.icon}
+                active={isActive(HELP.to)}
+              />
               {foot.map((n) => (
                 <RailButton
                   key={n.to}
@@ -101,7 +101,7 @@ export function DesktopShell({ children }: { children: ReactNode }) {
           </nav>
 
           <main className="flex-1 min-w-0 overflow-y-auto pl-2 pr-8 pb-8">
-            <div className="max-w-[1240px]">{children}</div>
+            <div className="max-w-[1600px]">{children}</div>
           </main>
         </div>
 
@@ -117,6 +117,7 @@ export function DesktopShell({ children }: { children: ReactNode }) {
           </div>
         ) : null}
       </div>
+      <PushOffer />
     </div>
   );
 }

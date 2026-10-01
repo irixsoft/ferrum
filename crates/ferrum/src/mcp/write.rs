@@ -2,7 +2,9 @@ use super::handler::{Ferrum, ToolResult, finish, refusal};
 use crate::routes::error::ApiError;
 use crate::routes::{apps, databases, deploys, nginx};
 use ferrum_core::apps::AppChanges;
+use ferrum_core::apps::domains::{self, Job, NewDomain};
 use ferrum_core::apps::env::EnvChange;
+use ferrum_core::apps::processes::NewProcess;
 use ferrum_core::deploy::Trigger;
 use ferrum_core::postgres::NewDatabase;
 use ferrum_core::settings::{self, SettingsError};
@@ -39,13 +41,6 @@ pub struct Custom {
 
 #[derive(Deserialize, schemars::JsonSchema)]
 #[schemars(crate = "rmcp::schemars")]
-pub struct Slug {
-    /// The application's slug.
-    pub slug: String,
-}
-
-#[derive(Deserialize, schemars::JsonSchema)]
-#[schemars(crate = "rmcp::schemars")]
 pub struct DeployRef {
     /// The application's slug.
     pub slug: String,
@@ -75,6 +70,8 @@ pub struct CreateDatabase {
     pub extensions: Option<Vec<String>>,
     /// Link the new database to this application and write DATABASE_URL into its .env.
     pub app_slug: Option<String>,
+    /// The variable the owner's URL goes under in the linked application's .env instead of DATABASE_URL.
+    pub env_label: Option<String>,
 }
 
 #[derive(Deserialize, schemars::JsonSchema)]
@@ -84,6 +81,19 @@ pub struct AddDomain {
     pub slug: String,
     /// The domain to add; its DNS must already point at this server for the certificate.
     pub domain: String,
+    /// The process the name serves; leave it out for the primary domain's process.
+    pub process: Option<String>,
+    /// A name of this application to redirect to instead of serving a process.
+    pub redirect_to: Option<String>,
+}
+
+#[derive(Deserialize, schemars::JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+pub struct RestartApp {
+    /// The application's slug.
+    pub slug: String,
+    /// One process to restart; leave it out to restart every process.
+    pub process: Option<String>,
 }
 
 #[derive(Deserialize, schemars::JsonSchema)]
@@ -91,7 +101,9 @@ pub struct AddDomain {
 pub struct Limits {
     /// An application's slug to change its own limits; leave it out to change the build limits.
     pub slug: Option<String>,
-    /// The application's memory limit in MB.
+    /// The process whose memory limit changes; leave it out to set every process.
+    pub process: Option<String>,
+    /// The memory limit in MB for the named process, or for every process.
     pub memory_mb: Option<u32>,
     /// The application's CPU quota in percent of one core.
     pub cpu_percent: Option<u32>,
@@ -162,7 +174,7 @@ impl Ferrum {
 
     #[tool(
         name = "restart_app",
-        description = "Restart an application's systemd unit now; refused for a static site, during a deploy, or before the first deploy.",
+        description = "Restart one of an application's processes, or all of them, now; refused for a folder, during a deploy, or before the first deploy.",
         annotations(
             read_only_hint = false,
             destructive_hint = false,
@@ -170,12 +182,16 @@ impl Ferrum {
             open_world_hint = false
         )
     )]
-    async fn restart_app(&self, Parameters(args): Parameters<Slug>) -> ToolResult {
+    async fn restart_app(&self, Parameters(args): Parameters<RestartApp>) -> ToolResult {
         finish(
             async {
                 let found = apps::find(&self.state, &args.slug).await?;
-                apps::restart_unit(&self.state, &found).await?;
-                Ok::<_, ApiError>(serde_json::json!({ "slug": found.slug, "restarted": true }))
+                apps::restart_unit(&self.state, &found, args.process.as_deref()).await?;
+                Ok::<_, ApiError>(serde_json::json!({
+                    "slug": found.slug,
+                    "process": args.process,
+                    "restarted": true
+                }))
             }
             .await,
         )
@@ -248,13 +264,14 @@ impl Ferrum {
             name: args.name,
             connection_limit: args.connection_limit,
             extensions: args.extensions.unwrap_or_default(),
+            env_label: args.env_label,
         };
         finish(databases::create_database(&self.state, new, args.app_slug.as_deref()).await)
     }
 
     #[tool(
         name = "add_domain",
-        description = "Add a domain to an application, rewrite its nginx server block, and request a certificate in the background once DNS points here.",
+        description = "Add a domain to an application, serving one of its processes (the primary domain's by default) or redirecting to another of its names, rewrite its nginx server blocks, and request a certificate in the background once DNS points here.",
         annotations(
             read_only_hint = false,
             destructive_hint = false,
@@ -266,16 +283,33 @@ impl Ferrum {
         finish(
             async {
                 let found = apps::find(&self.state, &args.slug).await?;
-                let domain = args.domain.trim().to_ascii_lowercase();
-                let mut domains = found.domains.clone();
-                if !domains.contains(&domain) {
-                    domains.push(domain);
-                }
-                let changes = AppChanges {
-                    domains: Some(domains),
-                    ..AppChanges::default()
+                let (job, target) = match (args.redirect_to, args.process) {
+                    (Some(_), Some(_)) => {
+                        return Err(ApiError::bad_request(
+                            "A name either serves a process or redirects, not both.",
+                        ));
+                    }
+                    (Some(to), None) => (Job::Redirect, to),
+                    (None, Some(process)) => (Job::Serve, process),
+                    (None, None) => (
+                        Job::Serve,
+                        found
+                            .domains
+                            .iter()
+                            .find(|d| d.primary)
+                            .map(|d| d.target.clone())
+                            .unwrap_or_default(),
+                    ),
                 };
-                apps::apply(&self.state, &found.slug, changes).await
+                let new = NewDomain {
+                    domain: args.domain.trim().to_ascii_lowercase(),
+                    job,
+                    target,
+                    primary: false,
+                    dns_provider_id: None,
+                };
+                let list = domains::put(&found.domains, new);
+                apps::apply_domains(&self.state, &found.slug, list).await
             }
             .await,
         )
@@ -283,7 +317,7 @@ impl Ferrum {
 
     #[tool(
         name = "adjust_resource_limits",
-        description = "With a slug, set that application's memory_mb and cpu_percent and rewrite its unit; without one, set the build memory and the build and migrate timeouts for the next deploy.",
+        description = "With a slug, set memory_mb for one process (or every process) and cpu_percent for the application and rewrite its units; without one, set the build memory and the build and migrate timeouts for the next deploy.",
         annotations(
             read_only_hint = false,
             destructive_hint = false,
@@ -304,12 +338,43 @@ impl Ferrum {
                 if build_limits {
                     return Ok(refusal(APP_LIMITS_ONLY));
                 }
-                let changes = AppChanges {
-                    memory_mb: args.memory_mb,
-                    cpu_percent: args.cpu_percent,
-                    ..AppChanges::default()
-                };
-                finish(apps::apply(&self.state, &slug, changes).await)
+                finish(
+                    async {
+                        let found = apps::find(&self.state, &slug).await?;
+                        let processes = match args.memory_mb {
+                            Some(memory) => {
+                                if let Some(name) = &args.process
+                                    && found.process(name).is_none()
+                                {
+                                    return Err(ApiError::not_found(format!(
+                                        "{slug} has no process named {name}."
+                                    )));
+                                }
+                                Some(
+                                    found
+                                        .processes
+                                        .iter()
+                                        .map(|p| {
+                                            let mut np = NewProcess::from(p);
+                                            if args.process.as_deref().is_none_or(|n| n == p.name) {
+                                                np.memory_mb = Some(memory);
+                                            }
+                                            np
+                                        })
+                                        .collect(),
+                                )
+                            }
+                            None => None,
+                        };
+                        let changes = AppChanges {
+                            processes,
+                            cpu_percent: args.cpu_percent,
+                            ..AppChanges::default()
+                        };
+                        apps::apply(&self.state, &slug, changes).await
+                    }
+                    .await,
+                )
             }
             None => {
                 if app_limits {

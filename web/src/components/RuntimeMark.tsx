@@ -6,7 +6,6 @@ const RUNTIMES: Record<Runtime, { label: string; className: string }> = {
   node: { label: "Node", className: "text-node" },
   bun: { label: "Bun", className: "text-bun" },
   dotnet: { label: ".NET", className: "text-dotnet" },
-  static: { label: "Static", className: "text-static" },
 };
 
 export function RuntimeMark({

@@ -21,10 +21,10 @@ import { Card, CardBody, CardFoot, CardHeader } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
 import { Badge } from "@/components/ui/Badge";
 import { Code } from "@/components/ui/Code";
-import { ConfigForm, draftFromDetection, toNewApp, type Draft, type Sources } from "./ConfigForm";
+import { ConfigForm, draftFromDetection, manifestFile, toNewApp, type Draft, type Sources } from "./ConfigForm";
 import { EnvRows, HINTS_NOTE, ImportEnv, blankRow, rowsFromHints, type EnvRow } from "./EnvironmentPanel";
 import { ago, bytes } from "@/lib/utils";
-import type { App, Detected, GithubRepo, Progress } from "@/types/api";
+import type { App, Detected, GithubRepo, Manifest, Progress } from "@/types/api";
 
 type Step = { kind: "pick" } | { kind: "detecting" } | { kind: "review"; detected: Detected };
 
@@ -362,7 +362,7 @@ function Review({
   const postgresReady = postgres.data?.installed === true;
   const dbName = databaseName(draft.slug);
 
-  const primary = draft.domains[0]?.trim() ?? "";
+  const primary = draft.domains.find((d) => d.primary)?.domain ?? "";
   const lastSuggestion = useRef("");
   useEffect(() => {
     const suggestion = primary ? `https://${primary}` : "";
@@ -418,10 +418,11 @@ function Review({
     <div className="grid gap-4">
       {detected.candidates.length === 0 ? (
         <Card>
-          <CardBody className="pt-5">
+          <CardBody className="pt-5 grid gap-2">
             <p className="text-[13.5px] text-ink-2">
               No runtime was recognised. Fill the fields in by hand, or add a <Code>ferrum.toml</Code>.
             </p>
+            {detected.manifest ? <ManifestLine manifest={detected.manifest} /> : null}
           </CardBody>
         </Card>
       ) : (
@@ -444,8 +445,10 @@ function Review({
                 className="text-left flex items-center gap-3 flex-wrap bg-inset border border-line rounded-inset px-3 py-2 aria-pressed:border-line-strong"
               >
                 <RuntimeMark runtime={c.kind} version={c.version ?? undefined} />
-                {c.kind === "static" ? (
-                  <span className="text-[12.5px] text-ink-4">built with {runtimeLabel(c.toolchain)}</span>
+                {c.processes.length > 0 && c.processes.every((p) => p.static_dir) ? (
+                  <span className="text-[12.5px] text-ink-2">
+                    Static site → folder <Code>{c.processes[0]?.static_dir}</Code>
+                  </span>
                 ) : null}
                 <span className="text-[12.5px] text-ink-3">{c.reasons.join(" · ")}</span>
                 <Badge className="ml-auto" mono>
@@ -453,6 +456,7 @@ function Review({
                 </Badge>
               </button>
             ))}
+            {detected.manifest ? <ManifestLine manifest={detected.manifest} /> : null}
             {detected.aptfile_rejected.length ? (
               <p className="text-[12.5px] text-fail">
                 Rejected from the Aptfile: {detected.aptfile_rejected.map((p) => `"${p}"`).join(", ")}.
@@ -481,7 +485,7 @@ function Review({
               <ImportEnv
                 rows={envRows}
                 managed={[]}
-                routes={draft.routes}
+                processes={draft.processes}
                 onImport={(next, text) => {
                   setEnvRows(next);
                   setEnvNote(text);
@@ -570,6 +574,16 @@ function Review({
         </CardBody>
       </Card>
     </div>
+  );
+}
+
+function ManifestLine({ manifest }: { manifest: Manifest }) {
+  const count = manifest.processes.length;
+  return (
+    <p className="text-[12.5px] text-ink-2">
+      <Code>{manifestFile(manifest)}</Code> found: {count} process{count === 1 ? "" : "es"}; Ferrum will follow
+      it on every deploy.
+    </p>
   );
 }
 

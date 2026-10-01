@@ -1,0 +1,26 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT kind, enabled AS \"enabled: bool\" FROM push_prefs WHERE user_id = ?",
+  "describe": {
+    "columns": [
+      {
+        "name": "kind",
+        "ordinal": 0,
+        "type_info": "Text"
+      },
+      {
+        "name": "enabled: bool",
+        "ordinal": 1,
+        "type_info": "Integer"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "b4283f861d2815c53d0b91e0b6e0bed8968e456bffbc395deb5310f2513619cd"
+}

@@ -1,5 +1,5 @@
-export type Runtime = "node" | "bun" | "dotnet" | "static";
-export type Toolchain = Exclude<Runtime, "static">;
+export type Runtime = "node" | "bun" | "dotnet";
+export type Toolchain = Runtime;
 export type PackageManager = "npm" | "pnpm" | "yarn" | "bun";
 
 export type AppStatus = "new" | "live" | "building" | "failed" | "stopped" | "maintenance";
@@ -101,27 +101,51 @@ export interface DomainCert {
 
 export interface Route {
   path: string;
-  port_name: string;
-  port: number;
+  process: string;
   websocket: boolean;
 }
 
 export interface RouteInput {
   path: string;
-  port_name: string;
+  process: string;
   websocket: boolean;
 }
 
 export interface Commands {
   install: string | null;
   build: string | null;
-  start: string | null;
   migrate: string | null;
 }
 
-export interface Health {
-  path: string;
-  startup_budget_secs: number;
+export type ProcessKind = "command" | "folder";
+
+/** A program Ferrum runs under systemd, or a folder nginx serves from the release. */
+export interface Process {
+  name: string;
+  kind: ProcessKind;
+  start?: string;
+  static_dir?: string;
+  dir: string;
+  port: number | null;
+  health_path: string | null;
+  memory_mb: number;
+}
+
+export interface ProcessInput {
+  name: string;
+  start?: string | null;
+  dir?: string;
+  port?: boolean;
+  health?: string | null;
+  static_dir?: string | null;
+  /** Left out, the limit already stored for that name is kept. */
+  memory_mb?: number | null;
+}
+
+export interface ProcessStatus extends Process {
+  active: boolean;
+  memory_bytes: number | null;
+  memory_peak_bytes: number | null;
 }
 
 export interface App {
@@ -135,14 +159,15 @@ export interface App {
   toolchain: Toolchain;
   runtime_version: string;
   commands: Commands;
-  output_dir: string | null;
-  health: Health;
-  memory_mb: number;
+  startup_budget_secs: number;
   cpu_percent: number;
   pause_for_migrations: boolean;
+  /** The repo's ferrum.toml or Procfile decides processes, paths and commands on every deploy. */
+  follow_repo_file: boolean;
+  processes: Process[];
   routes: Route[];
   packages: string[];
-  domains: string[];
+  domains: Domain[];
   current_release_id: string | null;
   status: AppStatus;
   /** No deploy has ever gone live, so there is no unit to restart. */
@@ -159,7 +184,8 @@ export interface EnvEntry {
   optional: boolean;
 }
 
-export interface AppDetail extends App {
+export interface AppDetail extends Omit<App, "processes"> {
+  processes: ProcessStatus[];
   env: EnvEntry[];
   deployed: boolean;
   current_release: Release | null;
@@ -167,6 +193,7 @@ export interface AppDetail extends App {
   databases: string[];
   redis: RedisInstance | null;
   managed: string[];
+  managed_vars: ManagedVar[];
   /** From the unit's cgroup; null while no process runs. */
   memory_bytes: number | null;
   memory_peak_bytes: number | null;
@@ -212,19 +239,24 @@ export interface NewApp {
   toolchain: Toolchain;
   runtime_version: string;
   commands: Commands;
-  output_dir: string | null;
-  health: Health;
-  memory_mb: number;
+  startup_budget_secs: number;
   cpu_percent: number;
   pause_for_migrations: boolean;
+  follow_repo_file: boolean;
+  processes: ProcessInput[];
   routes: RouteInput[];
   packages: string[];
-  domains: string[];
+  domains: DomainInput[];
   env: EnvVar[];
   env_hints: EnvHint[];
 }
 
 export type AppChanges = Partial<Omit<NewApp, "slug" | "repository" | "env" | "env_hints">>;
+
+export interface Health {
+  path: string;
+  startup_budget_secs: number;
+}
 
 export interface Detection {
   kind: Runtime;
@@ -233,21 +265,25 @@ export interface Detection {
   confidence: number;
   reasons: string[];
   commands: Commands;
-  output_dir: string | null;
+  processes: ProcessInput[];
   health: Health;
   package_manager: PackageManager | null;
 }
 
-export interface FerrumToml {
-  runtime: Runtime | null;
-  version: string | null;
-  install: string | null;
-  build: string | null;
-  start: string | null;
-  migrate: string | null;
-  output_dir: string | null;
-  health_path: string | null;
+export interface DatabaseSpec {
+  url: string | null;
+  roles: Record<string, { url: string | null }>;
+}
+
+/** What the repo's ferrum.toml or Procfile says about the app's shape. */
+export interface Manifest {
+  source: "ferrum_toml" | "procfile";
+  processes: ProcessInput[];
+  routes: RouteInput[];
+  commands: Commands;
   packages: string[];
+  database: DatabaseSpec | null;
+  redis: { url: string | null } | null;
 }
 
 /** What deleting the app, or dropping these packages, would do on the server. */
@@ -264,7 +300,7 @@ export interface Wants {
 
 export interface Detected {
   candidates: Detection[];
-  ferrum_toml: FerrumToml | null;
+  manifest: Manifest | null;
   aptfile: string[];
   aptfile_rejected: string[];
   wants: Wants;
@@ -277,6 +313,7 @@ export interface InstalledToolchain {
   path: string;
   size_bytes: number;
   installed_at: string;
+  used_by: string[];
 }
 
 export interface Runtimes {
@@ -299,6 +336,7 @@ export interface Database {
   size_bytes: number | null;
   extensions: string[];
   linked_apps: string[];
+  roles: DatabaseRole[];
   created_at: string;
   restore: JobStatus;
 }
@@ -308,6 +346,7 @@ export interface NewDatabase {
   connection_limit?: number;
   extensions?: string[];
   app_slug?: string;
+  env_label?: string;
 }
 
 export interface PostgresStatus {
@@ -316,7 +355,108 @@ export interface PostgresStatus {
   installing: boolean;
   error: string | null;
   tunnel: string;
+  tunnel_user: string;
 }
+
+export type EventKind =
+  | "deploy_refused"
+  | "deploy_failed"
+  | "deploy_live"
+  | "broke_on_its_own"
+  | "update_available"
+  | "package_dropped"
+  | "port_removed"
+  | "role_kept"
+  | "processes_changed";
+
+export interface FerrumEvent {
+  id: string;
+  kind: EventKind;
+  app_id: string | null;
+  subject: string;
+  sentence: string;
+  link: string | null;
+  created_at: string;
+  read_at: string | null;
+}
+
+export type PushPref = "deploy_failed" | "deploy_live" | "broke" | "update";
+
+export interface PushPrefs {
+  enabled: Record<PushPref, boolean>;
+}
+
+export interface PushDevice {
+  id: string;
+  created_at: string;
+  last_ok_at: string | null;
+}
+
+export interface DnsProvider {
+  id: string;
+  name: string;
+  kind: "cloudflare" | "route53";
+  created_at: string;
+}
+
+export type DomainJob = "serve" | "redirect";
+
+/** A name Ferrum answers for: served by one process, or redirected to another served name. */
+export interface Domain {
+  domain: string;
+  job: DomainJob;
+  /** The process for a served name; the target name for a redirect. */
+  target: string;
+  primary: boolean;
+  wildcard: boolean;
+  dns_provider_id: string | null;
+}
+
+/** A bare string is a served name pointing at `web`; the first one sent is primary. */
+export type DomainInput =
+  | string
+  | { domain: string; job?: DomainJob; target?: string; primary?: boolean; dns_provider_id?: string | null };
+
+export interface HelpTopic {
+  slug: string;
+  title: string;
+  body?: string;
+}
+
+export interface DatabaseRole {
+  name: string;
+  env_label: string;
+  connection_limit: number;
+  owner: boolean;
+  bypass_rls: boolean;
+}
+
+export interface NewRole {
+  name: string;
+  env_label?: string;
+  connection_limit?: number;
+}
+
+/** A variable Ferrum sets in the app's env, by where it comes from; never its value. */
+export interface ManagedVar {
+  key: string;
+  kind: "owner" | "role" | "redis";
+  database?: string;
+  role?: string;
+}
+
+/** Roles are keyed `<database>/<role>`. */
+export interface LabelChanges {
+  database?: Record<string, string>;
+  roles?: Record<string, string>;
+  redis?: string;
+}
+
+export type DnsCredentials =
+  | { kind: "cloudflare"; credentials: { token: string } }
+  | { kind: "route53"; credentials: { access_key_id: string; secret_access_key: string } };
+
+export type NewDnsProvider = DnsCredentials & { name: string; zone: string };
 
 export interface RedisInstance {
   app_id: string;

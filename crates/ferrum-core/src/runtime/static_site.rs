@@ -1,11 +1,6 @@
-use super::{
-    Commands, Detection, Health, Mirrors, PackageManager, Phase, Runtime, RuntimeKind, Source,
-    Target, dotnet, node,
-};
+use super::{Commands, Detection, Health, PackageManager, RuntimeKind, dotnet, node};
+use crate::apps::processes::{NewProcess, WEB};
 use crate::detect::RepoTree;
-use std::path::Path;
-
-pub struct Static;
 
 const BLAZOR_WASM_SDK: &str = "Microsoft.NET.Sdk.BlazorWebAssembly";
 const SSR_ASTRO_ADAPTERS: [&str; 3] = ["@astrojs/node", "@astrojs/vercel", "@astrojs/cloudflare"];
@@ -62,119 +57,94 @@ fn javascript_site(tree: &RepoTree, package: &serde_json::Value) -> Option<Site>
     None
 }
 
-impl Runtime for Static {
-    fn kind(&self) -> RuntimeKind {
-        RuntimeKind::Static
-    }
-
-    fn detect(&self, tree: &RepoTree) -> Option<Detection> {
-        if let Some(project) = dotnet::projects(tree)
-            .into_iter()
-            .find(|p| p.sdk == BLAZOR_WASM_SDK)
-        {
-            return Some(Detection {
-                kind: RuntimeKind::Static,
-                toolchain: RuntimeKind::Dotnet,
-                version: project.version.clone(),
-                confidence: 80,
-                reasons: vec![format!("{} uses the Blazor WebAssembly SDK", project.path)],
-                commands: Commands {
-                    install: None,
-                    build: Some(project.publish()),
-                    start: None,
-                    migrate: None,
-                },
-                output_dir: Some("out/wwwroot".into()),
-                health: Health::default(),
-                package_manager: None,
-            });
-        }
-
-        let package = tree.json("package.json")?;
-        let (has_start, start) = {
-            let (_, has_start) = node::scripts(&package);
-            (
-                has_start,
-                package["scripts"]["start"].as_str().unwrap_or(""),
-            )
-        };
-        if has_start && !start.starts_with("vite preview") && !start.starts_with("serve ") {
-            return None;
-        }
-        let site = javascript_site(tree, &package)?;
-
-        let mut reasons = vec!["found package.json".to_string(), site.reason];
-        let (pm, locked) = match node::package_manager(tree) {
-            Some((pm, lock)) => {
-                reasons.push(format!("found {lock}"));
-                (pm, true)
-            }
-            None => (PackageManager::Npm, false),
-        };
-        let version = node::wanted_version(tree, &package).map(|(v, why)| {
-            reasons.push(why);
-            v
-        });
-
-        Some(Detection {
-            kind: RuntimeKind::Static,
-            toolchain: if pm == PackageManager::Bun {
-                RuntimeKind::Bun
-            } else {
-                RuntimeKind::Node
-            },
-            version,
-            confidence: site.confidence,
-            reasons,
+/// A repository that builds to plain files becomes one folder process served by nginx.
+pub fn detect(tree: &RepoTree) -> Option<Detection> {
+    if let Some(project) = dotnet::projects(tree)
+        .into_iter()
+        .find(|p| p.sdk == BLAZOR_WASM_SDK)
+    {
+        return Some(Detection {
+            kind: RuntimeKind::Dotnet,
+            toolchain: RuntimeKind::Dotnet,
+            version: project.version.clone(),
+            confidence: 80,
+            reasons: vec![format!("{} uses the Blazor WebAssembly SDK", project.path)],
             commands: Commands {
-                install: Some(pm.install(locked).to_string()),
-                build: Some(pm.run("build")),
-                start: None,
+                install: None,
+                build: Some(project.publish()),
                 migrate: None,
             },
-            output_dir: Some(site.output_dir.into()),
+            processes: vec![NewProcess::folder(WEB, "out/wwwroot")],
             health: Health::default(),
-            package_manager: Some(pm),
-        })
+            package_manager: None,
+        });
     }
 
-    fn source(&self, _: &str, _: Target, _: &Path, _: &Mirrors) -> Option<Source> {
-        None
+    let package = tree.json("package.json")?;
+    let (has_start, start) = {
+        let (_, has_start) = node::scripts(&package);
+        (
+            has_start,
+            package["scripts"]["start"].as_str().unwrap_or(""),
+        )
+    };
+    if has_start && !start.starts_with("vite preview") && !start.starts_with("serve ") {
+        return None;
     }
+    let site = javascript_site(tree, &package)?;
 
-    fn binary(&self) -> &'static str {
-        ""
-    }
+    let mut reasons = vec!["found package.json".to_string(), site.reason];
+    let (pm, locked) = match node::package_manager(tree) {
+        Some((pm, lock)) => {
+            reasons.push(format!("found {lock}"));
+            (pm, true)
+        }
+        None => (PackageManager::Npm, false),
+    };
+    let version = node::wanted_version(tree, &package).map(|(v, why)| {
+        reasons.push(why);
+        v
+    });
+    let toolchain = if pm == PackageManager::Bun {
+        RuntimeKind::Bun
+    } else {
+        RuntimeKind::Node
+    };
 
-    fn valid_version(&self, _version: &str) -> bool {
-        false
-    }
-
-    fn env_for(
-        &self,
-        _phase: Phase,
-        _toolchain: &Path,
-        _port: Option<u16>,
-    ) -> Vec<(String, String)> {
-        Vec::new()
-    }
+    Some(Detection {
+        kind: toolchain,
+        toolchain,
+        version,
+        confidence: site.confidence,
+        reasons,
+        commands: Commands {
+            install: Some(pm.install(locked).to_string()),
+            build: Some(pm.run("build")),
+            migrate: None,
+        },
+        processes: vec![NewProcess::folder(WEB, site.output_dir)],
+        health: Health::default(),
+        package_manager: Some(pm),
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::runtime::Runtime;
 
     #[test]
-    fn vite_without_a_start_script_is_static_with_dist() {
+    fn vite_without_a_start_script_is_a_folder_named_dist() {
         let tree = RepoTree::from_files(&[
             ("package.json", r#"{"scripts":{"build":"vite build"}}"#),
             ("vite.config.ts", ""),
         ]);
-        let d = Static.detect(&tree).unwrap();
-        assert_eq!(d.output_dir.as_deref(), Some("dist"));
-        assert!(d.commands.start.is_none(), "a static site has no process");
+        let d = detect(&tree).unwrap();
+        assert_eq!(d.output_dir(), Some("dist"));
+        assert!(d.start().is_none(), "a folder has no process");
         assert_eq!(d.commands.build.as_deref(), Some("npm run build"));
         assert_eq!(d.toolchain, RuntimeKind::Node);
+        assert_eq!(d.kind, d.toolchain);
     }
 
     #[test]
@@ -184,7 +154,7 @@ mod tests {
             ("vite.config.ts", ""),
             ("bun.lock", ""),
         ]);
-        let d = Static.detect(&tree).unwrap();
+        let d = detect(&tree).unwrap();
         assert_eq!(d.toolchain, RuntimeKind::Bun);
         assert_eq!(d.commands.build.as_deref(), Some("bun run build"));
     }
@@ -198,7 +168,7 @@ mod tests {
             ),
             ("vite.config.ts", ""),
         ]);
-        assert!(Static.detect(&tree).is_none());
+        assert!(detect(&tree).is_none());
     }
 
     #[test]
@@ -210,19 +180,19 @@ mod tests {
             ),
             ("astro.config.mjs", ""),
         ]);
-        assert!(Static.detect(&tree).is_none());
+        assert!(detect(&tree).is_none());
     }
 
     #[test]
-    fn blazor_wasm_standalone_is_static_and_blazor_server_is_not() {
+    fn blazor_wasm_standalone_is_a_folder_and_blazor_server_is_not() {
         let wasm = RepoTree::from_files(&[(
             "App.csproj",
             r#"<Project Sdk="Microsoft.NET.Sdk.BlazorWebAssembly"><PropertyGroup><TargetFramework>net9.0</TargetFramework></PropertyGroup></Project>"#,
         )]);
-        let site = Static.detect(&wasm).unwrap();
+        let site = detect(&wasm).unwrap();
         assert_eq!(site.toolchain, RuntimeKind::Dotnet);
         assert_eq!(site.version.as_deref(), Some("9.0"));
-        assert_eq!(site.output_dir.as_deref(), Some("out/wwwroot"));
+        assert_eq!(site.output_dir(), Some("out/wwwroot"));
         assert!(
             dotnet::Dotnet
                 .detect(&wasm)
@@ -233,7 +203,7 @@ mod tests {
 
         let server =
             RepoTree::from_files(&[("App.csproj", r#"<Project Sdk="Microsoft.NET.Sdk.Web">"#)]);
-        assert!(Static.detect(&server).is_none());
+        assert!(detect(&server).is_none());
         assert!(dotnet::Dotnet.detect(&server).is_some());
     }
 }

@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE cert_attempts SET attempts = 0, last_error = NULL, next_at = NULL WHERE domain = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": []
+  },
+  "hash": "5cd8703928ce974b0013b3c544f5a28401165cddda102fbcf55eac1631753a4f"
+}

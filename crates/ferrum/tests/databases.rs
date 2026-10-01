@@ -25,8 +25,9 @@ async fn postgres_is_installed_in_the_background_once_and_the_status_says_so() {
     assert_eq!(before.json["major"], serde_json::Value::Null);
     assert_eq!(
         before.json["tunnel"],
-        "ssh -L 5432:127.0.0.1:5432 root@panel.example.com"
+        "ssh -L 5432:127.0.0.1:5432 <user>@panel.example.com"
     );
+    assert_eq!(before.json["tunnel_user"], "");
     assert!(before.json.get("extensions").is_none(), "{}", before.json);
 
     let started = h
@@ -556,6 +557,29 @@ async fn an_upload_that_does_not_fit_on_the_disk_is_refused_and_removed() {
 }
 
 #[tokio::test]
+async fn a_second_upload_for_the_same_name_is_refused_and_leaves_the_first_alone() {
+    let (h, cookie) = with_postgres().await;
+    let dir = h.data_dir().join("restores");
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("ledger_prod.dump");
+    std::fs::write(&path, b"PGDMP still arriving").unwrap();
+    let res = h
+        .post_bytes_with_cookie("/api/databases/ledger_prod/restore", b"PGDMP\x01", &cookie)
+        .await;
+    assert_eq!(res.status, StatusCode::CONFLICT, "{}", res.json);
+    assert!(
+        res.json["error"]
+            .as_str()
+            .unwrap()
+            .contains("still being uploaded"),
+        "{}",
+        res.json
+    );
+    assert_eq!(std::fs::read(&path).unwrap(), b"PGDMP still arriving");
+    assert!(h.platform.sql().is_empty());
+}
+
+#[tokio::test]
 async fn a_load_that_fails_on_the_host_is_reported_on_the_database() {
     let (h, cookie) = with_postgres().await;
     h.platform.fail_next("postgres_restore ledger_prod");
@@ -595,4 +619,195 @@ async fn creating_from_a_dump_needs_postgres_a_valid_name_and_a_free_one() {
         .await;
     assert_eq!(taken.status, StatusCode::CONFLICT, "{}", taken.json);
     assert!(!h.data_dir().join("restores").exists());
+}
+
+async fn linked_ledger() -> (Harness, String) {
+    let (h, cookie) = signed_in().await;
+    h.create_app("ledger", &cookie).await;
+    h.platform.set_postgres_major(MAJOR);
+    let res = h
+        .post_with_cookie(
+            "/api/databases",
+            r#"{"name":"ledger_prod","app_slug":"ledger"}"#,
+            &cookie,
+        )
+        .await;
+    assert_eq!(res.status, StatusCode::CREATED, "{}", res.json);
+    (h, cookie)
+}
+
+fn env_value(env: &str, key: &str) -> Option<String> {
+    env.lines()
+        .find_map(|l| l.strip_prefix(&format!("{key}=")))
+        .map(String::from)
+}
+
+#[tokio::test]
+async fn a_role_lands_in_the_linked_env_rotates_and_goes_but_the_owner_stays() {
+    let (h, cookie) = linked_ledger().await;
+    let made = h
+        .post_with_cookie(
+            "/api/databases/ledger_prod/roles",
+            r#"{"name":"app","connection_limit":10}"#,
+            &cookie,
+        )
+        .await;
+    assert_eq!(made.status, StatusCode::CREATED, "{}", made.json);
+    assert_eq!(made.json["name"], "ledger_prod_app");
+    assert_eq!(made.json["env_label"], "DATABASE_URL_APP");
+    assert!(!made.text.contains("password"), "{}", made.text);
+    let before = env_value(&h.env_file("ledger"), "DATABASE_URL_APP").unwrap();
+    assert!(
+        before.starts_with("postgres://ledger_prod_app:"),
+        "{before}"
+    );
+
+    let listed = h.get_with_cookie("/api/databases", &cookie).await;
+    let roles = &listed.json[0]["roles"];
+    assert_eq!(roles[0]["owner"], true);
+    assert_eq!(roles[0]["env_label"], "DATABASE_URL");
+    assert_eq!(roles[1]["name"], "ledger_prod_app");
+    assert_eq!(roles[1]["connection_limit"], 10);
+    assert_eq!(
+        h.get_with_cookie("/api/databases/ledger_prod/roles", &cookie)
+            .await
+            .json,
+        *roles
+    );
+
+    let url = h
+        .post_with_cookie("/api/databases/ledger_prod/roles/app/url", "", &cookie)
+        .await;
+    assert_eq!(url.status, StatusCode::OK, "{}", url.json);
+    assert_eq!(url.json["url"], before);
+    let token = h.machine_token(false).await;
+    let refused = h
+        .post_with_bearer("/api/databases/ledger_prod/roles/app/url", "", &token)
+        .await;
+    assert_eq!(refused.status, StatusCode::FORBIDDEN, "{}", refused.json);
+
+    let rotated = h
+        .post_with_cookie("/api/databases/ledger_prod/roles/app/rotate", "", &cookie)
+        .await;
+    assert_eq!(rotated.status, StatusCode::OK, "{}", rotated.json);
+    let after = env_value(&h.env_file("ledger"), "DATABASE_URL_APP").unwrap();
+    assert_ne!(after, before, "the env file carries the new password");
+    assert!(
+        h.platform
+            .sql()
+            .last()
+            .unwrap()
+            .starts_with("ALTER ROLE \"ledger_prod_app\" PASSWORD ")
+    );
+
+    let owner = h
+        .delete_with_cookie("/api/databases/ledger_prod/roles/ledger_prod", &cookie)
+        .await;
+    assert_eq!(owner.status, StatusCode::BAD_REQUEST, "{}", owner.json);
+    let ghost = h
+        .delete_with_cookie("/api/databases/ledger_prod/roles/ghost", &cookie)
+        .await;
+    assert_eq!(ghost.status, StatusCode::NOT_FOUND, "{}", ghost.json);
+    let gone = h
+        .delete_with_cookie("/api/databases/ledger_prod/roles/app", &cookie)
+        .await;
+    assert_eq!(gone.status, StatusCode::NO_CONTENT, "{}", gone.json);
+    assert!(env_value(&h.env_file("ledger"), "DATABASE_URL_APP").is_none());
+    assert!(env_value(&h.env_file("ledger"), "DATABASE_URL").is_some());
+}
+
+#[tokio::test]
+async fn labels_rename_the_managed_variables_until_the_app_follows_its_file() {
+    let (h, cookie) = linked_ledger().await;
+    h.post_with_cookie(
+        "/api/databases/ledger_prod/roles",
+        r#"{"name":"app"}"#,
+        &cookie,
+    )
+    .await;
+    let res = h
+        .patch_with_cookie(
+            "/api/apps/ledger/labels",
+            r#"{"database":{"ledger_prod":"DATABASE_ADMIN_URL"},"roles":{"ledger_prod/app":"DATABASE_URL"}}"#,
+            &cookie,
+        )
+        .await;
+    assert_eq!(res.status, StatusCode::NO_CONTENT, "{}", res.json);
+    let env = h.env_file("ledger");
+    assert!(
+        env_value(&env, "DATABASE_ADMIN_URL")
+            .unwrap()
+            .starts_with("postgres://ledger_prod:"),
+        "{env}"
+    );
+    assert!(
+        env_value(&env, "DATABASE_URL")
+            .unwrap()
+            .starts_with("postgres://ledger_prod_app:"),
+        "{env}"
+    );
+    let shown = h.get_with_cookie("/api/apps/ledger", &cookie).await;
+    assert_eq!(
+        shown.json["managed_vars"],
+        serde_json::json!([
+            {"key": "DATABASE_ADMIN_URL", "kind": "owner", "database": "ledger_prod"},
+            {"key": "DATABASE_URL", "kind": "role", "database": "ledger_prod", "role": "ledger_prod_app"}
+        ])
+    );
+    let info = h
+        .get_with_cookie("/api/databases/ledger_prod", &cookie)
+        .await;
+    assert_eq!(info.json["labels"][0]["app"], "ledger");
+    assert_eq!(info.json["labels"][0]["label"]["key"], "DATABASE_ADMIN_URL");
+
+    let bad = h
+        .patch_with_cookie(
+            "/api/apps/ledger/labels",
+            r#"{"redis":"CACHE_URL"}"#,
+            &cookie,
+        )
+        .await;
+    assert_eq!(bad.status, StatusCode::NOT_FOUND, "{}", bad.json);
+
+    ferrum_core::apps::update(
+        &h.db,
+        "ledger",
+        ferrum_core::apps::AppChanges {
+            follow_repo_file: Some(true),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    let refused = h
+        .patch_with_cookie(
+            "/api/apps/ledger/labels",
+            r#"{"database":{"ledger_prod":"X_URL"}}"#,
+            &cookie,
+        )
+        .await;
+    assert_eq!(refused.status, StatusCode::CONFLICT, "{}", refused.json);
+    assert_eq!(
+        refused.json["error"],
+        "The repo's file names the labels; turn following off to edit them here."
+    );
+}
+
+#[tokio::test]
+async fn a_label_given_at_creation_names_the_owner_in_the_linked_env() {
+    let (h, cookie) = signed_in().await;
+    h.create_app("ledger", &cookie).await;
+    h.platform.set_postgres_major(MAJOR);
+    let res = h
+        .post_with_cookie(
+            "/api/databases",
+            r#"{"name":"ledger_prod","app_slug":"ledger","env_label":"PRIMARY_DB"}"#,
+            &cookie,
+        )
+        .await;
+    assert_eq!(res.status, StatusCode::CREATED, "{}", res.json);
+    assert_eq!(res.json["roles"][0]["env_label"], "PRIMARY_DB");
+    let env = h.env_file("ledger");
+    assert!(env_value(&env, "PRIMARY_DB").is_some(), "{env}");
+    assert!(env_value(&env, "DATABASE_URL").is_none(), "{env}");
 }
