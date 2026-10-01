@@ -1,7 +1,12 @@
-import type { ReactNode } from "react";
+import { useEffect, type ReactNode } from "react";
+import { createPortal } from "react-dom";
 import { X } from "lucide-react";
 import { cn } from "@/lib/utils";
 
+/**
+ * Rendered into `document.body`: a `backdrop-filter` or `transform` on any ancestor would make
+ * that ancestor the box `fixed` measures against, and the sheet would cover only the header.
+ */
 export function Sheet({
   open,
   onClose,
@@ -19,8 +24,17 @@ export function Sheet({
 }) {
   const centred = side === "center";
 
-  return (
-    <div className={cn("fixed inset-0 z-50", !open && "pointer-events-none")} aria-hidden={!open}>
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [open, onClose]);
+
+  return createPortal(
+    <div className={cn("fixed inset-0 z-50", !open && "pointer-events-none invisible")} aria-hidden={!open}>
       <div
         onClick={onClose}
         className={cn(
@@ -35,12 +49,12 @@ export function Sheet({
           "absolute flex flex-col bg-surface border-line shadow-lift ease-out",
           centred
             ? [
-                "left-1/2 top-1/2 w-[min(30rem,calc(100vw-3rem))] max-h-[80vh]",
+                "left-1/2 top-1/2 w-[min(30rem,calc(100vw-3rem))] max-h-[80dvh]",
                 "-translate-x-1/2 border rounded-card transition-[transform,opacity] duration-150",
                 open ? "-translate-y-1/2 opacity-100" : "-translate-y-[46%] opacity-0",
               ]
             : [
-                "inset-x-0 bottom-0 max-h-[88vh] border-t rounded-t-[20px] pb-safe",
+                "inset-x-0 bottom-0 max-h-[88dvh] border-t rounded-t-[20px] pb-safe",
                 "transition-transform duration-200",
                 open ? "translate-y-0" : "translate-y-full",
               ],
@@ -56,9 +70,10 @@ export function Sheet({
             <X size={16} />
           </button>
         </div>
-        <div className="overflow-y-auto px-5 py-4">{children}</div>
+        <div className="overflow-y-auto overscroll-contain px-5 py-4">{open ? children : null}</div>
         {footer ? <div className="px-5 py-3 border-t border-line">{footer}</div> : null}
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }

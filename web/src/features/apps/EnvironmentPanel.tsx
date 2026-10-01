@@ -6,32 +6,31 @@ import { Card, CardBody, CardFoot, CardHeader } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
 import { Badge } from "@/components/ui/Badge";
 import { Code } from "@/components/ui/Code";
-import type { EnvChange, EnvEntry, EnvHint, LabelChanges, ManagedVar } from "@/types/api";
+import type { EnvChange, EnvEntry, EnvRequirement, LabelChanges, ManagedVar } from "@/types/api";
 
-/** `value` is null while the stored value is untouched; a hint row starts unstored with "". */
+/** `value` is null while the stored value is untouched; a required row starts unstored with its default or "". */
 export interface EnvRow {
   key: string;
   value: string | null;
   stored: boolean;
   source: string | null;
-  optional: boolean;
-  suggestAppUrl: boolean;
+  about: string | null;
 }
 
 const INPUT =
   "h-9 px-3 bg-inset border border-line-strong rounded-control text-sm text-ink placeholder:text-ink-4 font-mono text-[13px]";
 
-export const HINTS_NOTE =
-  "These keys came from the repository's example and schema files. Check the code for anything they miss; a stale example file is common.";
+export const REQUIRED_NOTE =
+  "These keys are required by the repo's ferrum.toml. A deploy is refused while one of them has no value.";
 
-export function rowsFromHints(hints: EnvHint[]): EnvRow[] {
-  return hints.map((h) => ({
-    key: h.key,
-    value: "",
+/** The default is shown as it will be written: `{{shared}}` becomes the app's shared directory on the server. */
+export function rowsFromRequired(required: EnvRequirement[], slug: string): EnvRow[] {
+  return required.map((r) => ({
+    key: r.key,
+    value: r.default ? r.default.replaceAll("{{shared}}", `/var/lib/ferrum/apps/${slug}/shared`) : "",
     stored: false,
-    source: h.source,
-    optional: h.optional,
-    suggestAppUrl: h.suggest_app_url,
+    source: "ferrum.toml",
+    about: r.about,
   }));
 }
 
@@ -41,13 +40,12 @@ function rowsFromEntries(entries: EnvEntry[]): EnvRow[] {
     value: e.set ? null : "",
     stored: e.set,
     source: e.source,
-    optional: e.optional,
-    suggestAppUrl: false,
+    about: e.about,
   }));
 }
 
 export function blankRow(): EnvRow {
-  return { key: "", value: "", stored: false, source: null, optional: false, suggestAppUrl: false };
+  return { key: "", value: "", stored: false, source: null, about: null };
 }
 
 /** The file is read in the browser and fills the rows; it is never uploaded or kept. */
@@ -110,33 +108,36 @@ export function EnvRows({
         <p className="text-[13.5px] text-ink-3">No variables yet.</p>
       ) : null}
       {rows.map((row, i) => (
-        <div key={i} className="flex items-center gap-2">
-          <input
-            value={row.key}
-            disabled={row.stored || row.source !== null}
-            onChange={(e) => update(i, { ...row, key: e.target.value.toUpperCase() })}
-            placeholder="KEY"
-            className={`${INPUT} w-32 sm:w-56 shrink-0 disabled:opacity-70`}
-          />
-          <input
-            value={row.value ?? ""}
-            onChange={(e) => update(i, { ...row, value: e.target.value })}
-            placeholder={row.value === null ? "••••••••" : row.stored ? "value" : "not set"}
-            className={`${INPUT} flex-1 min-w-0`}
-          />
-          {row.source ? (
-            <Badge className="shrink-0 hidden sm:inline-flex" title={row.source}>
-              {row.optional ? "optional" : row.source}
-            </Badge>
-          ) : null}
-          <Button
-            size="icon"
-            variant="ghost"
-            aria-label={`Remove ${row.key}`}
-            onClick={() => onChange(rows.filter((_, j) => j !== i))}
-          >
-            <X size={14} />
-          </Button>
+        <div key={i} className="grid gap-1">
+          <div className="flex items-center gap-2">
+            <input
+              value={row.key}
+              disabled={row.stored || row.source !== null}
+              onChange={(e) => update(i, { ...row, key: e.target.value.toUpperCase() })}
+              placeholder="KEY"
+              className={`${INPUT} w-32 sm:w-56 shrink-0 disabled:opacity-70`}
+            />
+            <input
+              value={row.value ?? ""}
+              onChange={(e) => update(i, { ...row, value: e.target.value })}
+              placeholder={row.value === null ? "••••••••" : row.stored ? "value" : "not set"}
+              className={`${INPUT} flex-1 min-w-0`}
+            />
+            {row.source ? (
+              <Badge className="shrink-0 hidden sm:inline-flex" title={row.source}>
+                {row.source}
+              </Badge>
+            ) : null}
+            <Button
+              size="icon"
+              variant="ghost"
+              aria-label={`Remove ${row.key}`}
+              onClick={() => onChange(rows.filter((_, j) => j !== i))}
+            >
+              <X size={14} />
+            </Button>
+          </div>
+          {row.about ? <p className="text-[12px] text-ink-4 pl-1">{row.about}</p> : null}
         </div>
       ))}
     </>
@@ -241,7 +242,7 @@ export function EnvironmentPanel({
   const [dirty, setDirty] = useState(false);
   const [note, setNote] = useState<string | null>(null);
   const save = useSetEnv(slug);
-  const hinted = rows.some((r) => r.source !== null);
+  const required = rows.some((r) => r.source === "ferrum.toml");
 
   const change = (next: EnvRow[]) => {
     setRows(next);
@@ -289,7 +290,7 @@ export function EnvironmentPanel({
       <CardBody className="grid gap-2">
         <EnvRows rows={rows} onChange={change} managed={managed} managedRows={<ManagedRows slug={slug} />} />
         {note ? <p className="text-[12.5px] text-ink-3 mt-1">{note}</p> : null}
-        {hinted ? <p className="text-[12.5px] text-ink-4 mt-1">{HINTS_NOTE}</p> : null}
+        {required ? <p className="text-[12.5px] text-ink-4 mt-1">{REQUIRED_NOTE}</p> : null}
         {save.error ? (
           <p className="text-[12.5px] text-fail">
             {save.error instanceof ApiError ? save.error.message : String(save.error)}

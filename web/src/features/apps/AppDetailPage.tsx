@@ -194,8 +194,11 @@ function Overview({ app, deploying }: { app: AppDetail; deploying: boolean }) {
                   <span className="font-mono text-[13px]">{app.root}</span>
                 </Row>
               ) : null}
-              <Row label="Repo file" hint="ferrum.toml or Procfile">
+              <Row label="Repo file" hint="ferrum.toml">
                 {app.follow_repo_file ? "Followed on every deploy" : <span className="text-ink-4">Not followed</span>}
+              </Row>
+              <Row label="Writable directory" hint="Survives every deploy; put uploads and storage here">
+                <span className="font-mono text-[13px] break-all">/var/lib/ferrum/apps/{app.slug}/shared</span>
               </Row>
               <Row label="Install">
                 <Command value={app.commands.install} />

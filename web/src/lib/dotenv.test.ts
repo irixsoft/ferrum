@@ -50,8 +50,7 @@ const row = (key: string, extra: Partial<EnvRow> = {}): EnvRow => ({
   value: "",
   stored: false,
   source: null,
-  optional: false,
-  suggestAppUrl: false,
+  about: null,
   ...extra,
 });
 
