@@ -1,16 +1,20 @@
-use crate::acme::{self, Directory, Issuer};
+use crate::acme::{self, AcmeError, Certificate, Directory, Issuer};
 use crate::apps::{self, App, provision};
 use crate::dns::{self, Lookup, Verdict};
+use crate::dns_providers;
+use crate::events::{self, Kind};
 use crate::state::State;
 use crate::{CERTS_DIR, setup};
 use anyhow::Context;
 use ferrum_platform::ubuntu::NGINX_UNIT;
 use ferrum_platform::{Platform, ServiceAction};
 use serde::Serialize;
+use std::collections::HashMap;
 use std::net::IpAddr;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
+use time::OffsetDateTime;
 
 pub const SWEEP_INTERVAL: Duration = Duration::from_secs(5 * 60);
 pub const FIRST_SWEEP: Duration = Duration::from_secs(30);
@@ -18,12 +22,15 @@ const DNS_RETRY_SECS: i64 = 5 * 60;
 const MAX_ATTEMPTS: i64 = 5;
 const GIVE_UP_SECS: i64 = 24 * 60 * 60;
 const BASE_BACKOFF_SECS: i64 = 30;
+const ARI_REFRESH: Duration = Duration::from_secs(6 * 60 * 60);
 
 #[derive(Clone)]
 pub struct Issuance {
     pub directory: Directory,
     pub resolver: Lookup,
+    pub http: reqwest::Client,
     public_ip: Arc<Mutex<Option<IpAddr>>>,
+    ari_checked: Arc<Mutex<HashMap<String, Instant>>>,
 }
 
 impl Issuance {
@@ -31,7 +38,26 @@ impl Issuance {
         Self {
             directory,
             resolver,
+            http: crate::http::client(),
             public_ip: Arc::new(Mutex::new(public_ip)),
+            ari_checked: Arc::default(),
+        }
+    }
+
+    /// Whether a DNS-01 record must reach the public authoritatives before the CA looks.
+    pub fn checks_dns(&self) -> bool {
+        !self.directory.is_custom()
+    }
+
+    /// True at most once per `ARI_REFRESH` for each domain, and marks it checked.
+    fn take_ari_turn(&self, domain: &str) -> bool {
+        let mut checked = self.ari_checked.lock().expect("not poisoned");
+        match checked.get(domain) {
+            Some(at) if at.elapsed() < ARI_REFRESH => false,
+            _ => {
+                checked.insert(domain.to_string(), Instant::now());
+                true
+            }
         }
     }
 
@@ -128,11 +154,124 @@ async fn record(
     Ok(())
 }
 
+/// Forgets the backoff; the CA's renewal window stays.
 async fn clear(state: &State, domain: &str) -> anyhow::Result<()> {
-    sqlx::query!("DELETE FROM cert_attempts WHERE domain = ?", domain)
-        .execute(&state.pool)
-        .await?;
+    sqlx::query!(
+        "DELETE FROM cert_attempts WHERE domain = ? AND renew_after IS NULL",
+        domain
+    )
+    .execute(&state.pool)
+    .await?;
+    sqlx::query!(
+        "UPDATE cert_attempts SET attempts = 0, last_error = NULL, next_at = NULL WHERE domain = ?",
+        domain
+    )
+    .execute(&state.pool)
+    .await?;
     Ok(())
+}
+
+pub async fn set_renew_after(
+    state: &State,
+    domain: &str,
+    at: Option<OffsetDateTime>,
+) -> anyhow::Result<()> {
+    let stamp = at
+        .and_then(|t| chrono::DateTime::from_timestamp(t.unix_timestamp(), 0))
+        .map(|t| t.to_rfc3339_opts(chrono::SecondsFormat::Secs, true));
+    sqlx::query!(
+        "INSERT INTO cert_attempts (domain, attempts, renew_after) VALUES (?, 0, ?)
+         ON CONFLICT(domain) DO UPDATE SET renew_after = excluded.renew_after",
+        domain,
+        stamp
+    )
+    .execute(&state.pool)
+    .await?;
+    Ok(())
+}
+
+pub async fn renew_after(state: &State, domain: &str) -> anyhow::Result<Option<OffsetDateTime>> {
+    let stamp = sqlx::query_scalar!(
+        "SELECT renew_after FROM cert_attempts WHERE domain = ?",
+        domain
+    )
+    .fetch_optional(&state.pool)
+    .await?
+    .flatten();
+    Ok(stamp
+        .and_then(|s| chrono::DateTime::parse_from_rfc3339(&s).ok())
+        .and_then(|t| OffsetDateTime::from_unix_timestamp(t.timestamp()).ok()))
+}
+
+async fn provider_of(state: &State, domain: &str) -> anyhow::Result<Option<String>> {
+    Ok(sqlx::query_scalar!(
+        "SELECT dns_provider_id FROM app_domains WHERE domain = ?",
+        domain
+    )
+    .fetch_optional(&state.pool)
+    .await?
+    .flatten())
+}
+
+async fn owner_of(state: &State, domain: &str) -> anyhow::Result<Option<(String, String)>> {
+    let row = sqlx::query!(
+        r#"SELECT a.id AS "id!", a.slug AS "slug!" FROM app_domains d
+           JOIN apps a ON a.id = d.app_id WHERE d.domain = ?"#,
+        domain
+    )
+    .fetch_optional(&state.pool)
+    .await?;
+    Ok(row.map(|r| (r.id, r.slug)))
+}
+
+/// Records the failure; a renewal that has used up its quick retries also tells the owner,
+/// which the day-long backoff after that limits to once a day.
+async fn failed(
+    state: &State,
+    domain: &str,
+    attempts: i64,
+    error: &str,
+    renewing: bool,
+) -> anyhow::Result<()> {
+    record(state, domain, attempts, error, backoff_secs(attempts)).await?;
+    if renewing && attempts >= MAX_ATTEMPTS {
+        let sentence = format!("The certificate for {domain} could not be renewed: {error}");
+        let owner = owner_of(state, domain).await?;
+        let link = owner.as_ref().map(|(_, slug)| format!("/apps/{slug}"));
+        events::emit(
+            state,
+            Kind::BrokeOnItsOwn,
+            owner.as_ref().map(|(id, _)| id.as_str()),
+            domain,
+            &sentence,
+            link.as_deref(),
+        )
+        .await;
+    }
+    Ok(())
+}
+
+async fn finish(
+    state: &State,
+    domain: &str,
+    attempts: i64,
+    issued: Result<Certificate, AcmeError>,
+    renewing: bool,
+) -> anyhow::Result<bool> {
+    match issued {
+        Ok(cert) => {
+            clear(state, domain).await?;
+            set_renew_after(state, domain, cert.renew_after).await?;
+            tracing::info!(domain, "certificate issued");
+            Ok(true)
+        }
+        Err(e) => {
+            let attempts = attempts + 1;
+            tracing::warn!(domain, attempts, error = %e, "certificate issuance failed");
+            failed(state, domain, attempts, &e.to_string(), renewing).await?;
+            Ok(false)
+        }
+    }
 }
 
 pub async fn status(
@@ -144,14 +283,15 @@ pub async fn status(
         return Ok(CertStatus::Issued { not_after });
     }
     Ok(match attempt(state, domain).await? {
-        Some(a) if a.attempts == 0 => CertStatus::WaitingForDns {
-            detail: a.last_error.unwrap_or_default(),
-        },
-        Some(a) => CertStatus::Failed {
+        Some(a) if a.attempts > 0 => CertStatus::Failed {
             detail: a.last_error.unwrap_or_default(),
             retry_at: crate::time::utc(a.next_at.unwrap_or_default()),
         },
-        None => CertStatus::None,
+        Some(Attempt {
+            last_error: Some(detail),
+            ..
+        }) => CertStatus::WaitingForDns { detail },
+        _ => CertStatus::None,
     })
 }
 
@@ -187,13 +327,6 @@ async fn try_issue(
     renewing: bool,
 ) -> anyhow::Result<bool> {
     if !renewing && has_certificate(platform, domain) {
-        return Ok(false);
-    }
-    if apps::domains::is_wildcard(domain) {
-        tracing::info!(
-            domain,
-            "a wildcard certificate needs a DNS-01 challenge; skipped"
-        );
         return Ok(false);
     }
     let previous = attempt(state, domain).await?;
@@ -233,23 +366,71 @@ async fn try_issue(
         Ok(issuer) => issuer.issue(domain, &acme::cert_dir(domain)).await,
         Err(e) => Err(e),
     };
-    match issued {
-        Ok(_) => {
-            clear(state, domain).await?;
-            tracing::info!(domain, "certificate issued");
-            Ok(true)
-        }
-        Err(e) => {
-            let attempts = attempts + 1;
-            tracing::warn!(domain, attempts, error = %e, "certificate issuance failed");
-            record(
-                state,
-                domain,
-                attempts,
-                &e.to_string(),
-                backoff_secs(attempts),
+    finish(state, domain, attempts, issued, renewing).await
+}
+
+/// `name` is `*.<base>`, proven over DNS-01 through the provider, so no A record is needed.
+/// The caller brings the site in line afterwards.
+pub async fn issue_wildcard(
+    state: &State,
+    platform: &dyn Platform,
+    issuance: &Issuance,
+    name: &str,
+    provider_id: &str,
+    renewing: bool,
+) -> anyhow::Result<bool> {
+    if !renewing && has_certificate(platform, name) {
+        return Ok(false);
+    }
+    let previous = attempt(state, name).await?;
+    if previous.as_ref().is_some_and(|a| a.waiting) {
+        return Ok(false);
+    }
+    let attempts = previous.map(|a| a.attempts).unwrap_or(0);
+    let email = setup::email(state)
+        .await?
+        .context("no contact email is set for certificates")?;
+    let issued = async {
+        let provider = dns_providers::client(state, &issuance.http, provider_id)
+            .await
+            .map_err(|e| AcmeError::Dns(format!("{e:#}")))?;
+        let issuer = Issuer::new(state, issuance.directory.clone(), &email).await?;
+        issuer
+            .issue_dns(
+                name,
+                &acme::cert_dir(name),
+                provider.as_ref(),
+                issuance.checks_dns(),
             )
-            .await?;
+            .await
+    }
+    .await;
+    finish(state, name, attempts, issued, renewing).await
+}
+
+async fn issue_one(
+    state: &State,
+    platform: &dyn Platform,
+    issuance: &Issuance,
+    domain: &str,
+    renewing: bool,
+) -> anyhow::Result<bool> {
+    if !apps::domains::is_wildcard(domain) {
+        return try_issue(state, platform, issuance, domain, renewing).await;
+    }
+    match provider_of(state, domain).await? {
+        Some(id) => issue_wildcard(state, platform, issuance, domain, &id, renewing).await,
+        None => {
+            if !has_certificate(platform, domain) {
+                let attempts = attempt(state, domain)
+                    .await?
+                    .map(|a| a.attempts)
+                    .unwrap_or(0);
+                let why = format!(
+                    "{domain} is a wildcard, proven through DNS; choose a DNS provider for it."
+                );
+                record(state, domain, attempts, &why, DNS_RETRY_SECS).await?;
+            }
             Ok(false)
         }
     }
@@ -265,31 +446,86 @@ pub async fn issue_for(
 ) -> anyhow::Result<bool> {
     let mut landed = false;
     for d in &app.domains {
-        landed |= try_issue(state, platform, issuance, &d.domain, false).await?;
+        landed |= issue_one(state, platform, issuance, &d.domain, false).await?;
     }
     let refreshed = provision::refresh_vhost(platform, app)?;
     Ok(landed || refreshed)
 }
 
-/// Every certificate on disk with under thirty days left, the panel's included.
+struct OnDisk {
+    domain: String,
+    pem: String,
+    not_before: OffsetDateTime,
+    not_after: OffsetDateTime,
+}
+
+/// Asks the CA for a fresh renewal window, at most every six hours per certificate.
+async fn refresh_windows(state: &State, issuance: &Issuance, certs: &[OnDisk]) {
+    let due: Vec<&OnDisk> = certs
+        .iter()
+        .filter(|c| acme::cert_id_of(&c.pem).is_ok())
+        .filter(|c| issuance.take_ari_turn(&c.domain))
+        .collect();
+    if due.is_empty() {
+        return;
+    }
+    let Ok(Some(email)) = setup::email(state).await else {
+        return;
+    };
+    let issuer = match Issuer::new(state, issuance.directory.clone(), &email).await {
+        Ok(issuer) => issuer,
+        Err(error) => {
+            tracing::warn!(%error, "renewal windows not refreshed");
+            return;
+        }
+    };
+    for cert in due {
+        match issuer.renewal_window(&cert.pem).await {
+            Ok(at) => {
+                if let Err(error) = set_renew_after(state, &cert.domain, Some(at)).await {
+                    tracing::warn!(domain = %cert.domain, %error, "renewal window not stored");
+                }
+            }
+            Err(error) => {
+                tracing::info!(domain = %cert.domain, %error, "no renewal window from the CA")
+            }
+        }
+    }
+}
+
+/// Every certificate on disk inside the CA's renewal window, or with a third of its life left
+/// when the CA gave none, the panel's included.
 pub async fn renew_due(
     state: &State,
     platform: &dyn Platform,
     issuance: &Issuance,
 ) -> anyhow::Result<Vec<String>> {
-    let now = time::OffsetDateTime::now_utc();
-    let mut renewed = Vec::new();
-    for domain in platform.list_dir(Path::new(CERTS_DIR))? {
+    let mut certs = Vec::new();
+    for dir in platform.list_dir(Path::new(CERTS_DIR))? {
+        let domain = acme::host_of_dir(&dir);
         let Some(pem) = platform.read_file(&acme::cert_dir(&domain).join("fullchain.pem"))? else {
             continue;
         };
-        let Ok(not_after) = acme::not_after_of(&pem) else {
+        let Ok((not_before, not_after)) = acme::validity_of(&pem) else {
             continue;
         };
-        if acme::renew_due(not_after, now)
-            && try_issue(state, platform, issuance, &domain, true).await?
+        certs.push(OnDisk {
+            domain,
+            pem,
+            not_before,
+            not_after,
+        });
+    }
+    refresh_windows(state, issuance, &certs).await;
+
+    let now = OffsetDateTime::now_utc();
+    let mut renewed = Vec::new();
+    for cert in certs {
+        let window = renew_after(state, &cert.domain).await?;
+        if acme::renew_due(cert.not_after, cert.not_before, now, window)
+            && issue_one(state, platform, issuance, &cert.domain, true).await?
         {
-            renewed.push(domain);
+            renewed.push(cert.domain);
         }
     }
     if !renewed.is_empty() {
@@ -389,11 +625,13 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
-    async fn a_wildcard_is_left_without_a_certificate_and_without_an_attempt() {
+    async fn a_wildcard_goes_to_the_ca_over_dns_without_an_address_check() {
         let (_d, state) = state().await;
         let p = FakePlatform::new();
         setup::set_email(&state, "me@example.com").await.unwrap();
-        sqlx::query("INSERT INTO dns_providers (id, name, kind, credentials) VALUES ('cf', 'Cloudflare', 'cloudflare', 'x')")
+        let sealed = crate::secrets::encrypt(&state.key, r#"{"token":"t"}"#);
+        sqlx::query("INSERT INTO dns_providers (id, name, kind, credentials) VALUES ('cf', 'Cloudflare', 'cloudflare', ?)")
+            .bind(&sealed)
             .execute(&state.pool)
             .await
             .unwrap();
@@ -410,16 +648,25 @@ pub(crate) mod tests {
             )]),
             Some(ip(HERE)),
         );
+        assert!(!issuance.checks_dns());
         issue_for(&state, &p, &issuance, &app).await.unwrap();
+        match status(&state, &p, "*.ledger.example.com").await.unwrap() {
+            CertStatus::Failed { detail, .. } => assert!(detail.starts_with("acme:"), "{detail}"),
+            other => panic!("{other:?}"),
+        }
+        let tried: Vec<(String, i64)> =
+            sqlx::query_as("SELECT domain, attempts FROM cert_attempts ORDER BY domain")
+                .fetch_all(&state.pool)
+                .await
+                .unwrap();
         assert_eq!(
-            status(&state, &p, "*.ledger.example.com").await.unwrap(),
-            CertStatus::None
+            tried,
+            [
+                ("*.ledger.example.com".to_string(), 1),
+                ("ledger.example.com".to_string(), 0)
+            ],
+            "the plain name waits for its A record, the wildcard does not"
         );
-        let tried: Vec<String> = sqlx::query_scalar("SELECT domain FROM cert_attempts")
-            .fetch_all(&state.pool)
-            .await
-            .unwrap();
-        assert_eq!(tried, ["ledger.example.com"]);
     }
 
     #[tokio::test]
@@ -500,11 +747,110 @@ pub(crate) mod tests {
         assert_eq!(writes(&p), before + 1, "a matching site is left alone");
     }
 
+    /// A ninety-day certificate with `days_left` to run.
     pub(crate) fn self_signed(domain: &str, days_left: i64) -> String {
         let key = rcgen::KeyPair::generate().unwrap();
         let mut params = rcgen::CertificateParams::new(vec![domain.to_string()]).unwrap();
-        params.not_after = time::OffsetDateTime::now_utc() + time::Duration::days(days_left);
+        let now = time::OffsetDateTime::now_utc();
+        params.not_after = now + time::Duration::days(days_left);
+        params.not_before = params.not_after - time::Duration::days(90);
         params.self_signed(&key).unwrap().pem()
+    }
+
+    #[tokio::test]
+    async fn the_ca_window_decides_renewal_when_there_is_one() {
+        let (_d, state) = state().await;
+        let p = FakePlatform::new();
+        setup::set_email(&state, "me@example.com").await.unwrap();
+        for (domain, days) in [("early.example.com", 60), ("late.example.com", 10)] {
+            p.write_file(
+                &acme::cert_dir(domain).join("fullchain.pem"),
+                &self_signed(domain, days),
+                0o644,
+            )
+            .unwrap();
+        }
+        let now = OffsetDateTime::now_utc();
+        set_renew_after(
+            &state,
+            "early.example.com",
+            Some(now - time::Duration::hours(1)),
+        )
+        .await
+        .unwrap();
+        set_renew_after(
+            &state,
+            "late.example.com",
+            Some(now + time::Duration::days(2)),
+        )
+        .await
+        .unwrap();
+        let issuance = Issuance::new(
+            unreachable_directory(),
+            Lookup::Fixed(vec![
+                ("early.example.com".into(), vec![ip(HERE)]),
+                ("late.example.com".into(), vec![ip(HERE)]),
+            ]),
+            Some(ip(HERE)),
+        );
+        renew_due(&state, &p, &issuance).await.unwrap();
+        let tried: Vec<(String, i64)> =
+            sqlx::query_as("SELECT domain, attempts FROM cert_attempts ORDER BY domain")
+                .fetch_all(&state.pool)
+                .await
+                .unwrap();
+        assert_eq!(
+            tried,
+            vec![
+                ("early.example.com".to_string(), 1),
+                ("late.example.com".to_string(), 0)
+            ]
+        );
+        assert!(
+            renew_after(&state, "early.example.com")
+                .await
+                .unwrap()
+                .is_some(),
+            "a failed renewal keeps the window"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_renewal_out_of_quick_retries_tells_the_owner_once() {
+        let (_d, state) = state().await;
+        let p = FakePlatform::new();
+        let app = app_with_domain(&state).await;
+        p.write_file(
+            &acme::cert_dir("ledger.example.com").join("fullchain.pem"),
+            &self_signed("ledger.example.com", 10),
+            0o644,
+        )
+        .unwrap();
+        sqlx::query("INSERT INTO cert_attempts (domain, attempts, next_at) VALUES ('ledger.example.com', 4, datetime('now', '-1 minute'))")
+            .execute(&state.pool)
+            .await
+            .unwrap();
+        let issuance = Issuance::new(
+            unreachable_directory(),
+            Lookup::Fixed(vec![("ledger.example.com".into(), vec![ip(HERE)])]),
+            Some(ip(HERE)),
+        );
+        renew_due(&state, &p, &issuance).await.unwrap();
+        renew_due(&state, &p, &issuance).await.unwrap();
+
+        let events = events::list(&state, 10, false).await.unwrap();
+        assert_eq!(events.len(), 1, "{events:?}");
+        let e = &events[0];
+        assert_eq!(e.kind, "broke_on_its_own");
+        assert_eq!(e.app_id.as_deref(), Some(app.id.as_str()));
+        assert_eq!(e.subject, "ledger.example.com");
+        assert_eq!(e.link.as_deref(), Some("/apps/ledger"));
+        assert!(
+            e.sentence
+                .starts_with("The certificate for ledger.example.com could not be renewed: acme:"),
+            "{}",
+            e.sentence
+        );
     }
 
     #[tokio::test]
@@ -552,7 +898,7 @@ pub(crate) mod tests {
         assert_eq!(
             attempts,
             vec![("old.example.com".to_string(), 1)],
-            "only the certificate under thirty days was tried"
+            "only the certificate past two thirds of its life was tried"
         );
         assert!(!p.calls().iter().any(|c| c == "service reload nginx"));
     }
