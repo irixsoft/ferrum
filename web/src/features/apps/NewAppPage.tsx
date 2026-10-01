@@ -362,7 +362,7 @@ function Review({
   const postgresReady = postgres.data?.installed === true;
   const dbName = databaseName(draft.slug);
 
-  const primary = draft.domains[0]?.trim() ?? "";
+  const primary = draft.domains.find((d) => d.primary)?.domain ?? "";
   const lastSuggestion = useRef("");
   useEffect(() => {
     const suggestion = primary ? `https://${primary}` : "";

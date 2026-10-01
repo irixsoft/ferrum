@@ -72,7 +72,7 @@ export function AppDetailPage({ slug }: { slug: string }) {
     );
   }
 
-  const primary = app.domains[0];
+  const primary = app.domains.find((d) => d.primary)?.domain;
   const hasCommand = app.processes.some((p) => p.kind === "command");
   const active = deploys.find((d) => d.state !== null);
   const deployLabel = active

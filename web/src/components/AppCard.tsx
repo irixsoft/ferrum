@@ -7,7 +7,7 @@ import { ago } from "@/lib/utils";
 import { limitsLine } from "@/lib/processes";
 
 export function AppCard({ app }: { app: App }) {
-  const primary = app.domains[0];
+  const primary = app.domains.find((d) => d.primary)?.domain;
 
   return (
     <Link

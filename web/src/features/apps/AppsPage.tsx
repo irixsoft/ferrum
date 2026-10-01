@@ -72,7 +72,7 @@ export function AppsPage() {
                     <Link to="/apps/$slug" params={{ slug: app.slug }} className="block">
                       <span className="text-[14px] font-medium text-ink">{app.name}</span>
                       <span className="block text-[12.5px] text-ink-4 truncate">
-                        {app.domains[0] ?? "No domain"}
+                        {app.domains.find((d) => d.primary)?.domain ?? "No domain"}
                       </span>
                     </Link>
                   </td>
