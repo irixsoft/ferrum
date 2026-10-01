@@ -42,6 +42,7 @@ import { Row } from "@/components/ui/Row";
 import { Segmented } from "@/components/ui/Segmented";
 import { Tabs } from "@/components/ui/Tabs";
 import { GithubCard } from "@/features/settings/GithubCard";
+import { DnsProvidersCard } from "@/features/settings/DnsProvidersCard";
 import { NotificationsCard } from "@/features/settings/NotificationsCard";
 import { ago } from "@/lib/utils";
 
@@ -393,6 +394,7 @@ function Connections({ onTokens }: { onTokens: () => void }) {
           </CardBody>
         </Card>
 
+        <DnsProvidersCard />
         <YourBox />
       </div>
     </div>
