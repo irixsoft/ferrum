@@ -28,13 +28,18 @@ pub struct Job {
     release_dir: Option<PathBuf>,
     swapped: bool,
     maintenance_on: bool,
-    stopped_all: bool,
+    running: Vec<String>,
+    stopped: Vec<String>,
     refused: bool,
     previous: Option<Release>,
 }
 
 impl Job {
     pub fn new(ctx: Ctx, app: App, deploy: Deploy) -> Self {
+        let running = app
+            .command_processes()
+            .map(|p| p.unit_name(&app.slug))
+            .collect();
         Self {
             ctx,
             app,
@@ -42,7 +47,8 @@ impl Job {
             release_dir: None,
             swapped: false,
             maintenance_on: false,
-            stopped_all: false,
+            running,
+            stopped: Vec::new(),
             refused: false,
             previous: None,
         }
@@ -289,9 +295,7 @@ impl Job {
         let reason = format!("{error:#}");
         let _ = self.say(&format!("✗ {reason}")).await;
         self.lift_maintenance().await;
-        if self.stopped_all {
-            self.start_all().await;
-        }
+        self.start_stopped().await;
         if let Some(dir) = &self.release_dir
             && !self.swapped
         {
@@ -319,14 +323,10 @@ impl Job {
         Ok(Outcome::Failed)
     }
 
-    async fn start_all(&mut self) {
-        for process in self.app.command_processes() {
-            let _ = self
-                .ctx
-                .platform
-                .service(ServiceAction::Start, &process.unit_name(&self.app.slug));
+    async fn start_stopped(&mut self) {
+        for unit in self.stopped.drain(..) {
+            let _ = self.ctx.platform.service(ServiceAction::Start, &unit);
         }
-        self.stopped_all = false;
     }
 
     async fn clone_step(&mut self) -> anyhow::Result<()> {
@@ -639,14 +639,13 @@ impl Job {
         maintenance::on(self.ctx.platform.as_ref(), &self.app.slug)?;
         self.maintenance_on = true;
         if self.app.current_release_id.is_some() {
-            for process in self.app.command_processes() {
-                let unit = process.unit_name(&self.app.slug);
+            for unit in self.running.clone() {
                 self.ctx
                     .platform
                     .service(ServiceAction::Stop, &unit)
-                    .with_context(|| format!("stopping {}", process.name))?;
+                    .with_context(|| format!("stopping {unit}"))?;
+                self.stopped.push(unit);
             }
-            self.stopped_all = true;
             self.say("Every process is stopped until the migration is through")
                 .await?;
         }
@@ -699,7 +698,7 @@ impl Job {
                 .service(action, &unit)
                 .with_context(|| format!("starting {name}"))?;
         }
-        self.stopped_all = false;
+        self.stopped.clear();
         Ok(())
     }
 
@@ -799,7 +798,7 @@ impl Job {
                     };
                     self.ctx.platform.service(action, &unit)?;
                 }
-                self.stopped_all = false;
+                self.stopped.clear();
                 self.say(&format!("Rolled back to {}", short(&previous.commit_sha)))
                     .await?;
                 (
@@ -814,7 +813,7 @@ impl Job {
                         .platform
                         .service(ServiceAction::Stop, &process.unit_name(&self.app.slug));
                 }
-                self.stopped_all = false;
+                self.stopped.clear();
                 releases::set_current(&self.ctx.state, &self.app.id, None).await?;
                 self.say("No earlier release to fall back to; every process is stopped")
                     .await?;

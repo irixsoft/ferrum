@@ -975,6 +975,90 @@ mod tests {
         );
     }
 
+    async fn following_migrating_app(state: &State, p: &FakePlatform, port: u16) -> App {
+        let app = provisioned(state, p, "ledger", port, |new| {
+            new.follow_repo_file = true;
+            new.commands.migrate = Some("bun run db:migrate".into());
+            new.pause_for_migrations = true;
+        })
+        .await;
+        postgres::create(state, p, postgres::tests::new("ledger_prod"))
+            .await
+            .unwrap();
+        postgres::link(state, &app.id, "ledger_prod").await.unwrap();
+        app
+    }
+
+    #[tokio::test]
+    async fn the_pause_stops_the_processes_that_run_not_the_ones_the_tag_adds() {
+        let (_d, state) = state().await;
+        let p = Arc::new(FakePlatform::new());
+        p.serve_clone(&[(
+            "ferrum.toml",
+            "[processes.web]\nstart = \"bun run serve\"\nhealth = \"/up\"\n",
+        )]);
+        let health = Health::serve(200).await;
+        let app = following_migrating_app(&state, &p, health.port).await;
+        let ctx = ctx(&state, &p);
+        let (first, _) = deploy(&ctx, &app, "1111111").await;
+        assert_eq!(first, Outcome::Live);
+
+        p.serve_clone(&[(
+            "ferrum.toml",
+            "[processes.web]\nstart = \"bun run serve\"\nhealth = \"/up\"\n[processes.jobs]\nstart = \"bun run jobs\"\n",
+        )]);
+        let app = apps::by_slug(&state, "ledger").await.unwrap().unwrap();
+        let before = p.calls().len();
+        let (outcome, d) = deploy(&ctx, &app, "2222222").await;
+        assert_eq!(outcome, Outcome::Live, "{:?}", d.failure_reason);
+        let calls: Vec<String> = p.calls().into_iter().skip(before).collect();
+        assert!(calls.contains(&"service stop ferrum-app-ledger-web".to_string()));
+        assert!(
+            !calls.contains(&"service stop ferrum-app-ledger-jobs".to_string()),
+            "a unit that does not exist yet is not stopped: {calls:#?}"
+        );
+        assert!(calls.contains(&"service enable-now ferrum-app-ledger-jobs".to_string()));
+    }
+
+    #[tokio::test]
+    async fn a_stop_that_fails_halfway_restarts_what_was_stopped() {
+        let (_d, state) = state().await;
+        let p = Arc::new(FakePlatform::new());
+        p.serve_clone(&[(
+            "ferrum.toml",
+            "[processes.web]\nstart = \"bun run serve\"\nhealth = \"/up\"\n[processes.jobs]\nstart = \"bun run jobs\"\n",
+        )]);
+        let health = Health::serve(200).await;
+        let app = following_migrating_app(&state, &p, health.port).await;
+        let ctx = ctx(&state, &p);
+        let (first, _) = deploy(&ctx, &app, "1111111").await;
+        assert_eq!(first, Outcome::Live);
+
+        let app = apps::by_slug(&state, "ledger").await.unwrap().unwrap();
+        p.fail_next("service stop ferrum-app-ledger-web");
+        let before = p.calls().len();
+        let (outcome, d) = deploy(&ctx, &app, "2222222").await;
+        assert_eq!(outcome, Outcome::Failed);
+        assert!(
+            d.failure_reason
+                .as_deref()
+                .unwrap_or_default()
+                .contains("stopping ferrum-app-ledger-web"),
+            "{:?}",
+            d.failure_reason
+        );
+        let calls: Vec<String> = p.calls().into_iter().skip(before).collect();
+        assert!(calls.contains(&"service stop ferrum-app-ledger-jobs".to_string()));
+        assert!(
+            calls.contains(&"service start ferrum-app-ledger-jobs".to_string()),
+            "the process that was stopped comes back: {calls:#?}"
+        );
+        assert!(
+            !calls.contains(&"service start ferrum-app-ledger-web".to_string()),
+            "the one that never stopped is left alone: {calls:#?}"
+        );
+    }
+
     #[tokio::test]
     async fn a_worker_that_dies_within_the_settle_time_fails_the_deploy() {
         let (_d, state) = state().await;

@@ -1,4 +1,4 @@
-use super::processes::{legacy_unit_name, legacy_unit_path, unit_path, unit_prefix};
+use super::processes::{legacy_unit_name, legacy_unit_path, unit_path, unit_prefix, valid_name};
 use super::unit::render_unit;
 use super::vhost::{custom_path, render_vhost, vhost_path};
 use super::{App, env};
@@ -95,7 +95,11 @@ fn stale_units(
         .list_dir(Path::new(SYSTEMD_UNIT_DIR))
         .unwrap_or_default()
         .into_iter()
-        .filter(|name| name.starts_with(&prefix) && name.ends_with(".service"))
+        .filter(|name| {
+            name.strip_prefix(&prefix)
+                .and_then(|rest| rest.strip_suffix(".service"))
+                .is_some_and(valid_name)
+        })
         .map(|name| Path::new(SYSTEMD_UNIT_DIR).join(name))
         .filter(|path| !wanted.contains(path))
         .collect();
@@ -352,6 +356,28 @@ mod tests {
             platform
                 .written("/etc/systemd/system/ferrum-app-ledger-web.service")
                 .is_some()
+        );
+    }
+
+    #[tokio::test]
+    async fn another_app_whose_slug_starts_the_same_keeps_its_units() {
+        let (_d, state) = state().await;
+        let platform = FakePlatform::new();
+        let other = "/etc/systemd/system/ferrum-app-ledger-2-web.service";
+        platform
+            .write_file(Path::new(other), "[Unit]\n", 0o644)
+            .unwrap();
+        let app = create(&state, new_app("ledger", &[("/", "main", false)]))
+            .await
+            .unwrap();
+        let before = platform.calls().len();
+        provision(&state, &platform, &app).await.unwrap();
+        deprovision(&state, &platform, &app).await.unwrap();
+        assert!(!platform.removed(other));
+        let calls: Vec<String> = platform.calls().into_iter().skip(before).collect();
+        assert!(
+            !calls.iter().any(|c| c.contains("ferrum-app-ledger-2-web")),
+            "{calls:#?}"
         );
     }
 
