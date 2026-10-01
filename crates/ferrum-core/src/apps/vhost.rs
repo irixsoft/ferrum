@@ -154,7 +154,7 @@ fn body(app: &App, target: &str) -> String {
         websocket: app
             .routes
             .iter()
-            .any(|r| r.path == "/" && r.process == target && r.websocket),
+            .any(|r| r.process == target && r.websocket),
     };
     let mut routes: Vec<&Route> = app.routes.iter().filter(|r| r.path != "/").collect();
     routes.push(&root);
@@ -294,6 +294,30 @@ mod tests {
             "one app's HSTS must not bind the names of every other app under it"
         );
         assert!(v.contains("return 301 https://$host$request_uri;"));
+    }
+
+    #[test]
+    fn a_name_serving_a_websocket_process_keeps_the_long_timeout_at_its_root() {
+        let mut a = app("ledger");
+        a.processes = vec![process("web", 20000), process("ws", 20001)];
+        a.routes = vec![route("/", "web", false), route("/ws", "ws", true)];
+        a.domains = rows(&[
+            serve("ledger.example.com", "web", true),
+            serve("ws.ledger.example.com", "ws", false),
+        ]);
+        let v = render_vhost(&a, &tls(&["ledger.example.com", "ws.ledger.example.com"]));
+        let location_root = |b: &str| {
+            let start = b.find("location / {").unwrap();
+            let end = b[start + 1..]
+                .find("location ")
+                .map_or(b.len(), |e| e + start + 1);
+            b[start..end].to_string()
+        };
+        let ws = location_root(block(&v, "listen 443 ssl;", "ws.ledger.example.com"));
+        assert!(ws.contains("proxy_pass http://127.0.0.1:20001;"), "{ws}");
+        assert!(ws.contains("proxy_read_timeout 86400s;"), "{ws}");
+        let web = location_root(block(&v, "listen 443 ssl;", "ledger.example.com"));
+        assert!(web.contains("proxy_read_timeout 3600s;"), "{web}");
     }
 
     #[test]

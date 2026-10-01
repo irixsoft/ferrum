@@ -32,7 +32,7 @@ import { Row } from "@/components/ui/Row";
 import { Tabs } from "@/components/ui/Tabs";
 import { Sheet } from "@/components/ui/Sheet";
 import { Segmented } from "@/components/ui/Segmented";
-import { ConfigForm, draftFromApp, toChanges, type Draft } from "./ConfigForm";
+import { ConfigForm, draftFromApp, toChanges, type Draft, type Sources } from "./ConfigForm";
 import { DataCard } from "./DataCard";
 import { DeployLog } from "./DeployLog";
 import { EnvironmentPanel } from "./EnvironmentPanel";
@@ -520,6 +520,9 @@ function Command({ value }: { value: string | null }) {
   return value ? <Code>{value}</Code> : <span className="text-ink-4">None</span>;
 }
 
+const FILE = "from the repo's file";
+const fromFile: Sources = { follow_repo_file: FILE, install: FILE, build: FILE, migrate: FILE };
+
 function Configuration({ app }: { app: AppDetail }) {
   const navigate = useNavigate();
   const [draft, setDraft] = useState<Draft>(() => draftFromApp(app));
@@ -535,7 +538,7 @@ function Configuration({ app }: { app: AppDetail }) {
         draft={draft}
         repository={app.repository}
         onChange={setDraft}
-        sources={app.follow_repo_file ? { follow_repo_file: "from the repo's file" } : undefined}
+        sources={app.follow_repo_file ? fromFile : undefined}
         creating={false}
       />
       <Card>

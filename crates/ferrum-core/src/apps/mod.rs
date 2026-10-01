@@ -241,7 +241,8 @@ fn invalid(message: impl Into<String>) -> AppError {
     AppError::Invalid(message.into())
 }
 
-pub fn validate(new: &NewApp) -> Result<(), AppError> {
+/// Returns the settled domain rows, so a caller that goes on to write does not settle twice.
+pub fn validate(new: &NewApp) -> Result<Vec<NewDomain>, AppError> {
     if !valid_slug(&new.slug) {
         return Err(invalid(
             "A slug is 1 to 40 characters of lowercase letters, digits and hyphens, and cannot start or end with a hyphen.",
@@ -320,7 +321,7 @@ pub fn validate(new: &NewApp) -> Result<(), AppError> {
             return Err(invalid(format!("{package} is not a valid package name.")));
         }
     }
-    domains::settle(&new.domains, &new.processes, &new.routes)?;
+    let settled = domains::settle(&new.domains, &new.processes, &new.routes)?;
     for var in &new.env {
         env::valid_key(&var.key)?;
     }
@@ -335,12 +336,11 @@ pub fn validate(new: &NewApp) -> Result<(), AppError> {
             "The startup budget must be between 5 and 3600 seconds.",
         ));
     }
-    Ok(())
+    Ok(settled)
 }
 
 pub async fn create(state: &State, new: NewApp) -> anyhow::Result<App> {
-    validate(&new)?;
-    let settled = domains::settle(&new.domains, &new.processes, &new.routes)?;
+    let settled = validate(&new)?;
     let id = uuid::Uuid::new_v4().to_string();
     let mut tx = state.pool.begin_with("BEGIN IMMEDIATE").await?;
 
@@ -430,8 +430,7 @@ pub async fn update(state: &State, slug: &str, changes: AppChanges) -> anyhow::R
         env: Vec::new(),
         env_hints: Vec::new(),
     };
-    validate(&merged)?;
-    let settled = domains::settle(&merged.domains, &merged.processes, &merged.routes)?;
+    let settled = validate(&merged)?;
 
     let mut tx = state.pool.begin_with("BEGIN IMMEDIATE").await?;
     let budget = merged.startup_budget_secs as i64;

@@ -1,4 +1,4 @@
-import type { Process, ProcessInput, RouteInput } from "@/types/api";
+import type { DomainJob, Process, ProcessInput, RouteInput } from "@/types/api";
 
 export const isFolder = (p: ProcessInput) => p.static_dir !== undefined && p.static_dir !== null;
 
@@ -16,6 +16,21 @@ export function reconcileRoutes(processes: ProcessInput[], routes: RouteInput[])
 
 export function renameInRoutes(routes: RouteInput[], from: string, to: string): RouteInput[] {
   return routes.map((r) => (r.process === from ? { ...r, process: to } : r));
+}
+
+type Served = { job: DomainJob; target: string };
+
+/** A served name follows its process through a rename, and moves to the first that can take traffic when it is gone. */
+export function reconcileDomains<D extends Served>(processes: ProcessInput[], domains: D[]): D[] {
+  const targets = routable(processes);
+  const fallback = targets[0];
+  return domains.map((d) =>
+    d.job === "serve" && !targets.includes(d.target) && fallback ? { ...d, target: fallback } : d,
+  );
+}
+
+export function renameInDomains<D extends Served>(domains: D[], from: string, to: string): D[] {
+  return domains.map((d) => (d.job === "serve" && d.target === from ? { ...d, target: to } : d));
 }
 
 /** "Served by nginx" for a folder-only app, else the count and what the units may use. */

@@ -7,7 +7,7 @@ import { Code } from "@/components/ui/Code";
 import { Segmented } from "@/components/ui/Segmented";
 import { runtimeLabel } from "@/components/RuntimeMark";
 import { useGithubTags } from "@/lib/api";
-import { isFolder, reconcileRoutes, renameInRoutes, routable } from "@/lib/processes";
+import { isFolder, reconcileDomains, reconcileRoutes, renameInDomains, renameInRoutes, routable } from "@/lib/processes";
 import { DomainsEditor, type DomainDraft } from "./DomainsEditor";
 import type {
   App,
@@ -264,12 +264,21 @@ export function ConfigForm({
       onChange(next);
     }
   };
-  const setProcesses = (processes: ProcessInput[], routes = draft.routes) =>
-    onChange({ ...draft, processes, routes: reconcileRoutes(processes, routes) });
+  const setProcesses = (processes: ProcessInput[], routes = draft.routes, domains = draft.domains) =>
+    onChange({
+      ...draft,
+      processes,
+      routes: reconcileRoutes(processes, routes),
+      domains: reconcileDomains(processes, domains),
+    });
   const setProcess = (i: number, next: ProcessInput) => {
     const previous = draft.processes[i];
-    const routes = previous.name !== next.name ? renameInRoutes(draft.routes, previous.name, next.name) : draft.routes;
-    setProcesses(replaceAt(draft.processes, i, next), routes);
+    const renamed = previous.name !== next.name;
+    setProcesses(
+      replaceAt(draft.processes, i, next),
+      renamed ? renameInRoutes(draft.routes, previous.name, next.name) : draft.routes,
+      renamed ? renameInDomains(draft.domains, previous.name, next.name) : draft.domains,
+    );
   };
 
   return (

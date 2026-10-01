@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { limitsLine, reconcileRoutes, routable } from "./processes";
+import { limitsLine, reconcileDomains, reconcileRoutes, renameInDomains, routable } from "./processes";
 import type { ProcessInput } from "@/types/api";
 
 const web: ProcessInput = { name: "web", start: "bun run start", port: true };
@@ -21,6 +21,19 @@ describe("routes", () => {
       { path: "/admin", process: "site", websocket: false },
     ]);
     expect(reconcileRoutes([jobs, site], [])).toEqual([{ path: "/", process: "site", websocket: false }]);
+  });
+
+  test("a served name follows a rename and moves when its process is gone", () => {
+    const admin: ProcessInput = { name: "admin", start: "bun run admin", port: true };
+    const domains = [
+      { domain: "a.example.com", job: "serve" as const, target: "admin", primary: true },
+      { domain: "www.a.example.com", job: "redirect" as const, target: "a.example.com", primary: false },
+    ];
+    expect(renameInDomains(domains, "admin", "panel")[0].target).toBe("panel");
+    expect(renameInDomains(domains, "a.example.com", "x")[1].target).toBe("a.example.com");
+    expect(reconcileDomains([web, admin], domains)[0].target).toBe("admin");
+    expect(reconcileDomains([web, jobs], domains)[0].target).toBe("web");
+    expect(reconcileDomains([web, jobs], domains)[1].target).toBe("a.example.com");
   });
 });
 

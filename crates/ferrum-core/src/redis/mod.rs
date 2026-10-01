@@ -2,6 +2,7 @@ pub mod install;
 
 pub use install::{ensure_installed, installed};
 
+use crate::apps::env::Origin;
 use crate::apps::provision::user_name;
 use crate::apps::{App, ports};
 use crate::events::{self, Kind};
@@ -142,6 +143,11 @@ pub async fn url_for(state: &State, app_id: &str) -> anyhow::Result<Option<(Stri
 
 pub async fn set_label(state: &State, app_id: &str, label: &str) -> anyhow::Result<bool> {
     crate::postgres::roles::valid_label(label)?;
+    if let Some(other) =
+        crate::postgres::label_clash(state, app_id, label, &[Origin::Redis]).await?
+    {
+        return Err(crate::postgres::clash_sentence(label, &other).into());
+    }
     let done = sqlx::query!(
         "UPDATE redis_instances SET env_label = ? WHERE app_id = ?",
         label,
@@ -274,14 +280,14 @@ pub async fn refresh(state: &State, platform: &dyn Platform) -> anyhow::Result<u
             Ok(true) => rewritten += 1,
             Ok(false) => {}
             Err(error) => {
-                tracing::warn!(slug = %r.slug, %error, "redis did not start after its conf was refreshed");
+                tracing::warn!(slug = %r.slug, %error, "redis did not come back after its conf was refreshed");
                 events::emit(
                     state,
                     Kind::BrokeOnItsOwn,
                     Some(&r.app_id),
                     &r.slug,
                     &format!(
-                        "Redis for {} did not start after its configuration was refreshed: {error}",
+                        "Redis for {} did not come back after its configuration was refreshed: {error}",
                         r.slug
                     ),
                     Some(&format!("/apps/{}", r.slug)),
@@ -300,9 +306,14 @@ fn rewrite(platform: &dyn Platform, slug: &str, wanted: &str) -> anyhow::Result<
     }
     let unit = unit_name(slug);
     platform.service(ServiceAction::Stop, &unit)?;
-    platform.write_file(&path, wanted, 0o600)?;
-    platform.chown(&path, &user_name(slug))?;
-    platform.service(ServiceAction::ResetFailed, &unit)?;
+    let written = platform
+        .write_file(&path, wanted, 0o600)
+        .and_then(|_| platform.chown(&path, &user_name(slug)))
+        .and_then(|_| platform.service(ServiceAction::ResetFailed, &unit));
+    if let Err(e) = written {
+        let _ = platform.service(ServiceAction::Start, &unit);
+        return Err(e.into());
+    }
     platform.service(ServiceAction::Start, &unit)?;
     Ok(true)
 }
@@ -603,12 +614,29 @@ mod tests {
         assert_eq!(event.subject, "a");
         assert_eq!(event.link.as_deref(), Some("/apps/a"));
         assert!(
-            event
-                .sentence
-                .starts_with("Redis for a did not start after its configuration was refreshed: "),
+            event.sentence.starts_with(
+                "Redis for a did not come back after its configuration was refreshed: "
+            ),
             "{}",
             event.sentence
         );
+    }
+
+    #[tokio::test]
+    async fn a_conf_that_cannot_be_written_leaves_the_instance_running_on_the_old_one() {
+        let (_d, state) = state().await;
+        let p = FakePlatform::new();
+        with_redis(&state, &p, &["ledger"]).await;
+        make_stale(&p, "ledger");
+        p.fail_next("write_file /var/lib/ferrum/redis/ledger/redis.conf");
+        let before = p.calls().len();
+        assert_eq!(refresh(&state, &p).await.unwrap(), 0);
+        let calls: Vec<String> = p.calls()[before..].to_vec();
+        let stop = position(&calls, "service stop ferrum-redis-ledger");
+        let start = position(&calls, "service start ferrum-redis-ledger");
+        assert!(stop < start, "{calls:#?}");
+        assert!(!calls.contains(&"service reset-failed ferrum-redis-ledger".to_string()));
+        assert_eq!(events::list(&state, 10, false).await.unwrap().len(), 1);
     }
 
     #[tokio::test]

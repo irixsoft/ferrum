@@ -241,8 +241,9 @@ pub fn change(
     name: &str,
     change: DomainChange,
 ) -> Result<Vec<NewDomain>, AppError> {
+    let name = name.trim().to_ascii_lowercase();
     let Some(row) = current.iter().find(|d| d.domain == name) else {
-        return Err(AppError::DomainNotFound(name.to_string()));
+        return Err(AppError::DomainNotFound(name));
     };
     let mut new = NewDomain::from(row);
     if let Some(job) = change.job {
@@ -261,8 +262,9 @@ pub fn change(
 }
 
 pub fn remove(current: &[Domain], name: &str) -> Result<Vec<NewDomain>, AppError> {
+    let name = name.trim().to_ascii_lowercase();
     let Some(row) = current.iter().find(|d| d.domain == name) else {
-        return Err(AppError::DomainNotFound(name.to_string()));
+        return Err(AppError::DomainNotFound(name));
     };
     if row.primary && current.iter().any(|d| d.domain != name && d.serves()) {
         return Err(invalid(format!(
@@ -538,6 +540,11 @@ mod tests {
         ]);
         assert!(remove(&rows, "a.example.com").is_err());
         assert_eq!(remove(&rows, "b.example.com").unwrap().len(), 1);
+        assert_eq!(
+            remove(&rows, " B.Example.com").unwrap().len(),
+            1,
+            "a name is matched the way it is stored"
+        );
         assert!(matches!(
             remove(&rows, "c.example.com"),
             Err(AppError::DomainNotFound(_))
