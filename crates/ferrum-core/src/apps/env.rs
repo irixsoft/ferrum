@@ -1,5 +1,5 @@
+use super::provision::app_dir;
 use super::{App, AppError};
-pub use crate::detect::env_hints::EnvHint;
 use crate::postgres::DbError;
 use crate::secrets::{self, Key};
 use crate::state::State;
@@ -279,50 +279,87 @@ pub async fn keys(state: &State, app_id: &str) -> anyhow::Result<Vec<String>> {
         .collect())
 }
 
-/// What the panel shows per key: hints come from the repository, values never leave the server.
+pub const FILE_SOURCE: &str = "ferrum.toml";
+const SHARED_PLACEHOLDER: &str = "{{shared}}";
+
+/// A variable the repository says it reads, with a sentence for the panel and a non-secret
+/// default; `{{shared}}` in a default stands for the app's shared directory.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EnvRequirement {
+    pub key: String,
+    #[serde(default)]
+    pub about: Option<String>,
+    #[serde(default)]
+    pub default: Option<String>,
+}
+
+pub fn expand_default(value: &str, slug: &str) -> String {
+    value.replace(
+        SHARED_PLACEHOLDER,
+        &app_dir(slug).join("shared").to_string_lossy(),
+    )
+}
+
+/// What the panel shows per key: values never leave the server.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Entry {
     pub key: String,
     pub set: bool,
     pub source: Option<String>,
-    pub optional: bool,
+    pub about: Option<String>,
 }
 
-pub async fn hints(state: &State, app_id: &str) -> anyhow::Result<Vec<EnvHint>> {
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Required {
+    pub key: String,
+    pub source: String,
+    pub about: Option<String>,
+    pub default: Option<String>,
+}
+
+pub async fn required(state: &State, app_id: &str) -> anyhow::Result<Vec<Required>> {
     let rows = sqlx::query!(
-        r#"SELECT key AS "key!", source AS "source!", optional AS "optional!: bool"
-           FROM app_env_hints WHERE app_id = ? ORDER BY rowid"#,
+        r#"SELECT key AS "key!", source AS "source!", about, default_value
+           FROM app_env_required WHERE app_id = ? ORDER BY rowid"#,
         app_id
     )
     .fetch_all(&state.pool)
     .await?;
     Ok(rows
         .into_iter()
-        .map(|r| EnvHint {
+        .map(|r| Required {
             key: r.key,
             source: r.source,
-            optional: r.optional,
-            suggest_app_url: false,
+            about: r.about,
+            default: r.default_value,
         })
         .collect())
 }
 
-pub async fn replace_hints(
+/// The file's list replaces the file's list; a key a failed command named stays until a value
+/// exists or the file claims it.
+pub async fn replace_required(
     tx: &mut Transaction<'_, Sqlite>,
     app_id: &str,
-    hints: &[EnvHint],
+    required: &[EnvRequirement],
 ) -> anyhow::Result<()> {
-    sqlx::query!("DELETE FROM app_env_hints WHERE app_id = ?", app_id)
-        .execute(&mut **tx)
-        .await?;
-    for hint in hints {
-        valid_key(&hint.key)?;
+    sqlx::query!(
+        "DELETE FROM app_env_required WHERE app_id = ? AND source = ?",
+        app_id,
+        FILE_SOURCE
+    )
+    .execute(&mut **tx)
+    .await?;
+    for req in required {
+        valid_key(&req.key)?;
         sqlx::query!(
-            "INSERT INTO app_env_hints (app_id, key, source, optional) VALUES (?, ?, ?, ?)",
+            "INSERT OR REPLACE INTO app_env_required (app_id, key, source, about, default_value)
+             VALUES (?, ?, ?, ?, ?)",
             app_id,
-            hint.key,
-            hint.source,
-            hint.optional
+            req.key,
+            FILE_SOURCE,
+            req.about,
+            req.default
         )
         .execute(&mut **tx)
         .await?;
@@ -330,52 +367,51 @@ pub async fn replace_hints(
     Ok(())
 }
 
-/// Adds a hint for a key that has none yet; a creation-time source is kept over a later one.
-pub async fn add_hint(
+/// A key a failed command complained about shows as missing until a value exists.
+pub async fn note_named_by_failure(
     state: &State,
     app_id: &str,
     key: &str,
-    source: &str,
-    optional: bool,
+    what: &str,
 ) -> anyhow::Result<()> {
     valid_key(key)?;
+    let source = format!("named by the failed {what}");
     sqlx::query!(
-        "INSERT OR IGNORE INTO app_env_hints (app_id, key, source, optional) VALUES (?, ?, ?, ?)",
+        "INSERT OR IGNORE INTO app_env_required (app_id, key, source) VALUES (?, ?, ?)",
         app_id,
         key,
-        source,
-        optional
+        source
     )
     .execute(&state.pool)
     .await?;
     Ok(())
 }
 
-/// Stored keys first, then the hinted keys nothing has set yet.
+/// Stored keys first, then the required keys nothing has set yet.
 pub async fn entries(state: &State, app_id: &str) -> anyhow::Result<Vec<Entry>> {
     let stored = keys(state, app_id).await?;
-    let hints = hints(state, app_id).await?;
+    let required = required(state, app_id).await?;
     let mut entries: Vec<Entry> = stored
         .iter()
         .map(|key| {
-            let hint = hints.iter().find(|h| &h.key == key);
+            let req = required.iter().find(|r| &r.key == key);
             Entry {
                 key: key.clone(),
                 set: true,
-                source: hint.map(|h| h.source.clone()),
-                optional: hint.is_some_and(|h| h.optional),
+                source: req.map(|r| r.source.clone()),
+                about: req.and_then(|r| r.about.clone()),
             }
         })
         .collect();
     entries.extend(
-        hints
+        required
             .into_iter()
-            .filter(|h| !stored.contains(&h.key))
-            .map(|h| Entry {
-                key: h.key,
+            .filter(|r| !stored.contains(&r.key))
+            .map(|r| Entry {
+                key: r.key,
                 set: false,
-                source: Some(h.source),
-                optional: h.optional,
+                source: Some(r.source),
+                about: r.about,
             }),
     );
     Ok(entries)

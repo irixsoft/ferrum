@@ -290,80 +290,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn the_code_is_scanned_after_the_clone_and_unset_keys_become_hints() {
-        let (_d, state) = state().await;
-        let p = Arc::new(FakePlatform::new());
-        p.serve_clone(&[
-            ("src/mail.ts", "const host = process.env.SMTP_HOST;"),
-            (
-                "src/env.ts",
-                "SMTP_HOST: z.string(),\nLOG_LEVEL: z.string().optional(),\n",
-            ),
-            ("src/pay.ts", "process.env.STRIPE_KEY; process.env.NODE_ENV"),
-            (
-                "server.ts",
-                "const ws = process.env.WS_PORT; process.env.PORT",
-            ),
-            ("node_modules/pg/index.js", "process.env.PGHOST"),
-        ]);
-        let health = Health::serve(200).await;
-        let ws_health = Health::serve(200).await;
-        let app = provisioned(&state, &p, "ledger", health.port, |new| {
-            new.processes.push(NewProcess {
-                name: "ws".into(),
-                start: Some("bun run ws".into()),
-                ..NewProcess::default()
-            });
-        })
-        .await;
-        sqlx::query("UPDATE app_ports SET port = ? WHERE app_id = ? AND name = 'ws'")
-            .bind(ws_health.port as i64)
-            .bind(&app.id)
-            .execute(&state.pool)
-            .await
-            .unwrap();
-        apps::env::set(&state, &app.id, "STRIPE_KEY", "sk")
-            .await
-            .unwrap();
-        let ctx = ctx(&state, &p);
-        let (outcome, d) = deploy(&ctx, &app, "a3f9c2d4e81b06f5c9a2").await;
-        assert_eq!(outcome, Outcome::Live, "{:?}", d.failure_reason);
-
-        let lines = log::lines(&state, &d.id, 0).await.unwrap();
-        let text: Vec<&str> = lines.iter().map(|l| l.text.as_str()).collect();
-        assert!(
-            text.contains(
-                &"Referenced in the code but not set: LOG_LEVEL (src/env.ts, optional), SMTP_HOST (src/env.ts)"
-            ),
-            "{text:#?}"
-        );
-        let calls = p.calls();
-        let scan = calls
-            .iter()
-            .position(|c| c.starts_with("walk_text_files /var/lib/ferrum/apps/ledger/releases/"))
-            .unwrap();
-        let install = calls
-            .iter()
-            .position(|c| c.starts_with("run_scoped") && c.contains("bun install"))
-            .unwrap();
-        assert!(scan < install, "{calls:#?}");
-
-        let entries = apps::env::entries(&state, &app.id).await.unwrap();
-        let unset: Vec<(&str, &str, bool)> = entries
-            .iter()
-            .filter(|e| !e.set)
-            .map(|e| (e.key.as_str(), e.source.as_deref().unwrap(), e.optional))
-            .collect();
-        assert_eq!(
-            unset,
-            vec![
-                ("LOG_LEVEL", "referenced in src/env.ts", true),
-                ("SMTP_HOST", "referenced in src/env.ts", false),
-            ]
-        );
-    }
-
-    #[tokio::test]
     async fn a_build_that_fails_on_a_missing_variable_names_it() {
         let (_d, state) = state().await;
         let p = Arc::new(FakePlatform::new());
@@ -378,21 +304,13 @@ mod tests {
             Exit::Code(1),
         );
         let health = Health::serve(200).await;
-        let app = provisioned(&state, &p, "ledger", health.port, |new| {
-            new.env_hints = vec![apps::env::EnvHint {
-                key: "NEXT_PUBLIC_APP_URL".into(),
-                source: "from src/env.ts".into(),
-                optional: false,
-                suggest_app_url: true,
-            }];
-        })
-        .await;
+        let app = provisioned(&state, &p, "ledger", health.port, |_| {}).await;
         let ctx = ctx(&state, &p);
         let (outcome, d) = deploy(&ctx, &app, "abc1234").await;
         assert_eq!(outcome, Outcome::Failed);
         assert_eq!(
             d.failure_reason.as_deref(),
-            Some("The build failed: NEXT_PUBLIC_APP_URL (src/env.ts) is not set")
+            Some("The build failed: NEXT_PUBLIC_APP_URL is not set")
         );
 
         p.script_run(
@@ -422,22 +340,37 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn the_tag_s_aptfile_adds_packages_and_never_removes_any() {
+    async fn packages_in_the_file_install_before_the_build_and_a_dropped_one_is_kept() {
         let (_d, state) = state().await;
         let p = Arc::new(FakePlatform::new());
         let health = Health::serve(200).await;
         let app = provisioned(&state, &p, "ledger", health.port, |new| {
+            new.follow_repo_file = true;
             new.packages = vec!["ffmpeg".into()];
         })
         .await;
-        p.serve_clone(&[("Aptfile", "# media\nlibvips42\nbad name\n")]);
+        p.serve_clone(&[
+            ("ferrum.toml", "packages = [\"libvips42\"]\n"),
+            ("Aptfile", "imagemagick\n"),
+        ]);
         let ctx = ctx(&state, &p);
         let (outcome, d) = deploy(&ctx, &app, "abc1234").await;
         assert_eq!(outcome, Outcome::Live, "{:?}", d.failure_reason);
 
         let calls = p.calls();
-        assert!(calls.contains(&"install_packages libvips42".to_string()));
-        assert!(calls.contains(&"install_packages ffmpeg libvips42".to_string()));
+        let install = calls
+            .iter()
+            .position(|c| c == "install_packages ffmpeg libvips42")
+            .expect("the file's package is installed with the kept one");
+        let build = calls
+            .iter()
+            .position(|c| c.starts_with("run_scoped") && c.contains("bun install"))
+            .unwrap();
+        assert!(install < build, "{calls:#?}");
+        assert!(
+            !calls.iter().any(|c| c.contains("imagemagick")),
+            "the Aptfile is not read: {calls:#?}"
+        );
         assert!(p.calls_matching("remove_packages").is_empty());
         let stored = crate::apps::by_slug(&state, "ledger")
             .await
@@ -445,20 +378,83 @@ mod tests {
             .unwrap()
             .packages;
         assert_eq!(stored, vec!["ffmpeg", "libvips42"]);
+        let kept: Vec<_> = crate::events::list(&state, 10, true)
+            .await
+            .unwrap()
+            .into_iter()
+            .filter(|e| e.kind == "package_dropped")
+            .collect();
+        assert_eq!(kept.len(), 1, "{kept:#?}");
+        assert_eq!(kept[0].subject, "ffmpeg");
+        assert_eq!(d.steps[2].note.as_deref(), Some("2 packages"));
+    }
+
+    #[tokio::test]
+    async fn a_required_variable_without_a_value_refuses_the_deploy_before_the_build() {
+        let (_d, state) = state().await;
+        let p = Arc::new(FakePlatform::new());
+        p.serve_clone(&[(
+            "ferrum.toml",
+            "[env]\nrequired = [\"SESSION_SECRET\", \"SMTP_HOST\"]\n[env.UPLOADS_DIR]\ndefault = \"{{shared}}/uploads\"\n",
+        )]);
+        let health = Health::serve(200).await;
+        let app = provisioned(&state, &p, "ledger", health.port, |new| {
+            new.follow_repo_file = true;
+        })
+        .await;
+        apps::env::set(&state, &app.id, "SMTP_HOST", "mail.example.com")
+            .await
+            .unwrap();
+        let ctx = ctx(&state, &p);
+        let before = p.calls().len();
+        let (outcome, d) = deploy(&ctx, &app, "abc1234").await;
+        assert_eq!(outcome, Outcome::Failed);
+        assert_eq!(
+            d.failure_reason.as_deref(),
+            Some(
+                "SESSION_SECRET is required by ferrum.toml and has no value; set it on the Environment tab."
+            )
+        );
+        let calls: Vec<String> = p.calls().into_iter().skip(before).collect();
+        assert!(
+            !calls.iter().any(|c| c.starts_with("run_scoped")
+                || (c.starts_with("install_packages") && c != "install_packages git")),
+            "nothing is built: {calls:#?}"
+        );
+        let refused = crate::events::list(&state, 10, true).await.unwrap();
+        assert_eq!(refused[0].kind, "deploy_refused");
+        assert!(
+            apps::env::all(&state, &app.id).await.unwrap().len() == 1,
+            "a refused deploy writes no default"
+        );
+
+        apps::env::set(&state, &app.id, "SESSION_SECRET", "s3cr3t")
+            .await
+            .unwrap();
+        let (outcome, d) = deploy(&ctx, &app, "abc1235").await;
+        assert_eq!(outcome, Outcome::Live, "{:?}", d.failure_reason);
+        let vars = apps::env::all(&state, &app.id).await.unwrap();
+        assert!(
+            vars.contains(&(
+                "UPLOADS_DIR".to_string(),
+                "/var/lib/ferrum/apps/ledger/shared/uploads".to_string()
+            )),
+            "{vars:?}"
+        );
+        let env = p
+            .written("/var/lib/ferrum/apps/ledger/shared/.env")
+            .unwrap();
+        assert!(env.contains("UPLOADS_DIR=/var/lib/ferrum/apps/ledger/shared/uploads\n"));
         let text: Vec<String> = log::lines(&state, &d.id, 0)
             .await
             .unwrap()
             .into_iter()
             .map(|l| l.text)
             .collect();
-        for line in [
-            "The Aptfile adds libvips42",
-            "Not in the Aptfile, kept from the configuration: ffmpeg",
-            "Ignoring Aptfile lines that are not package names: bad name",
-        ] {
-            assert!(text.iter().any(|t| t == line), "{line}\n{text:#?}");
-        }
-        assert_eq!(d.steps[2].note.as_deref(), Some("2 packages"));
+        assert!(
+            text.iter().any(|t| t.ends_with("; 3 variables required")),
+            "{text:#?}"
+        );
     }
 
     #[tokio::test]
@@ -1164,12 +1160,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_procfile_is_honoured_when_there_is_no_ferrum_toml() {
+    async fn the_file_s_build_command_runs_in_the_deploy_that_brings_it() {
         let (_d, state) = state().await;
         let p = Arc::new(FakePlatform::new());
         p.serve_clone(&[(
-            "Procfile",
-            "web: bun run serve\nworker: bun run worker\nrelease: bun run migrate\n",
+            "ferrum.toml",
+            "build = \"bun run build:prod\"\n[processes.web]\nstart = \"bun run serve\"\n",
         )]);
         let health = Health::serve(200).await;
         let app = provisioned(&state, &p, "ledger", health.port, |new| {
@@ -1179,16 +1175,17 @@ mod tests {
         let ctx = ctx(&state, &p);
         let (outcome, d) = deploy(&ctx, &app, "abc1234").await;
         assert_eq!(outcome, Outcome::Live, "{:?}", d.failure_reason);
+        let calls = p.calls();
+        assert!(
+            calls
+                .iter()
+                .any(|c| c.starts_with("run_scoped") && c.contains("bun run build:prod")),
+            "the tag's own build command runs, not the stored one: {calls:#?}"
+        );
         let web = p
             .written("/etc/systemd/system/ferrum-app-ledger-web.service")
             .unwrap();
         assert!(web.contains("bun run serve"));
-        assert!(
-            p.written("/etc/systemd/system/ferrum-app-ledger-worker.service")
-                .is_some()
-        );
-        let stored = apps::by_slug(&state, "ledger").await.unwrap().unwrap();
-        assert_eq!(stored.commands.migrate.as_deref(), Some("bun run migrate"));
     }
 
     #[tokio::test]

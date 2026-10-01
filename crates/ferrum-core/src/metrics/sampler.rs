@@ -6,10 +6,12 @@ use crate::state::State;
 use ferrum_platform::{Platform, ProcStat};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use tokio::task::JoinHandle;
 
 const PRUNE_EVERY_TICKS: u64 = 360;
+/// A unit in a restart loop is up for a second at a time; it has not recovered until it stays up.
+const RECOVERED_AFTER: Duration = Duration::from_secs(60);
 
 struct Reading {
     stat: ProcStat,
@@ -23,6 +25,8 @@ pub struct Sampler {
     host: Option<Reading>,
     units: HashMap<String, (u64, Instant)>,
     broken: HashSet<String>,
+    up_since: HashMap<String, Instant>,
+    recovered_after: Duration,
     ticks: u64,
 }
 
@@ -34,8 +38,21 @@ impl Sampler {
             host: None,
             units: HashMap::new(),
             broken: HashSet::new(),
+            up_since: HashMap::new(),
+            recovered_after: RECOVERED_AFTER,
             ticks: 0,
         }
+    }
+
+    fn saw_up(&mut self, unit: &str, at: Instant) {
+        let since = *self.up_since.entry(unit.to_string()).or_insert(at);
+        if at.duration_since(since) >= self.recovered_after {
+            self.broken.remove(unit);
+        }
+    }
+
+    fn saw_down(&mut self, unit: &str) {
+        self.up_since.remove(unit);
     }
 
     pub async fn tick(&mut self) -> anyhow::Result<()> {
@@ -86,11 +103,12 @@ impl Sampler {
                 let unit = process.unit_name(&app.slug);
                 let Some(stats) = self.platform.cgroup_stats(&unit)? else {
                     self.units.remove(&unit);
+                    self.saw_down(&unit);
                     self.watch(&app, &unit).await?;
                     continue;
                 };
-                self.broken.remove(&unit);
                 let seen = Instant::now();
+                self.saw_up(&unit, seen);
                 memory += stats.memory_current;
                 peak += stats.memory_peak;
                 if let Some((prev_usec, prev_at)) =
@@ -126,7 +144,7 @@ impl Sampler {
         let platform = self.platform.clone();
         let name = unit.to_string();
         if tokio::task::spawn_blocking(move || platform.service_is_active(&name)).await? {
-            self.broken.remove(unit);
+            self.saw_up(unit, Instant::now());
             return Ok(());
         }
         if self.broken.contains(unit) || deploy::running_for(&self.state, &app.id).await?.is_some()
@@ -299,6 +317,17 @@ mod tests {
         sampler.tick().await.unwrap();
         platform.set_inactive(unit);
         sampler.tick().await.unwrap();
-        assert_eq!(broke(&state).await, 2, "running again re-arms it");
+        assert_eq!(
+            broke(&state).await,
+            1,
+            "a second of life is a restart loop, not a recovery"
+        );
+
+        sampler.recovered_after = Duration::ZERO;
+        platform.set_active(unit);
+        sampler.tick().await.unwrap();
+        platform.set_inactive(unit);
+        sampler.tick().await.unwrap();
+        assert_eq!(broke(&state).await, 2, "staying up re-arms it");
     }
 }

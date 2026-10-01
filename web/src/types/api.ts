@@ -162,7 +162,7 @@ export interface App {
   startup_budget_secs: number;
   cpu_percent: number;
   pause_for_migrations: boolean;
-  /** The repo's ferrum.toml or Procfile decides processes, paths and commands on every deploy. */
+  /** The repo's ferrum.toml decides processes, paths, commands, packages and required variables on every deploy. */
   follow_repo_file: boolean;
   processes: Process[];
   routes: Route[];
@@ -176,12 +176,12 @@ export interface App {
   updated_at: string;
 }
 
-/** A key the app has set, or one the repository hinted at that nothing has set yet. */
+/** A key the app has set, or one ferrum.toml requires that nothing has set yet. */
 export interface EnvEntry {
   key: string;
   set: boolean;
   source: string | null;
-  optional: boolean;
+  about: string | null;
 }
 
 export interface AppDetail extends Omit<App, "processes"> {
@@ -216,11 +216,11 @@ export interface EnvVar {
   value: string;
 }
 
-export interface EnvHint {
+/** A variable the repo's ferrum.toml says the app reads; `{{shared}}` in a default is the app's shared directory. */
+export interface EnvRequirement {
   key: string;
-  source: string;
-  optional: boolean;
-  suggest_app_url: boolean;
+  about: string | null;
+  default: string | null;
 }
 
 /** A row without a value keeps the value already stored; values are never read back. */
@@ -248,10 +248,10 @@ export interface NewApp {
   packages: string[];
   domains: DomainInput[];
   env: EnvVar[];
-  env_hints: EnvHint[];
+  env_required: EnvRequirement[];
 }
 
-export type AppChanges = Partial<Omit<NewApp, "slug" | "repository" | "env" | "env_hints">>;
+export type AppChanges = Partial<Omit<NewApp, "slug" | "repository" | "env" | "env_required">>;
 
 export interface Health {
   path: string;
@@ -275,15 +275,15 @@ export interface DatabaseSpec {
   roles: Record<string, { url: string | null }>;
 }
 
-/** What the repo's ferrum.toml or Procfile says about the app's shape. */
+/** What the repo's ferrum.toml says about the app's shape; `null` where the file is silent. */
 export interface Manifest {
-  source: "ferrum_toml" | "procfile";
   processes: ProcessInput[];
   routes: RouteInput[];
   commands: Commands;
-  packages: string[];
+  packages: string[] | null;
   database: DatabaseSpec | null;
   redis: { url: string | null } | null;
+  env: EnvRequirement[] | null;
 }
 
 /** What deleting the app, or dropping these packages, would do on the server. */
@@ -301,10 +301,7 @@ export interface Wants {
 export interface Detected {
   candidates: Detection[];
   manifest: Manifest | null;
-  aptfile: string[];
-  aptfile_rejected: string[];
   wants: Wants;
-  env_hints: EnvHint[];
 }
 
 export interface InstalledToolchain {

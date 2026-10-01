@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { Link, useNavigate } from "@tanstack/react-router";
 import { Lock, Plus, Search, Tag } from "lucide-react";
 import {
@@ -21,8 +21,8 @@ import { Card, CardBody, CardFoot, CardHeader } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
 import { Badge } from "@/components/ui/Badge";
 import { Code } from "@/components/ui/Code";
-import { ConfigForm, draftFromDetection, manifestFile, toNewApp, type Draft, type Sources } from "./ConfigForm";
-import { EnvRows, HINTS_NOTE, ImportEnv, blankRow, rowsFromHints, type EnvRow } from "./EnvironmentPanel";
+import { ConfigForm, draftFromDetection, toNewApp, type Draft, type Sources } from "./ConfigForm";
+import { EnvRows, ImportEnv, REQUIRED_NOTE, blankRow, rowsFromRequired, type EnvRow } from "./EnvironmentPanel";
 import { ago, bytes } from "@/lib/utils";
 import type { App, Detected, GithubRepo, Manifest, Progress } from "@/types/api";
 
@@ -58,7 +58,7 @@ export function NewAppPage() {
       const built = draftFromDetection(repo.full_name, gitRef, root, detected, best);
       setCandidate(0);
       setSources(built.sources);
-      setEnvRows(rowsFromHints(detected.env_hints));
+      setEnvRows(rowsFromRequired(detected.manifest?.env ?? [], built.draft.slug));
       setDraft(await withResolvedVersion(built.draft));
       setStep({ kind: "review", detected });
     } catch {
@@ -362,19 +362,6 @@ function Review({
   const postgresReady = postgres.data?.installed === true;
   const dbName = databaseName(draft.slug);
 
-  const primary = draft.domains.find((d) => d.primary)?.domain ?? "";
-  const lastSuggestion = useRef("");
-  useEffect(() => {
-    const suggestion = primary ? `https://${primary}` : "";
-    const previous = lastSuggestion.current;
-    lastSuggestion.current = suggestion;
-    setEnvRows((rows) =>
-      rows.map((r) =>
-        r.suggestAppUrl && (r.value === "" || r.value === previous) ? { ...r, value: suggestion } : r,
-      ),
-    );
-  }, [primary, setEnvRows]);
-
   const submit = async () => {
     setBusy(true);
     setError(null);
@@ -388,14 +375,7 @@ function Review({
       app = await create.mutateAsync({
         ...toNewApp(draft, repo.full_name),
         env: rows.filter((r) => r.value).map((r) => ({ key: r.key.trim(), value: r.value ?? "" })),
-        env_hints: rows
-          .filter((r) => r.source !== null)
-          .map((r) => ({
-            key: r.key.trim(),
-            source: r.source ?? "",
-            optional: r.optional,
-            suggest_app_url: r.suggestAppUrl,
-          })),
+        env_required: detected.manifest?.env ?? [],
       });
       setCreated(app);
       if (wantPostgres && postgresReady) {
@@ -457,12 +437,6 @@ function Review({
               </button>
             ))}
             {detected.manifest ? <ManifestLine manifest={detected.manifest} /> : null}
-            {detected.aptfile_rejected.length ? (
-              <p className="text-[12.5px] text-fail">
-                Rejected from the Aptfile: {detected.aptfile_rejected.map((p) => `"${p}"`).join(", ")}.
-                Package names may only contain lowercase letters, digits and <Code>+._-</Code>.
-              </p>
-            ) : null}
           </CardBody>
         </Card>
       )}
@@ -502,7 +476,7 @@ function Review({
           <EnvRows rows={envRows} onChange={setEnvRows} />
           {envNote ? <p className="text-[12.5px] text-ink-3 mt-1">{envNote}</p> : null}
           {envRows.some((r) => r.source !== null) ? (
-            <p className="text-[12.5px] text-ink-4 mt-1">{HINTS_NOTE}</p>
+            <p className="text-[12.5px] text-ink-4 mt-1">{REQUIRED_NOTE}</p>
           ) : null}
         </CardBody>
       </Card>
@@ -578,11 +552,12 @@ function Review({
 }
 
 function ManifestLine({ manifest }: { manifest: Manifest }) {
-  const count = manifest.processes.length;
+  const parts = [`${manifest.processes.length} process${manifest.processes.length === 1 ? "" : "es"}`];
+  if (manifest.packages) parts.push(`${manifest.packages.length} package${manifest.packages.length === 1 ? "" : "s"}`);
+  if (manifest.env) parts.push(`${manifest.env.length} required variable${manifest.env.length === 1 ? "" : "s"}`);
   return (
     <p className="text-[12.5px] text-ink-2">
-      <Code>{manifestFile(manifest)}</Code> found: {count} process{count === 1 ? "" : "es"}; Ferrum will follow
-      it on every deploy.
+      <Code>ferrum.toml</Code> found: {parts.join(", ")}; Ferrum will follow it on every deploy.
     </p>
   );
 }

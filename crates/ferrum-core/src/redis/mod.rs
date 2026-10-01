@@ -196,7 +196,7 @@ pub async fn request(
     let password = secret::generate();
     let sealed = secrets::encrypt(&state.key, &password);
     let mut tx = state.pool.begin_with("BEGIN IMMEDIATE").await?;
-    let port = ports::allocate(&mut tx, &app.id, PORT_NAME).await?;
+    let port = ports::allocate(&mut tx, &app.id, PORT_NAME, &*state.port_taken).await?;
     let maxmemory = maxmemory_mb as i64;
     sqlx::query!(
         "INSERT INTO redis_instances (app_id, password, maxmemory_mb) VALUES (?, ?, ?)",

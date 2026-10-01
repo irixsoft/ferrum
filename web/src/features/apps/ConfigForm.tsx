@@ -14,7 +14,6 @@ import type {
   AppChanges,
   Detection,
   Detected,
-  Manifest,
   NewApp,
   Process,
   ProcessInput,
@@ -68,8 +67,6 @@ export const slugify = (name: string) =>
     .replace(/^-+|-+$/g, "")
     .slice(0, 40);
 
-export const manifestFile = (m: Manifest) => (m.source === "ferrum_toml" ? "ferrum.toml" : "Procfile");
-
 const orNull = (s: string) => (s.trim() ? s.trim() : null);
 
 function normalized(p: ProcessInput): ProcessInput {
@@ -87,7 +84,7 @@ export function draftFromDetection(
 ): { draft: Draft; sources: Sources } {
   const name = repository.split("/")[1] ?? repository;
   const manifest = detected.manifest;
-  const file = manifest ? `from ${manifestFile(manifest)}` : null;
+  const file = manifest ? "from ferrum.toml" : null;
   const sources: Sources = {};
   const found = candidate?.reasons.join(", ") ?? "";
   const mark = (field: keyof Draft, why: string) => {
@@ -145,10 +142,10 @@ export function draftFromDetection(
     follow_repo_file: manifest !== null,
     processes,
     routes,
-    packages: [...new Set([...(manifest?.packages ?? []), ...detected.aptfile])],
+    packages: manifest?.packages ?? [],
     domains: [],
   };
-  if (draft.packages.length) mark("packages", detected.aptfile.length ? "from Aptfile" : (file ?? ""));
+  if (draft.packages.length && file) mark("packages", file);
   return { draft, sources };
 }
 
@@ -196,7 +193,7 @@ function outputOf(p: ProcessInput): ProcessInput {
   return { ...base, start: (p.start ?? "").trim(), port: listens, health: listens ? orNull(p.health ?? "") : null };
 }
 
-function fields(d: Draft): Omit<NewApp, "slug" | "repository" | "env" | "env_hints"> {
+function fields(d: Draft): Omit<NewApp, "slug" | "repository" | "env" | "env_required"> {
   return {
     name: d.name.trim(),
     git_ref: d.git_ref.trim(),
@@ -219,7 +216,7 @@ function fields(d: Draft): Omit<NewApp, "slug" | "repository" | "env" | "env_hin
 export const toChanges = (d: Draft): AppChanges => fields(d);
 
 export function toNewApp(d: Draft, repository: string): NewApp {
-  return { ...fields(d), slug: d.slug.trim(), repository, env: [], env_hints: [] };
+  return { ...fields(d), slug: d.slug.trim(), repository, env: [], env_required: [] };
 }
 
 function nextName(processes: ProcessInput[]) {
@@ -364,7 +361,7 @@ export function ConfigForm({
             <div className="min-w-0">
               <p className="text-[13px] text-ink-2">Follow the repo&apos;s file</p>
               <p className="text-[12px] text-ink-4 mt-0.5">
-                <Code>ferrum.toml</Code> or <Code>Procfile</Code> sets processes, paths and commands on every deploy
+                <Code>ferrum.toml</Code> sets processes, paths, commands, packages and required variables on every deploy
               </p>
             </div>
             <Segmented
@@ -580,8 +577,9 @@ export function ConfigForm({
             applications needing conflicting versions of the same library will collide.
           </span>
           <span>
-            A deploy adds what the tag&apos;s Aptfile lists. A package removed here is uninstalled on
-            Save, unless another application lists it or the server had it before Ferrum.
+            A deploy adds what the tag&apos;s <Code>ferrum.toml</Code> lists and keeps what it dropped,
+            so the list only shrinks here. A package removed here is uninstalled on Save, unless
+            another application lists it or the server had it before Ferrum.
           </span>
         </CardFoot>
       </Card>

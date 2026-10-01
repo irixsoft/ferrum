@@ -1,5 +1,6 @@
 use crate::apps::NewRoute;
-use crate::apps::processes::{self, NewProcess, WEB};
+use crate::apps::env::{self, EnvRequirement};
+use crate::apps::processes::{NewProcess, WEB};
 use crate::detect::RepoTree;
 use crate::runtime::{Commands, RuntimeKind};
 use ferrum_platform::Platform;
@@ -8,8 +9,6 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 pub const TOML_NAME: &str = "ferrum.toml";
-pub const PROCFILE_NAME: &str = "Procfile";
-const RELEASE: &str = "release";
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
@@ -22,10 +21,11 @@ pub struct FerrumToml {
     pub migrate: Option<String>,
     pub output_dir: Option<String>,
     pub health_path: Option<String>,
-    pub packages: Vec<String>,
+    pub packages: Option<Vec<String>>,
     pub processes: BTreeMap<String, ProcessSpec>,
     pub database: Option<DatabaseSpec>,
     pub redis: Option<RedisSpec>,
+    pub env: Option<EnvSpec>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -61,33 +61,33 @@ pub struct RedisSpec {
     pub url: Option<String>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Source {
-    FerrumToml,
-    Procfile,
+/// `required = ["A", "B"]` for bare names, `[env.A]` tables when there is something to say.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct EnvSpec {
+    pub required: Vec<String>,
+    #[serde(flatten)]
+    pub keys: BTreeMap<String, EnvKeySpec>,
 }
 
-impl Source {
-    pub fn file_name(self) -> &'static str {
-        match self {
-            Source::FerrumToml => TOML_NAME,
-            Source::Procfile => PROCFILE_NAME,
-        }
-    }
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct EnvKeySpec {
+    pub about: Option<String>,
+    pub default: Option<String>,
 }
 
 /// What a repository says about its own shape. Empty `processes` means the file is silent on
-/// them; a command left `None` means the file does not state it.
+/// them; a command, `packages` or `env` left `None` means the file does not state it.
 #[derive(Debug, Clone, Serialize)]
 pub struct Manifest {
-    pub source: Source,
     pub processes: Vec<NewProcess>,
     pub routes: Vec<NewRoute>,
     pub commands: Commands,
-    pub packages: Vec<String>,
+    pub packages: Option<Vec<String>>,
     pub database: Option<DatabaseSpec>,
     pub redis: Option<RedisSpec>,
+    pub env: Option<Vec<EnvRequirement>>,
 }
 
 impl Manifest {
@@ -100,21 +100,7 @@ pub fn parse_toml(text: &str) -> Result<FerrumToml, String> {
     toml::from_str(text).map_err(|e| e.message().to_string())
 }
 
-pub fn parse_procfile(text: &str) -> Vec<(String, String)> {
-    text.lines()
-        .map(str::trim)
-        .filter(|l| !l.is_empty() && !l.starts_with('#'))
-        .filter_map(|l| {
-            let (name, command) = l.split_once(':')?;
-            let (name, command) = (name.trim(), command.trim());
-            (processes::valid_name(name) || name == RELEASE)
-                .then(|| (name.to_string(), command.to_string()))
-                .filter(|(_, c)| !c.is_empty())
-        })
-        .collect()
-}
-
-pub fn from_toml(t: &FerrumToml) -> Manifest {
+pub fn from_toml(t: &FerrumToml) -> Result<Manifest, String> {
     let mut processes = Vec::new();
     let mut routes = Vec::new();
     if !t.processes.is_empty() {
@@ -143,8 +129,11 @@ pub fn from_toml(t: &FerrumToml) -> Manifest {
     } else if let Some(dir) = &t.output_dir {
         processes.push(NewProcess::folder(WEB, dir));
     }
-    Manifest {
-        source: Source::FerrumToml,
+    let env = match &t.env {
+        Some(spec) => Some(env_requirements(spec, t)?),
+        None => None,
+    };
+    Ok(Manifest {
         routes: routes_for(&processes, routes),
         processes,
         commands: Commands {
@@ -155,34 +144,39 @@ pub fn from_toml(t: &FerrumToml) -> Manifest {
         packages: t.packages.clone(),
         database: t.database.clone(),
         redis: t.redis.clone(),
-    }
+        env,
+    })
 }
 
-pub fn from_procfile(entries: &[(String, String)]) -> Manifest {
-    let mut processes = Vec::new();
-    let mut migrate = None;
-    for (name, command) in entries {
-        if name == RELEASE {
-            migrate = Some(command.clone());
-        } else if name == WEB {
-            processes.push(NewProcess::web(command, None));
-        } else {
-            processes.push(NewProcess::worker(name, command));
+/// A key Ferrum sets itself cannot be asked for, and a key is named once.
+fn env_requirements(spec: &EnvSpec, t: &FerrumToml) -> Result<Vec<EnvRequirement>, String> {
+    let mut labels: Vec<&str> = Vec::new();
+    if let Some(db) = &t.database {
+        labels.extend(db.url.as_deref());
+        labels.extend(db.roles.values().filter_map(|r| r.url.as_deref()));
+    }
+    labels.extend(t.redis.as_ref().and_then(|r| r.url.as_deref()));
+    let bare = spec.required.iter().map(|k| (k.as_str(), None, None));
+    let tables = spec
+        .keys
+        .iter()
+        .map(|(k, s)| (k.as_str(), s.about.clone(), s.default.clone()));
+    let mut out: Vec<EnvRequirement> = Vec::new();
+    for (key, about, default) in bare.chain(tables) {
+        env::valid_key(key).map_err(|e| e.to_string())?;
+        if key == "PORT" || key == "HOST" || key.ends_with("_PORT") || labels.contains(&key) {
+            return Err(format!("[env] names {key}, which Ferrum sets itself."));
         }
+        if out.iter().any(|r| r.key == key) {
+            return Err(format!("[env] names {key} twice."));
+        }
+        out.push(EnvRequirement {
+            key: key.to_string(),
+            about,
+            default,
+        });
     }
-    Manifest {
-        source: Source::Procfile,
-        routes: routes_for(&processes, Vec::new()),
-        processes,
-        commands: Commands {
-            install: None,
-            build: None,
-            migrate,
-        },
-        packages: Vec::new(),
-        database: None,
-        redis: None,
-    }
+    Ok(out)
 }
 
 /// The paths a repo names, plus `/` on the first process that can answer it when nobody
@@ -212,25 +206,18 @@ fn routes_for(processes: &[NewProcess], mut routes: Vec<NewRoute>) -> Vec<NewRou
 }
 
 pub fn read(tree: &RepoTree) -> Option<Manifest> {
-    if let Some(text) = tree.read(TOML_NAME) {
-        return parse_toml(text).ok().map(|t| from_toml(&t));
-    }
-    let entries = parse_procfile(tree.read(PROCFILE_NAME)?);
-    (!entries.is_empty()).then(|| from_procfile(&entries))
+    from_toml(&parse_toml(tree.read(TOML_NAME)?).ok()?).ok()
 }
 
-/// The manifest of a checked-out release, `Err` when `ferrum.toml` exists but does not parse.
+/// The manifest of a checked-out release, `Err` when `ferrum.toml` exists but does not hold up.
 pub fn read_dir(platform: &dyn Platform, work: &Path) -> anyhow::Result<Option<Manifest>> {
-    if let Some(text) = platform.read_file(&work.join(TOML_NAME))? {
-        let parsed =
-            parse_toml(&text).map_err(|e| anyhow::anyhow!("{TOML_NAME} could not be read: {e}"))?;
-        return Ok(Some(from_toml(&parsed)));
-    }
-    let Some(text) = platform.read_file(&work.join(PROCFILE_NAME))? else {
+    let Some(text) = platform.read_file(&work.join(TOML_NAME))? else {
         return Ok(None);
     };
-    let entries = parse_procfile(&text);
-    Ok((!entries.is_empty()).then(|| from_procfile(&entries)))
+    let manifest = parse_toml(&text)
+        .and_then(|t| from_toml(&t))
+        .map_err(|e| anyhow::anyhow!("{TOML_NAME} could not be read: {e}"))?;
+    Ok(Some(manifest))
 }
 
 #[cfg(test)]
@@ -274,11 +261,17 @@ url = "DATABASE_URL"
 
 [redis]
 url = "CACHE_URL"
+
+[env]
+required = ["SESSION_SECRET", "SMTP_HOST"]
+
+[env.UPLOADS_DIR]
+about = "Where uploaded files are kept"
+default = "{{shared}}/uploads"
 "#,
         )
         .unwrap();
-        let m = from_toml(&t);
-        assert_eq!(m.source, Source::FerrumToml);
+        let m = from_toml(&t).unwrap();
         let names: Vec<&str> = m.processes.iter().map(|p| p.name.as_str()).collect();
         assert_eq!(names, ["admin", "jobs", "realtime", "web"]);
         let web = m.processes.iter().find(|p| p.name == "web").unwrap();
@@ -314,6 +307,53 @@ url = "CACHE_URL"
         assert!(db.bypass_rls);
         assert_eq!(db.roles["app"].url.as_deref(), Some("DATABASE_URL"));
         assert_eq!(m.redis.unwrap().url.as_deref(), Some("CACHE_URL"));
+        assert!(m.packages.is_none(), "a file silent on packages says so");
+        let env = m.env.unwrap();
+        let keys: Vec<(&str, Option<&str>, Option<&str>)> = env
+            .iter()
+            .map(|r| (r.key.as_str(), r.about.as_deref(), r.default.as_deref()))
+            .collect();
+        assert_eq!(
+            keys,
+            [
+                ("SESSION_SECRET", None, None),
+                ("SMTP_HOST", None, None),
+                (
+                    "UPLOADS_DIR",
+                    Some("Where uploaded files are kept"),
+                    Some("{{shared}}/uploads")
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn an_env_section_refuses_a_key_named_twice_or_one_ferrum_sets() {
+        let twice = parse_toml("[env]\nrequired = [\"A\"]\n[env.A]\nabout = \"x\"\n").unwrap();
+        assert_eq!(from_toml(&twice).unwrap_err(), "[env] names A twice.");
+        for key in ["PORT", "HOST", "WEB_PORT", "DATABASE_URL"] {
+            let t = parse_toml(&format!(
+                "[env]\nrequired = [\"{key}\"]\n[database]\nurl = \"DATABASE_URL\"\n"
+            ))
+            .unwrap();
+            assert_eq!(
+                from_toml(&t).unwrap_err(),
+                format!("[env] names {key}, which Ferrum sets itself.")
+            );
+        }
+        let bad = parse_toml("[env]\nrequired = [\"1bad\"]\n").unwrap();
+        assert!(
+            from_toml(&bad)
+                .unwrap_err()
+                .contains("not a valid variable name")
+        );
+        let none = from_toml(&parse_toml("[env]\n").unwrap()).unwrap();
+        assert_eq!(
+            none.env,
+            Some(Vec::new()),
+            "an empty section asks for nothing"
+        );
+        assert!(from_toml(&parse_toml("").unwrap()).unwrap().env.is_none());
     }
 
     #[test]
@@ -322,7 +362,7 @@ url = "CACHE_URL"
             "runtime = \"bun\"\nstart = \"bun run src/main.ts\"\nhealth_path = \"/up\"\n",
         )
         .unwrap();
-        let m = from_toml(&t);
+        let m = from_toml(&t).unwrap();
         assert_eq!(
             m.processes,
             vec![NewProcess::web("bun run src/main.ts", Some("/up"))]
@@ -331,14 +371,23 @@ url = "CACHE_URL"
         assert_eq!(m.routes[0].process, "web");
 
         let t = parse_toml("build = \"bun run build\"\noutput_dir = \"dist\"\n").unwrap();
-        let m = from_toml(&t);
+        let m = from_toml(&t).unwrap();
         assert_eq!(m.processes, vec![NewProcess::folder("web", "dist")]);
         assert_eq!(m.routes[0].path, "/");
 
-        let silent = from_toml(&parse_toml("packages = [\"ffmpeg\"]\n").unwrap());
+        let silent = from_toml(&parse_toml("packages = [\"ffmpeg\"]\n").unwrap()).unwrap();
         assert!(!silent.states_processes());
         assert!(silent.routes.is_empty());
-        assert_eq!(silent.packages, ["ffmpeg"]);
+        assert_eq!(
+            silent.packages.as_deref(),
+            Some(["ffmpeg".to_string()].as_slice())
+        );
+        let empty = from_toml(&parse_toml("packages = []\n").unwrap()).unwrap();
+        assert_eq!(
+            empty.packages,
+            Some(Vec::new()),
+            "an empty list drops every package"
+        );
     }
 
     #[test]
@@ -347,7 +396,7 @@ url = "CACHE_URL"
             "[processes.api]\nstart = \"a\"\nhealth = \"/up\"\n[processes.site]\nstart = \"b\"\n[processes.admin]\nstart = \"c\"\nport = true\n",
         )
         .unwrap();
-        let m = from_toml(&t);
+        let m = from_toml(&t).unwrap();
         let port = |n: &str| m.processes.iter().find(|p| p.name == n).unwrap().port;
         assert!(port("api"));
         assert!(!port("site"));
@@ -359,34 +408,15 @@ url = "CACHE_URL"
     }
 
     #[test]
-    fn a_procfile_gives_web_a_port_workers_none_and_release_becomes_migrate() {
-        let entries = parse_procfile(
-            "# comment\nweb: bun run start\nworker: bun run worker\n\nrelease: bun run migrate\nBad Name: x\nempty:\n",
-        );
-        assert_eq!(entries.len(), 3);
-        let m = from_procfile(&entries);
-        assert_eq!(m.source, Source::Procfile);
-        assert_eq!(
-            m.processes,
-            vec![
-                NewProcess::web("bun run start", None),
-                NewProcess::worker("worker", "bun run worker")
-            ]
-        );
-        assert_eq!(m.commands.migrate.as_deref(), Some("bun run migrate"));
-        assert_eq!(m.routes[0].process, "web");
-    }
-
-    #[test]
-    fn a_tree_prefers_ferrum_toml_and_falls_back_to_a_procfile() {
-        let both =
+    fn a_tree_is_read_from_ferrum_toml_alone() {
+        let tree =
             RepoTree::from_files(&[("ferrum.toml", "start = \"a\"\n"), ("Procfile", "web: b\n")]);
         assert_eq!(
-            read(&both).unwrap().processes[0].start.as_deref(),
+            read(&tree).unwrap().processes[0].start.as_deref(),
             Some("a")
         );
-        let only = RepoTree::from_files(&[("Procfile", "web: b\n")]);
-        assert_eq!(read(&only).unwrap().source, Source::Procfile);
+        let procfile_only = RepoTree::from_files(&[("Procfile", "web: b\n")]);
+        assert!(read(&procfile_only).is_none(), "a Procfile is not read");
         assert!(read(&RepoTree::from_files(&[("package.json", "{}")])).is_none());
         assert!(read(&RepoTree::from_files(&[("ferrum.toml", "= broken")])).is_none());
     }
@@ -398,10 +428,7 @@ url = "CACHE_URL"
         assert!(read_dir(&p, work).unwrap().is_none());
         p.write_file(&work.join("Procfile"), "web: bun run start\n", 0o644)
             .unwrap();
-        assert_eq!(
-            read_dir(&p, work).unwrap().unwrap().source,
-            Source::Procfile
-        );
+        assert!(read_dir(&p, work).unwrap().is_none());
         p.write_file(
             &work.join("ferrum.toml"),
             "[processes.web]\nstart = \"x\"\n",
@@ -409,8 +436,19 @@ url = "CACHE_URL"
         )
         .unwrap();
         assert_eq!(
-            read_dir(&p, work).unwrap().unwrap().source,
-            Source::FerrumToml
+            read_dir(&p, work).unwrap().unwrap().processes[0].name,
+            "web"
+        );
+        p.write_file(
+            &work.join("ferrum.toml"),
+            "[env]\nrequired = [\"PORT\"]\n",
+            0o644,
+        )
+        .unwrap();
+        let e = read_dir(&p, work).unwrap_err().to_string();
+        assert!(
+            e.starts_with("ferrum.toml could not be read: [env] names PORT"),
+            "{e}"
         );
         p.write_file(&work.join("ferrum.toml"), "= broken", 0o644)
             .unwrap();

@@ -5,13 +5,11 @@ use serde::Serialize;
 #[folder = "../../help/"]
 struct Files;
 
-const ORDER: [&str; 10] = [
+const ORDER: [&str; 8] = [
     "ferrum-toml",
     "processes",
     "domains",
     "env",
-    "aptfile",
-    "procfile",
     "databases",
     "wildcards",
     "notifications",

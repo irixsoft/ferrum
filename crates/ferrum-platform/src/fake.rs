@@ -22,6 +22,7 @@ struct Inner {
     fail_next: Option<String>,
     active: Vec<String>,
     dead: Vec<String>,
+    ports_in_use: Vec<u16>,
     users: HashSet<String>,
     clone_files: Vec<(String, String)>,
     cpu_flags: Vec<String>,
@@ -261,6 +262,10 @@ impl FakePlatform {
         self.inner.lock().unwrap().active.retain(|u| u != unit);
     }
 
+    pub fn set_ports_in_use(&self, ports: &[u16]) {
+        self.inner.lock().unwrap().ports_in_use = ports.to_vec();
+    }
+
     pub fn written(&self, path: &str) -> Option<String> {
         self.inner.lock().unwrap().files.get(path).cloned()
     }
@@ -413,6 +418,10 @@ impl Platform for FakePlatform {
 
     fn service_is_active(&self, unit: &str) -> bool {
         self.inner.lock().unwrap().active.iter().any(|u| u == unit)
+    }
+
+    fn port_in_use(&self, port: u16) -> bool {
+        self.inner.lock().unwrap().ports_in_use.contains(&port)
     }
 
     fn write_file(&self, path: &Path, contents: &str, mode: u32) -> Result<(), PlatformError> {
@@ -706,34 +715,6 @@ impl Platform for FakePlatform {
         names.sort();
         names.dedup();
         Ok(names)
-    }
-
-    fn walk_text_files(
-        &self,
-        dir: &Path,
-        on_file: &mut dyn FnMut(&str, &str),
-    ) -> Result<(), PlatformError> {
-        self.record(format!("walk_text_files {}", dir.to_string_lossy()))?;
-        let prefix = format!("{}/", dir.to_string_lossy());
-        let mut found: Vec<(String, String)> = self
-            .inner
-            .lock()
-            .unwrap()
-            .files
-            .iter()
-            .filter_map(|(p, c)| {
-                p.strip_prefix(&prefix)
-                    .map(|rel| (rel.to_string(), c.clone()))
-            })
-            .filter(|(rel, c)| {
-                crate::scan::wanted_text_file(rel) && c.len() as u64 <= crate::scan::MAX_TEXT_BYTES
-            })
-            .collect();
-        found.sort();
-        for (rel, contents) in found {
-            on_file(&rel, &contents);
-        }
-        Ok(())
     }
 
     fn disk_free_bytes(&self, path: &Path) -> Result<u64, PlatformError> {
@@ -1120,18 +1101,6 @@ mod tests {
         );
         p.remove_tree(Path::new("/a/releases/r1")).unwrap();
         assert_eq!(p.list_dir(Path::new("/a/releases")).unwrap(), vec!["r2"]);
-        p.serve_clone(&[
-            ("src/mail.ts", "process.env.SMTP_HOST"),
-            ("node_modules/x/index.js", "no"),
-        ]);
-        p.git_clone("https://x/y.git", None, Path::new("/a/releases/r3"), 1)
-            .unwrap();
-        let mut seen = Vec::new();
-        p.walk_text_files(Path::new("/a/releases/r3"), &mut |path, text| {
-            seen.push(format!("{path}={text}"))
-        })
-        .unwrap();
-        assert_eq!(seen, vec!["src/mail.ts=process.env.SMTP_HOST"]);
         assert_eq!(p.git_head(Path::new("/a/releases/r2")).unwrap().len(), 40);
         p.set_head("a3f9c2d4e81b06f5c9a2");
         assert_eq!(

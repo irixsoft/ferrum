@@ -12,6 +12,8 @@ pub struct State {
     pub data_dir: std::path::PathBuf,
     pub key: Arc<Key>,
     pub events_tx: Option<tokio::sync::mpsc::UnboundedSender<crate::events::Event>>,
+    /// Asks the host whether a port is already bound before Ferrum hands it to an app.
+    pub port_taken: Arc<dyn Fn(u16) -> bool + Send + Sync>,
 }
 
 static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("./migrations");
@@ -49,6 +51,7 @@ impl State {
             data_dir: data_dir.to_path_buf(),
             key: Arc::new(key),
             events_tx: None,
+            port_taken: Arc::new(|_| false),
         };
         let sealed = secrets::migrate(&state)
             .await

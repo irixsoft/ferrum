@@ -12,7 +12,7 @@ const TITLES: Record<EventKind, string> = {
   deploy_live: "Deploy live",
   broke_on_its_own: "Something broke",
   update_available: "Update available",
-  package_dropped: "Package dropped from the Aptfile",
+  package_dropped: "Package dropped from ferrum.toml",
   port_removed: "Route removed",
   role_kept: "Role kept",
   processes_changed: "Processes changed",
@@ -55,7 +55,7 @@ function EventList({ onClose }: { onClose: () => void }) {
   const router = useRouter();
 
   if (error) return <p className="text-[13px] text-fail">{error.message}</p>;
-  if (!events) return null;
+  if (!events) return <p className="text-[13px] text-ink-4">Loading…</p>;
   if (events.length === 0) {
     return (
       <EmptyState

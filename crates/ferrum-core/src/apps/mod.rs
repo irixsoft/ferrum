@@ -157,7 +157,7 @@ pub struct NewApp {
     pub packages: Vec<String>,
     pub domains: Vec<NewDomain>,
     pub env: Vec<env::EnvVar>,
-    pub env_hints: Vec<env::EnvHint>,
+    pub env_required: Vec<env::EnvRequirement>,
 }
 
 impl Default for NewApp {
@@ -181,7 +181,7 @@ impl Default for NewApp {
             packages: Vec::new(),
             domains: Vec::new(),
             env: Vec::new(),
-            env_hints: Vec::new(),
+            env_required: Vec::new(),
         }
     }
 }
@@ -325,8 +325,8 @@ pub fn validate(new: &NewApp) -> Result<Vec<NewDomain>, AppError> {
     for var in &new.env {
         env::valid_key(&var.key)?;
     }
-    for hint in &new.env_hints {
-        env::valid_key(&hint.key)?;
+    for req in &new.env_required {
+        env::valid_key(&req.key)?;
     }
     if !(10..=1600).contains(&new.cpu_percent) {
         return Err(invalid("CPU must be between 10% and 1600%."));
@@ -377,7 +377,7 @@ pub async fn create(state: &State, new: NewApp) -> anyhow::Result<App> {
         return Err(e.into());
     }
 
-    processes::write(&mut tx, &id, &new.processes).await?;
+    processes::write(&mut tx, &id, &new.processes, &*state.port_taken).await?;
     write_routes(&mut tx, &id, &new.routes).await?;
     write_packages(&mut tx, &id, &new.packages).await?;
     domains::check_providers(&mut tx, &settled).await?;
@@ -385,7 +385,7 @@ pub async fn create(state: &State, new: NewApp) -> anyhow::Result<App> {
     for var in &new.env {
         env::set_in(&mut tx, &state.key, &id, &var.key, &var.value).await?;
     }
-    env::replace_hints(&mut tx, &id, &new.env_hints).await?;
+    env::replace_required(&mut tx, &id, &new.env_required).await?;
     tx.commit().await?;
 
     by_slug(state, &new.slug)
@@ -428,7 +428,7 @@ pub async fn update(state: &State, slug: &str, changes: AppChanges) -> anyhow::R
             .domains
             .unwrap_or_else(|| current.domains.iter().map(NewDomain::from).collect()),
         env: Vec::new(),
-        env_hints: Vec::new(),
+        env_required: Vec::new(),
     };
     let settled = validate(&merged)?;
 
@@ -462,7 +462,7 @@ pub async fn update(state: &State, slug: &str, changes: AppChanges) -> anyhow::R
     sqlx::query!("DELETE FROM app_routes WHERE app_id = ?", current.id)
         .execute(&mut *tx)
         .await?;
-    processes::write(&mut tx, &current.id, &merged.processes).await?;
+    processes::write(&mut tx, &current.id, &merged.processes, &*state.port_taken).await?;
     write_routes(&mut tx, &current.id, &merged.routes).await?;
     let mut kept: Vec<&str> = merged
         .processes
@@ -521,6 +521,42 @@ pub async fn apply_manifest(
     } else {
         (None, None)
     };
+    let packages = match &manifest.packages {
+        Some(listed) => {
+            let mut kept = listed.clone();
+            for package in app.packages.iter().filter(|p| !listed.contains(p)) {
+                kept.push(package.clone());
+                crate::events::emit(
+                    state,
+                    crate::events::Kind::PackageDropped,
+                    Some(&app.id),
+                    package,
+                    &format!(
+                        "{} no longer lists {package} in its ferrum.toml. It is still installed; uninstall it from the app's page if nothing else needs it.",
+                        app.slug
+                    ),
+                    Some(&format!("/apps/{}?tab=configuration", app.slug)),
+                )
+                .await;
+            }
+            Some(kept)
+        }
+        None => None,
+    };
+    if let Some(required) = &manifest.env {
+        let mut tx = state.pool.begin().await?;
+        env::replace_required(&mut tx, &app.id, required).await?;
+        tx.commit().await?;
+        let stored = env::keys(state, &app.id).await?;
+        for req in required {
+            if let Some(default) = &req.default
+                && !stored.contains(&req.key)
+            {
+                let value = env::expand_default(default, &app.slug);
+                env::set(state, &app.id, &req.key, &value).await?;
+            }
+        }
+    }
     update(
         state,
         &app.slug,
@@ -528,6 +564,7 @@ pub async fn apply_manifest(
             commands: Some(commands),
             processes,
             routes,
+            packages,
             ..AppChanges::default()
         },
     )
@@ -916,7 +953,7 @@ pub(crate) mod tests {
             "app_ports",
             "app_env",
             "app_domains",
-            "app_env_hints",
+            "app_env_required",
             "app_processes",
         ] {
             let n: i64 = sqlx::query_scalar(&format!("SELECT count(*) FROM {table}"))
@@ -929,57 +966,59 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
-    async fn env_hints_are_stored_at_creation_and_listed_behind_the_set_keys() {
+    async fn required_variables_are_stored_at_creation_and_listed_behind_the_set_keys() {
         let (_d, state) = state().await;
         let mut wanted = new_app("ledger", &[("/", "main", false)]);
-        wanted.env_hints = vec![
-            env::EnvHint {
+        wanted.env_required = vec![
+            env::EnvRequirement {
                 key: "SMTP_HOST".into(),
-                source: "from .env.example".into(),
-                optional: true,
-                suggest_app_url: false,
+                about: Some("Outgoing mail server".into()),
+                default: None,
             },
-            env::EnvHint {
+            env::EnvRequirement {
                 key: "STRIPE_KEY".into(),
-                source: "from src/env.ts".into(),
-                optional: false,
-                suggest_app_url: false,
+                about: None,
+                default: None,
             },
         ];
         let app = create(&state, wanted).await.unwrap();
         env::set(&state, &app.id, "STRIPE_KEY", "sk").await.unwrap();
-        env::add_hint(
-            &state,
-            &app.id,
-            "STRIPE_KEY",
-            "referenced in src/pay.ts",
-            false,
-        )
-        .await
-        .unwrap();
-        env::add_hint(
-            &state,
-            &app.id,
-            "MAIL_FROM",
-            "referenced in src/mail.ts",
-            false,
-        )
-        .await
-        .unwrap();
+        env::note_named_by_failure(&state, &app.id, "STRIPE_KEY", "build")
+            .await
+            .unwrap();
+        env::note_named_by_failure(&state, &app.id, "MAIL_FROM", "build")
+            .await
+            .unwrap();
 
         let entries = env::entries(&state, &app.id).await.unwrap();
-        let shape: Vec<(&str, bool, Option<&str>, bool)> = entries
+        let shape: Vec<(&str, bool, Option<&str>, Option<&str>)> = entries
             .iter()
-            .map(|e| (e.key.as_str(), e.set, e.source.as_deref(), e.optional))
+            .map(|e| {
+                (
+                    e.key.as_str(),
+                    e.set,
+                    e.source.as_deref(),
+                    e.about.as_deref(),
+                )
+            })
             .collect();
         assert_eq!(
             shape,
             vec![
-                ("STRIPE_KEY", true, Some("from src/env.ts"), false),
-                ("SMTP_HOST", false, Some("from .env.example"), true),
-                ("MAIL_FROM", false, Some("referenced in src/mail.ts"), false),
+                ("STRIPE_KEY", true, Some("ferrum.toml"), None),
+                (
+                    "SMTP_HOST",
+                    false,
+                    Some("ferrum.toml"),
+                    Some("Outgoing mail server")
+                ),
+                ("MAIL_FROM", false, Some("named by the failed build"), None),
             ],
-            "a creation-time source is kept over a deploy-time one"
+            "the file's word is kept over a failed command's"
+        );
+        assert_eq!(
+            env::expand_default("{{shared}}/uploads", "ledger"),
+            "/var/lib/ferrum/apps/ledger/shared/uploads"
         );
     }
 
@@ -1163,7 +1202,7 @@ pub(crate) mod tests {
             "migrate = \"bun run db:migrate\"\n[processes.web]\nstart = \"bun run serve\"\ndir = \"apps/web\"\n[processes.realtime]\nstart = \"bun run rt\"\nport = true\npath = \"/live\"\nwebsocket = true\n[processes.jobs]\nstart = \"bun run jobs\"\n",
         )
         .unwrap();
-        let manifest = crate::manifest::from_toml(&toml);
+        let manifest = crate::manifest::from_toml(&toml).unwrap();
         let p = ferrum_platform::FakePlatform::new();
         let applied = apply_manifest(&state, &p, &app, &manifest).await.unwrap();
 
@@ -1189,14 +1228,59 @@ pub(crate) mod tests {
 
         let silent = crate::manifest::from_toml(
             &crate::manifest::parse_toml("packages = [\"ffmpeg\"]\n").unwrap(),
-        );
+        )
+        .unwrap();
         let kept = apply_manifest(&state, &p, &applied, &silent).await.unwrap();
         assert_eq!(
             kept.processes.len(),
             3,
             "a file silent on processes changes none"
         );
+        assert_eq!(kept.packages, ["ffmpeg"]);
         assert!(p.sql().is_empty(), "no [database], no psql");
+
+        let dropped = crate::manifest::from_toml(
+            &crate::manifest::parse_toml(
+                "packages = [\"libvips42\"]\n[env]\nrequired = [\"SMTP_HOST\"]\n[env.UPLOADS_DIR]\ndefault = \"{{shared}}/uploads\"\n",
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let again = apply_manifest(&state, &p, &kept, &dropped).await.unwrap();
+        assert_eq!(
+            again.packages,
+            ["ffmpeg", "libvips42"],
+            "a package the file dropped is kept until the panel removes it"
+        );
+        let notices = crate::events::list(&state, 10, true).await.unwrap();
+        assert_eq!(notices.len(), 1);
+        assert_eq!(notices[0].kind, "package_dropped");
+        assert_eq!(notices[0].subject, "ffmpeg");
+        let vars = env::all(&state, &again.id).await.unwrap();
+        assert_eq!(
+            vars,
+            [(
+                "UPLOADS_DIR".to_string(),
+                "/var/lib/ferrum/apps/ledger/shared/uploads".to_string()
+            )],
+            "a default is written once, the placeholder expanded"
+        );
+        env::set(&state, &again.id, "UPLOADS_DIR", "/srv/uploads")
+            .await
+            .unwrap();
+        apply_manifest(&state, &p, &again, &dropped).await.unwrap();
+        assert_eq!(
+            env::all(&state, &again.id).await.unwrap()[0].1,
+            "/srv/uploads",
+            "a value set in the panel is never overwritten by the default"
+        );
+        let entries = env::entries(&state, &again.id).await.unwrap();
+        let unset: Vec<&str> = entries
+            .iter()
+            .filter(|e| !e.set)
+            .map(|e| e.key.as_str())
+            .collect();
+        assert_eq!(unset, ["SMTP_HOST"]);
     }
 
     #[tokio::test]
@@ -1237,7 +1321,8 @@ pub(crate) mod tests {
                 "[database]\nurl = \"DATABASE_ADMIN_URL\"\n[database.roles.app]\nurl = \"DATABASE_URL\"\n[redis]\nurl = \"CACHE_URL\"\n",
             )
             .unwrap(),
-        );
+        )
+        .unwrap();
         apply_manifest(&state, &p, &app, &manifest).await.unwrap();
 
         assert!(

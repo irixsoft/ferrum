@@ -68,7 +68,7 @@ impl Kind {
             Kind::DeployLive => "Deploy live",
             Kind::BrokeOnItsOwn => "Something broke",
             Kind::UpdateAvailable => "Update available",
-            Kind::PackageDropped => "Package dropped from the Aptfile",
+            Kind::PackageDropped => "Package dropped from ferrum.toml",
             Kind::PortRemoved => "Route removed",
             Kind::RoleKept => "Role kept",
             Kind::ProcessesChanged => "Processes changed",

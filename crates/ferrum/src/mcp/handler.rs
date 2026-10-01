@@ -19,8 +19,9 @@ The read tools report on applications, deploys, logs, metrics, certificates, dat
 host; the write tools set environment variables, edit custom nginx directives, restart, deploy, \
 roll back, create databases, add domains and adjust resource limits. Deleting anything, managing \
 people and hardening the host stay in the panel. The help resources (ferrum://help/...) are the \
-conventions a repository follows to run here: ferrum.toml, processes, domains, the Aptfile, \
-environment variables, databases and roles; read them before preparing a repository.";
+conventions a repository follows to run here: ferrum.toml (processes, paths, commands, packages, \
+required variables, database labels), domains, environment variables, databases and roles; read \
+them before preparing a repository.";
 
 const HELP_SCHEME: &str = "ferrum://help/";
 
@@ -66,6 +67,11 @@ pub(super) fn finish<T: Serialize>(outcome: Result<T, ApiError>) -> ToolResult {
         Ok(value) => {
             let json = serde_json::to_value(value)
                 .map_err(|e| McpError::internal_error(e.to_string(), None))?;
+            let json = if json.is_array() {
+                serde_json::json!({ "items": json })
+            } else {
+                json
+            };
             Ok(CallToolResult::structured(json))
         }
         Err(e) if e.status.is_server_error() => Err(McpError::internal_error(e.message, None)),
