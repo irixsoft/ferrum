@@ -2,7 +2,6 @@ pub mod archive;
 pub mod detect;
 pub mod exec;
 pub mod fake;
-pub mod scan;
 pub mod ubuntu;
 
 use std::path::{Path, PathBuf};
@@ -146,6 +145,8 @@ pub trait Platform: Send + Sync {
     fn add_apt_repo(&self, name: &str, key_url: &str, line: &str) -> Result<(), PlatformError>;
     fn service(&self, action: ServiceAction, unit: &str) -> Result<(), PlatformError>;
     fn service_is_active(&self, unit: &str) -> bool;
+    /// Whether anything on the host, Ferrum's or not, already listens on the port.
+    fn port_in_use(&self, port: u16) -> bool;
     fn write_file(&self, path: &Path, contents: &str, mode: u32) -> Result<(), PlatformError>;
     fn read_file(&self, path: &Path) -> Result<Option<String>, PlatformError>;
     fn file_exists(&self, path: &Path) -> bool;
@@ -210,13 +211,6 @@ pub trait Platform: Send + Sync {
     fn symlink_swap(&self, target: &Path, link: &Path) -> Result<(), PlatformError>;
     fn read_link(&self, link: &Path) -> Result<Option<PathBuf>, PlatformError>;
     fn list_dir(&self, dir: &Path) -> Result<Vec<String>, PlatformError>;
-    /// Every source file under `dir` that `scan::wanted_text_file` accepts, with its path
-    /// relative to `dir`; build output, dependencies and large or binary files are skipped.
-    fn walk_text_files(
-        &self,
-        dir: &Path,
-        on_file: &mut dyn FnMut(&str, &str),
-    ) -> Result<(), PlatformError>;
     fn disk_free_bytes(&self, path: &Path) -> Result<u64, PlatformError>;
     fn journal_tail(&self, unit: &str, lines: u32) -> Result<Vec<JournalLine>, PlatformError>;
     /// Blocks until `stopped` answers true; the unit's newest `lines` come first, then live ones.

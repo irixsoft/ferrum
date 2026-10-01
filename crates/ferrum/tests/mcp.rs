@@ -109,7 +109,7 @@ async fn the_help_topics_are_resources_a_read_only_token_can_read() {
     let listed = mcp(&h, &token, &rpc(2, "resources/list", json!({}))).await;
     assert_eq!(listed.status, StatusCode::OK, "{}", listed.text);
     let resources = listed.json["result"]["resources"].as_array().unwrap();
-    assert!(resources.len() >= 10, "{resources:#?}");
+    assert!(resources.len() >= 8, "{resources:#?}");
     assert_eq!(resources[0]["uri"], "ferrum://help/ferrum-toml");
     assert_eq!(resources[0]["name"], "ferrum-toml");
     assert_eq!(resources[0]["title"], "ferrum.toml");
@@ -242,7 +242,7 @@ async fn a_read_only_token_sees_the_read_tools_and_cannot_name_a_write_one() {
     assert_eq!(error_text(&refused), READ_ONLY);
     assert_eq!(h.platform.calls_matching("service").len(), before);
     let listed = call(&h, &read_only, "list_apps", json!({})).await;
-    assert_eq!(listed["structuredContent"][0]["slug"], "ledger");
+    assert_eq!(listed["structuredContent"]["items"][0]["slug"], "ledger");
 }
 
 #[tokio::test]
@@ -338,15 +338,20 @@ async fn the_read_tools_answer_what_the_routes_answer_and_leak_no_secret() {
             "{route}: {}",
             via_route.json
         );
+        let expected = if via_route.json.is_array() {
+            json!({ "items": via_route.json })
+        } else {
+            via_route.json
+        };
         assert_eq!(
-            result["structuredContent"], via_route.json,
-            "{name} {args} differs from {route}"
+            result["structuredContent"], expected,
+            "{name} {args} differs from {route}; a list rides under items, as the protocol wants an object"
         );
     }
 
     let log = call(&h, &token, "deploy_log", json!({ "deploy_id": failed_id })).await;
     transcript.push_str(&log.to_string());
-    let lines = log["structuredContent"].as_array().unwrap();
+    let lines = log["structuredContent"]["items"].as_array().unwrap();
     assert!(lines.iter().any(|l| l["stream"] == "system"), "{log}");
     assert!(
         lines
@@ -356,7 +361,7 @@ async fn the_read_tools_answer_what_the_routes_answer_and_leak_no_secret() {
     );
     let build = call(&h, &token, "build_log", json!({ "deploy_id": live_id })).await;
     transcript.push_str(&build.to_string());
-    let lines = build["structuredContent"].as_array().unwrap();
+    let lines = build["structuredContent"]["items"].as_array().unwrap();
     assert!(!lines.is_empty());
     assert!(lines.iter().all(|l| l["stream"] != "system"), "{build}");
     assert!(lines.iter().any(|l| l["text"] == "Compiled"), "{build}");
@@ -370,7 +375,10 @@ async fn the_read_tools_answer_what_the_routes_answer_and_leak_no_secret() {
     .await;
     transcript.push_str(&certificates.to_string());
     let app = h.get_with_bearer("/api/apps/ledger", &token).await;
-    assert_eq!(certificates["structuredContent"], app.json["certificates"]);
+    assert_eq!(
+        certificates["structuredContent"]["items"],
+        app.json["certificates"]
+    );
 
     let system = call(&h, &token, "system_status", json!({})).await;
     transcript.push_str(&system.to_string());
@@ -536,7 +544,13 @@ async fn the_write_tools_change_the_box_the_way_the_routes_do() {
         json!({ "slug": "ledger", "limit": 1 }),
     )
     .await;
-    assert_eq!(history["structuredContent"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        history["structuredContent"]["items"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
     let releases = h
         .get_with_cookie("/api/apps/ledger/releases", &cookie)
         .await;

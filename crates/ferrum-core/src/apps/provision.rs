@@ -120,6 +120,7 @@ pub async fn migrate_units(state: &State, platform: &dyn Platform) -> anyhow::Re
             continue;
         }
         let was_active = platform.service_is_active(&legacy_unit_name(&app.slug));
+        write_env(state, platform, &app).await?;
         write_units(state, platform, &app).await?;
         if was_active {
             for process in app.command_processes() {
@@ -535,9 +536,13 @@ mod tests {
         );
         let reload = position(&calls, "service daemon-reload ");
         let start = position(&calls, "service enable-now ferrum-app-ledger-web");
+        let env = position(
+            &calls,
+            "write_file /var/lib/ferrum/apps/ledger/shared/.env 600",
+        );
         assert!(
-            write < stop && stop < reload && reload < start,
-            "{calls:#?}"
+            env < write && write < stop && stop < reload && reload < start,
+            "the env file is rewritten before the new unit reads it: {calls:#?}"
         );
         assert!(platform.removed("/etc/systemd/system/ferrum-app-ledger.service"));
         assert!(

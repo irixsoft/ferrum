@@ -275,6 +275,7 @@ pub(super) async fn write(
     tx: &mut Transaction<'_, Sqlite>,
     app_id: &str,
     processes: &[NewProcess],
+    taken_on_host: &(dyn Fn(u16) -> bool + Send + Sync),
 ) -> anyhow::Result<()> {
     let existing: HashMap<String, i64> = sqlx::query!(
         r#"SELECT name AS "name!", memory_mb AS "memory_mb!" FROM app_processes WHERE app_id = ?"#,
@@ -314,7 +315,7 @@ pub(super) async fn write(
         .execute(&mut **tx)
         .await?;
         if has_port {
-            ports::allocate(tx, app_id, &p.name).await?;
+            ports::allocate(tx, app_id, &p.name, taken_on_host).await?;
         }
     }
     Ok(())

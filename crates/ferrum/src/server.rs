@@ -258,6 +258,10 @@ pub async fn serve(data_dir: &Path) -> anyhow::Result<()> {
         hostname: ferrum_core::setup::hostname(&state).await?,
         ..Deps::default()
     };
+    state.port_taken = {
+        let platform = deps.platform.clone();
+        Arc::new(move |port| platform.port_in_use(port))
+    };
     if deps.hostname.is_some() {
         match ferrum_core::nginx::refresh_defaults(deps.platform.as_ref()) {
             Ok(true) => tracing::info!("nginx defaults refreshed"),
