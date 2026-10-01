@@ -11,7 +11,7 @@ One name is the app's **primary**: the address the panel shows, and the default 
 
 ## Paths
 
-A path sends part of the URL space to a process, on every served name: `/live` → `realtime`. Paths come from `ferrum.toml` when the app follows its file, or from the Paths card otherwise. A process without a path of its own answers `/` on the names that point at it.
+A path sends part of the URL space to a process, on every served name: `/live` → `realtime`. Paths come from `ferrum.toml` when the app follows its file, or from the Paths card otherwise. On each served name, the process the name points at answers `/`, and the app's other paths apply on top.
 
 ## Certificates
 

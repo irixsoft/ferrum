@@ -193,6 +193,7 @@ export interface AppDetail extends Omit<App, "processes"> {
   databases: string[];
   redis: RedisInstance | null;
   managed: string[];
+  managed_vars: ManagedVar[];
   /** From the unit's cgroup; null while no process runs. */
   memory_bytes: number | null;
   memory_peak_bytes: number | null;
@@ -335,6 +336,7 @@ export interface Database {
   size_bytes: number | null;
   extensions: string[];
   linked_apps: string[];
+  roles: DatabaseRole[];
   created_at: string;
   restore: JobStatus;
 }
@@ -344,6 +346,7 @@ export interface NewDatabase {
   connection_limit?: number;
   extensions?: string[];
   app_slug?: string;
+  env_label?: string;
 }
 
 export interface PostgresStatus {
@@ -426,6 +429,33 @@ export interface DatabaseRole {
   connection_limit: number;
   owner: boolean;
 }
+
+export interface NewRole {
+  name: string;
+  env_label?: string;
+  connection_limit?: number;
+}
+
+/** A variable Ferrum sets in the app's env, by where it comes from; never its value. */
+export interface ManagedVar {
+  key: string;
+  kind: "owner" | "role" | "redis";
+  database?: string;
+  role?: string;
+}
+
+/** Roles are keyed `<database>/<role>`. */
+export interface LabelChanges {
+  database?: Record<string, string>;
+  roles?: Record<string, string>;
+  redis?: string;
+}
+
+export type DnsCredentials =
+  | { kind: "cloudflare"; credentials: { token: string } }
+  | { kind: "route53"; credentials: { access_key_id: string; secret_access_key: string } };
+
+export type NewDnsProvider = DnsCredentials & { name: string; zone: string };
 
 export interface RedisInstance {
   app_id: string;
