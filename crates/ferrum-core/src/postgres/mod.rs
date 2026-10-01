@@ -341,6 +341,7 @@ pub async fn link_as(
     }
     let carried = managed_keys(state, app_id).await?;
     for (i, (key, _)) in adding.iter().enumerate() {
+        not_a_process_port(state, app_id, key).await?;
         let taken = carried
             .iter()
             .chain(adding[..i].iter())
@@ -482,13 +483,35 @@ pub async fn managed_keys(state: &State, app_id: &str) -> anyhow::Result<Vec<(St
     Ok(keys)
 }
 
-/// Who already carries `label` in the app, leaving out the origins that are being renamed.
+/// `<NAME>_PORT` of a listening process is Ferrum's in that app's env; any other name is free.
+async fn not_a_process_port(state: &State, app_id: &str, label: &str) -> anyhow::Result<()> {
+    let names = sqlx::query_scalar!(
+        r#"SELECT name AS "name!" FROM app_processes WHERE app_id = ? AND has_port = 1"#,
+        app_id
+    )
+    .fetch_all(&state.pool)
+    .await?;
+    match names
+        .into_iter()
+        .find(|n| crate::apps::env::port_var(n) == label)
+    {
+        Some(name) => Err(DbError::Invalid(format!(
+            "{label} is the port of the process {name}; pick another label."
+        ))
+        .into()),
+        None => Ok(()),
+    }
+}
+
+/// Who already carries `label` in the app, leaving out the origins that are being renamed; a
+/// label that is a process's port name is refused outright.
 pub async fn label_clash(
     state: &State,
     app_id: &str,
     label: &str,
     except: &[Origin],
 ) -> anyhow::Result<Option<Origin>> {
+    not_a_process_port(state, app_id, label).await?;
     Ok(managed_keys(state, app_id)
         .await?
         .into_iter()
@@ -886,6 +909,18 @@ pub(crate) mod tests {
                 .await
                 .is_err()
         );
+        let process = app.port_processes().next().unwrap().name.clone();
+        let port = apps::env::port_var(&process);
+        assert_eq!(
+            set_link_label(&state, &app.id, "ledger_prod", Some(&port))
+                .await
+                .unwrap_err()
+                .to_string(),
+            format!("{port} is the port of the process {process}; pick another label.")
+        );
+        set_link_label(&state, &app.id, "ledger_prod", Some("LEGACY_PORT"))
+            .await
+            .unwrap();
         let clash = set_link_label(&state, &app.id, "ledger_prod", None)
             .await
             .unwrap_err();

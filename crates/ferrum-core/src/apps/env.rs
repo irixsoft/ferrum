@@ -283,7 +283,8 @@ pub const FILE_SOURCE: &str = "ferrum.toml";
 const SHARED_PLACEHOLDER: &str = "{{shared}}";
 
 /// A variable the repository says it reads, with a sentence for the panel and a non-secret
-/// default; `{{shared}}` in a default stands for the app's shared directory.
+/// default; `{{shared}}` in a default stands for the app's shared directory. An optional one
+/// is shown and never holds a deploy back.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EnvRequirement {
     pub key: String,
@@ -291,6 +292,8 @@ pub struct EnvRequirement {
     pub about: Option<String>,
     #[serde(default)]
     pub default: Option<String>,
+    #[serde(default)]
+    pub optional: bool,
 }
 
 pub fn expand_default(value: &str, slug: &str) -> String {
@@ -307,6 +310,7 @@ pub struct Entry {
     pub set: bool,
     pub source: Option<String>,
     pub about: Option<String>,
+    pub optional: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -315,11 +319,13 @@ pub struct Required {
     pub source: String,
     pub about: Option<String>,
     pub default: Option<String>,
+    pub optional: bool,
 }
 
 pub async fn required(state: &State, app_id: &str) -> anyhow::Result<Vec<Required>> {
     let rows = sqlx::query!(
-        r#"SELECT key AS "key!", source AS "source!", about, default_value
+        r#"SELECT key AS "key!", source AS "source!", about, default_value,
+                  optional AS "optional!: bool"
            FROM app_env_required WHERE app_id = ? ORDER BY rowid"#,
         app_id
     )
@@ -332,6 +338,7 @@ pub async fn required(state: &State, app_id: &str) -> anyhow::Result<Vec<Require
             source: r.source,
             about: r.about,
             default: r.default_value,
+            optional: r.optional,
         })
         .collect())
 }
@@ -353,13 +360,15 @@ pub async fn replace_required(
     for req in required {
         valid_key(&req.key)?;
         sqlx::query!(
-            "INSERT OR REPLACE INTO app_env_required (app_id, key, source, about, default_value)
-             VALUES (?, ?, ?, ?, ?)",
+            "INSERT OR REPLACE INTO app_env_required
+                 (app_id, key, source, about, default_value, optional)
+             VALUES (?, ?, ?, ?, ?, ?)",
             app_id,
             req.key,
             FILE_SOURCE,
             req.about,
-            req.default
+            req.default,
+            req.optional
         )
         .execute(&mut **tx)
         .await?;
@@ -400,6 +409,7 @@ pub async fn entries(state: &State, app_id: &str) -> anyhow::Result<Vec<Entry>> 
                 set: true,
                 source: req.map(|r| r.source.clone()),
                 about: req.and_then(|r| r.about.clone()),
+                optional: req.is_some_and(|r| r.optional),
             }
         })
         .collect();
@@ -412,6 +422,7 @@ pub async fn entries(state: &State, app_id: &str) -> anyhow::Result<Vec<Entry>> 
                 set: false,
                 source: Some(r.source),
                 about: r.about,
+                optional: r.optional,
             }),
     );
     Ok(entries)

@@ -22,7 +22,8 @@ import { Button } from "@/components/ui/Button";
 import { Badge } from "@/components/ui/Badge";
 import { Code } from "@/components/ui/Code";
 import { ConfigForm, draftFromDetection, toNewApp, type Draft, type Sources } from "./ConfigForm";
-import { EnvRows, ImportEnv, REQUIRED_NOTE, blankRow, rowsFromRequired, type EnvRow } from "./EnvironmentPanel";
+import { EnvRows, ImportEnv, RequiredNote, blankRow, rowsFromRequired, type EnvRow } from "./EnvironmentPanel";
+import { SharedDirHint } from "./SharedDirHint";
 import { ago, bytes } from "@/lib/utils";
 import type { App, Detected, GithubRepo, Manifest, Progress } from "@/types/api";
 
@@ -475,9 +476,8 @@ function Review({
         <CardBody className="grid gap-2">
           <EnvRows rows={envRows} onChange={setEnvRows} />
           {envNote ? <p className="text-[12.5px] text-ink-3 mt-1">{envNote}</p> : null}
-          {envRows.some((r) => r.source !== null) ? (
-            <p className="text-[12.5px] text-ink-4 mt-1">{REQUIRED_NOTE}</p>
-          ) : null}
+          <RequiredNote rows={envRows} />
+          <SharedDirHint slug={draft.slug} className="mt-1" />
         </CardBody>
       </Card>
 
@@ -554,7 +554,12 @@ function Review({
 function ManifestLine({ manifest }: { manifest: Manifest }) {
   const parts = [`${manifest.processes.length} process${manifest.processes.length === 1 ? "" : "es"}`];
   if (manifest.packages) parts.push(`${manifest.packages.length} package${manifest.packages.length === 1 ? "" : "s"}`);
-  if (manifest.env) parts.push(`${manifest.env.length} required variable${manifest.env.length === 1 ? "" : "s"}`);
+  if (manifest.env) {
+    const optional = manifest.env.filter((e) => e.optional).length;
+    const required = manifest.env.length - optional;
+    parts.push(`${required} required variable${required === 1 ? "" : "s"}`);
+    if (optional > 0) parts.push(`${optional} optional`);
+  }
   return (
     <p className="text-[12.5px] text-ink-2">
       <Code>ferrum.toml</Code> found: {parts.join(", ")}; Ferrum will follow it on every deploy.

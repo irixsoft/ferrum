@@ -395,7 +395,7 @@ mod tests {
         let p = Arc::new(FakePlatform::new());
         p.serve_clone(&[(
             "ferrum.toml",
-            "[env]\nrequired = [\"SESSION_SECRET\", \"SMTP_HOST\"]\n[env.UPLOADS_DIR]\ndefault = \"{{shared}}/uploads\"\n",
+            "[env]\nrequired = [\"SESSION_SECRET\", \"SMTP_HOST\"]\n[env.UPLOADS_DIR]\ndefault = \"{{shared}}/uploads\"\n[env.SMTP_PORT]\ndefault = \"587\"\n[env.SMTP_USER]\nabout = \"Leave empty for a relay without a login\"\noptional = true\n",
         )]);
         let health = Health::serve(200).await;
         let app = provisioned(&state, &p, "ledger", health.port, |new| {
@@ -445,6 +445,14 @@ mod tests {
             .written("/var/lib/ferrum/apps/ledger/shared/.env")
             .unwrap();
         assert!(env.contains("UPLOADS_DIR=/var/lib/ferrum/apps/ledger/shared/uploads\n"));
+        assert!(env.contains("SMTP_PORT=587\n"), "{env}");
+        assert!(
+            !env.contains("SMTP_USER"),
+            "an optional key left empty is not written and holds nothing back"
+        );
+        let entries = apps::env::entries(&state, &app.id).await.unwrap();
+        let user = entries.iter().find(|e| e.key == "SMTP_USER").unwrap();
+        assert!(user.optional && !user.set);
         let text: Vec<String> = log::lines(&state, &d.id, 0)
             .await
             .unwrap()
@@ -452,7 +460,8 @@ mod tests {
             .map(|l| l.text)
             .collect();
         assert!(
-            text.iter().any(|t| t.ends_with("; 3 variables required")),
+            text.iter()
+                .any(|t| t.ends_with("; 4 variables required, 1 optional")),
             "{text:#?}"
         );
     }

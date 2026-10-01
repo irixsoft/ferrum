@@ -51,6 +51,7 @@ const row = (key: string, extra: Partial<EnvRow> = {}): EnvRow => ({
   stored: false,
   source: null,
   about: null,
+  optional: false,
   ...extra,
 });
 

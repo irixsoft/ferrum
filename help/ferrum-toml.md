@@ -48,6 +48,10 @@ required = ["SESSION_SECRET", "SMTP_HOST"]   # names your code reads; the panel 
 [env.UPLOADS_DIR]                     # a table when there is something to say about a key
 about = "Where uploaded files are kept; must survive a deploy"
 default = "{{shared}}/uploads"        # written once if you set nothing; {{shared}} is the app's shared directory
+
+[env.SMTP_USER]                       # the app runs without it: shown, never refuses a deploy
+about = "Leave empty for a relay without a login"
+optional = true
 ```
 
 ## What each key does
@@ -55,7 +59,11 @@ default = "{{shared}}/uploads"        # written once if you set nothing; {{share
 - `runtime`, `version`: the toolchain the app builds and runs with. Toolchains are private to Ferrum, never on the system PATH.
 - `install`, `build`, `migrate`: run as the app's own user, through `sh -c`, in the release directory. A key you leave out keeps what the panel has.
 - `packages`: Ubuntu packages, one name each (`^[a-z0-9][a-z0-9+._-]*$`), installed before the build on every deploy. A package dropped from the list is kept and the app's page says so, with an Uninstall button; a deploy never removes anything. A key left out keeps the panel's list.
-- `[env]`: the variables your code reads. `required` is a list of bare names; `[env.NAME]` is a table for a name with a sentence (`about`, shown on the Environment tab) or a non-secret `default`. A default is written the first time nothing is set, never over a value you typed; `{{shared}}` in it becomes `/var/lib/ferrum/apps/<slug>/shared`. **A required name with no value and no default refuses the deploy before anything is built**, naming the key. Names Ferrum sets itself (`PORT`, `HOST`, `*_PORT`, the labels this file names) cannot be required.
+- `[env]`: the variables your code reads. Each key goes in one place: a bare name in `required`, or a table `[env.NAME]` when it has a sentence (`about`, shown on the Environment tab), a non-secret `default`, or `optional = true`. A table alone already makes its key required; you do not list it in `required` as well.
+  - **A required key with no value and no default refuses the deploy before anything is built**, naming the key.
+  - `optional = true` is for a key the app runs without: it is shown with its sentence and never holds a deploy back.
+  - A default is written the first time nothing is set, never over a value you typed; `{{shared}}` in it becomes `/var/lib/ferrum/apps/<slug>/shared`.
+  - Names Ferrum sets itself cannot be declared: `PORT`, `HOST`, `<NAME>_PORT` of a process this file gives a port, and the labels this file names. Any other name is yours, `SMTP_PORT` included.
 - `[processes.<name>]`: one table per process. A name is lowercase letters, digits and underscores. `web` is the usual name for the process that answers `/`.
   - `start`: the command. Anything the process needs that its siblings don't goes in front of it: `WORKER_MODE=1 bun run start`.
   - `dir`: where the command starts, relative to the app's root. Empty means the root.

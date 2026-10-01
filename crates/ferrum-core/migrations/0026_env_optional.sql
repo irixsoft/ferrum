@@ -1,0 +1,1 @@
+ALTER TABLE app_env_required ADD COLUMN optional INTEGER NOT NULL DEFAULT 0;

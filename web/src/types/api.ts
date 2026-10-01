@@ -176,12 +176,13 @@ export interface App {
   updated_at: string;
 }
 
-/** A key the app has set, or one ferrum.toml requires that nothing has set yet. */
+/** A key the app has set, or one ferrum.toml names that nothing has set yet. */
 export interface EnvEntry {
   key: string;
   set: boolean;
   source: string | null;
   about: string | null;
+  optional: boolean;
 }
 
 export interface AppDetail extends Omit<App, "processes"> {
@@ -216,11 +217,12 @@ export interface EnvVar {
   value: string;
 }
 
-/** A variable the repo's ferrum.toml says the app reads; `{{shared}}` in a default is the app's shared directory. */
+/** A variable the repo's ferrum.toml says the app reads; `{{shared}}` in a default is the app's shared directory. An optional one never holds a deploy back. */
 export interface EnvRequirement {
   key: string;
   about: string | null;
   default: string | null;
+  optional: boolean;
 }
 
 /** A row without a value keeps the value already stored; values are never read back. */
