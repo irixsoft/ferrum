@@ -412,7 +412,7 @@ impl Harness {
 
     pub fn env_file(&self, slug: &str) -> String {
         self.platform
-            .written(&format!("/var/lib/ferrum/apps/{slug}/shared/.env"))
+            .written(&format!("/var/lib/ferrum/apps/{slug}/env"))
             .expect("the env file was written")
     }
 

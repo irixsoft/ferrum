@@ -188,17 +188,37 @@ fn render_for(platform: &dyn Platform, app: &App) -> String {
     render_vhost(app, &with_tls)
 }
 
+/// Root's alone, outside `shared/`: systemd reads it before dropping to the app's user.
+pub fn env_path(slug: &str) -> PathBuf {
+    app_dir(slug).join("env")
+}
+
 pub async fn write_env(state: &State, platform: &dyn Platform, app: &App) -> anyhow::Result<()> {
     let vars = env::all(state, &app.id).await?;
     let managed = env::managed_for(state, app).await?;
-    let env_path = app_dir(&app.slug).join("shared/.env");
     platform.write_file(
-        &env_path,
+        &env_path(&app.slug),
         &env::render(&vars, &managed, &app.ports(), app.runtime),
         0o600,
     )?;
-    platform.chown(&env_path, &user_name(&app.slug))?;
     Ok(())
+}
+
+/// Moves each app's environment out of `shared/.env` at daemon start, once: the new file, units
+/// that read it, and the old file removed.
+pub async fn move_env_files(state: &State, platform: &dyn Platform) -> anyhow::Result<usize> {
+    let mut moved = 0;
+    for app in apps::list(state).await? {
+        let dir = app_dir(&app.slug);
+        if !platform.file_exists(&dir) || platform.file_exists(&env_path(&app.slug)) {
+            continue;
+        }
+        write_env(state, platform, &app).await?;
+        write_units(state, platform, &app).await?;
+        platform.remove_file(&dir.join("shared/.env"))?;
+        moved += 1;
+    }
+    Ok(moved)
 }
 
 pub async fn reprovision(state: &State, platform: &dyn Platform, app: &App) -> anyhow::Result<()> {
@@ -260,10 +280,7 @@ mod tests {
             &calls,
             "create_system_user ferrum-ledger /var/lib/ferrum/apps/ledger",
         );
-        let env = position(
-            &calls,
-            "write_file /var/lib/ferrum/apps/ledger/shared/.env 600",
-        );
+        let env = position(&calls, "write_file /var/lib/ferrum/apps/ledger/env 600");
         let unit = position(
             &calls,
             "write_file /etc/systemd/system/ferrum-app-ledger-web.service 644",
@@ -290,10 +307,15 @@ mod tests {
             "secure_dir /var/lib/ferrum/apps/ledger/shared 750 ferrum-ledger",
             "make_dirs_as ferrum-ledger /var/lib/ferrum/apps/ledger/shared/cache 750",
             "make_dirs_as ferrum-ledger /var/lib/ferrum/apps/ledger/shared/storage 750",
-            "chown /var/lib/ferrum/apps/ledger/shared/.env ferrum-ledger",
         ] {
             assert!(calls.contains(&expected.to_string()), "{calls:#?}");
         }
+        assert!(
+            !calls
+                .iter()
+                .any(|c| c.starts_with("chown") && c.contains("env")),
+            "the env file stays root's: {calls:#?}"
+        );
         assert!(
             !calls.iter().any(|c| c.starts_with("chown_tree")),
             "a recursive chown walks a cache a build may be deleting under it"
@@ -314,7 +336,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn the_env_file_is_owned_by_the_app_user_and_names_every_port_process() {
+    async fn the_env_file_names_every_port_process() {
         let (_d, state) = state().await;
         let platform = FakePlatform::new();
         let app = create(
@@ -328,9 +350,7 @@ mod tests {
             .unwrap();
         provision(&state, &platform, &app).await.unwrap();
 
-        let contents = platform
-            .written("/var/lib/ferrum/apps/ledger/shared/.env")
-            .unwrap();
+        let contents = platform.written("/var/lib/ferrum/apps/ledger/env").unwrap();
         assert!(contents.contains(&format!("WEB_PORT={}\n", app.port_of("web").unwrap())));
         assert!(contents.contains(&format!("WS_PORT={}\n", app.port_of("ws").unwrap())));
         assert!(contents.contains("HOST=127.0.0.1\n"));
@@ -435,6 +455,41 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn an_env_file_left_in_shared_moves_out_once_and_the_units_follow() {
+        let (_d, state) = state().await;
+        let platform = FakePlatform::new();
+        let app = create(&state, new_app("ledger", &[("/", "main", false)]))
+            .await
+            .unwrap();
+        env::set(&state, &app.id, "SECRET", "hunter2")
+            .await
+            .unwrap();
+        provision(&state, &platform, &app).await.unwrap();
+        platform.remove_file(&env_path("ledger")).unwrap();
+        let old = "/var/lib/ferrum/apps/ledger/shared/.env";
+        platform
+            .write_file(Path::new(old), "SECRET=hunter2\n", 0o600)
+            .unwrap();
+
+        assert_eq!(move_env_files(&state, &platform).await.unwrap(), 1);
+
+        assert!(
+            platform
+                .written("/var/lib/ferrum/apps/ledger/env")
+                .unwrap()
+                .contains("SECRET=hunter2\n")
+        );
+        assert!(platform.removed(old));
+        assert!(
+            platform
+                .written("/etc/systemd/system/ferrum-app-ledger-web.service")
+                .unwrap()
+                .contains("EnvironmentFile=/var/lib/ferrum/apps/ledger/env\n")
+        );
+        assert_eq!(move_env_files(&state, &platform).await.unwrap(), 0);
+    }
+
+    #[tokio::test]
     async fn an_app_whose_shared_directory_is_a_link_is_reported_and_the_others_secured() {
         let (_d, state) = state().await;
         let platform = FakePlatform::new();
@@ -488,9 +543,7 @@ mod tests {
             .await
             .unwrap();
         write_env(&state, &platform, &app).await.unwrap();
-        let contents = platform
-            .written("/var/lib/ferrum/apps/ledger/shared/.env")
-            .unwrap();
+        let contents = platform.written("/var/lib/ferrum/apps/ledger/env").unwrap();
         assert!(
             contents.starts_with("DATABASE_URL=postgres://ledger_prod:"),
             "{contents}"
@@ -624,10 +677,7 @@ mod tests {
         );
         let reload = position(&calls, "service daemon-reload ");
         let start = position(&calls, "service enable-now ferrum-app-ledger-web");
-        let env = position(
-            &calls,
-            "write_file /var/lib/ferrum/apps/ledger/shared/.env 600",
-        );
+        let env = position(&calls, "write_file /var/lib/ferrum/apps/ledger/env 600");
         assert!(
             env < write && write < stop && stop < reload && reload < start,
             "the env file is rewritten before the new unit reads it: {calls:#?}"

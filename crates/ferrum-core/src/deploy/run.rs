@@ -218,7 +218,7 @@ mod tests {
         });
         let env = calls
             .iter()
-            .rposition(|c| c == "write_file /var/lib/ferrum/apps/ledger/shared/.env 600")
+            .rposition(|c| c == "write_file /var/lib/ferrum/apps/ledger/env 600")
             .unwrap();
         let install = position(&calls, |c| {
             c.starts_with("run_scoped ferrum-build-ledger") && c.contains("bun install")
@@ -501,9 +501,7 @@ mod tests {
             )),
             "{vars:?}"
         );
-        let env = p
-            .written("/var/lib/ferrum/apps/ledger/shared/.env")
-            .unwrap();
+        let env = p.written("/var/lib/ferrum/apps/ledger/env").unwrap();
         assert!(env.contains("UPLOADS_DIR=/var/lib/ferrum/apps/ledger/shared/uploads\n"));
         assert!(env.contains("SMTP_PORT=587\n"), "{env}");
         assert!(
@@ -883,6 +881,50 @@ mod tests {
         p.script_run("bun run build", &[], Exit::Code(137));
         let (_, d) = deploy(&ctx, &app, "abc1236").await;
         assert!(d.failure_reason.unwrap().starts_with("The build exceeded"));
+    }
+
+    #[tokio::test]
+    async fn a_tag_that_changes_the_runtime_and_fails_health_rolls_back_onto_the_old_runtime() {
+        let (_d, state) = state().await;
+        let p = Arc::new(FakePlatform::new());
+        p.serve_clone(&[("ferrum.toml", "build = \"bun run build\"\n")]);
+        let health = Health::serve(200).await;
+        let app = provisioned(&state, &p, "ledger", health.port, |new| {
+            new.follow_repo_file = true;
+        })
+        .await;
+        let ctx = ctx(&state, &p);
+        let (first, _) = deploy(&ctx, &app, "1111111").await;
+        assert_eq!(first, Outcome::Live);
+        let before = apps::by_slug(&state, "ledger").await.unwrap().unwrap();
+
+        sqlx::query("INSERT INTO toolchains (kind, version, path, size_bytes) VALUES ('bun', '1.2.3', '/x', 1)")
+            .execute(&state.pool)
+            .await
+            .unwrap();
+        p.serve_clone(&[("ferrum.toml", "runtime = \"bun\"\nversion = \"1.2.3\"\n")]);
+        let broken = Health::serve(500).await;
+        sqlx::query("UPDATE app_ports SET port = ? WHERE app_id = ?")
+            .bind(broken.port as i64)
+            .bind(&app.id)
+            .execute(&state.pool)
+            .await
+            .unwrap();
+        let app = apps::by_slug(&state, "ledger").await.unwrap().unwrap();
+        let (outcome, d) = deploy(&ctx, &app, "2222222").await;
+        assert_eq!(outcome, Outcome::RolledBack, "{:?}", d.failure_reason);
+
+        let after = apps::by_slug(&state, "ledger").await.unwrap().unwrap();
+        assert_eq!(after.runtime, before.runtime);
+        assert_eq!(after.toolchain, before.toolchain);
+        assert_eq!(after.runtime_version, before.runtime_version);
+        let unit = p
+            .written("/etc/systemd/system/ferrum-app-ledger-web.service")
+            .unwrap();
+        assert!(
+            unit.contains(&format!("runtimes/node/{}/bin", before.runtime_version)),
+            "{unit}"
+        );
     }
 
     #[tokio::test]

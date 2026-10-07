@@ -20,7 +20,8 @@ Written for Ferrum 0.2.3. Everything an agent needs is in this file.
 
 One Ubuntu server. For each app Ferrum keeps a Linux user, a directory
 `/var/lib/ferrum/apps/<slug>/` with `releases/<id>/` (one per deploy), `current` (a symlink
-to the live release), and `shared/` (survives deploys: `.env`, `cache/`, `storage/`). Every
+to the live release), `env` (the environment, readable by root only), and `shared/` (survives
+deploys and is the only place the app may write: `cache/`, `storage/`, uploads). Every
 process is a systemd unit `ferrum-app-<slug>-<process>` started in `current/<root>/<dir>` as the
 app's user with the shared environment. nginx faces the network and proxies each name and
 path to the right process on `127.0.0.1`; the app itself never listens publicly.
@@ -196,7 +197,7 @@ refused.
 
 ## Processes
 
-- All processes share the repository, the build, the release directory, `shared/.env`, the
+- All processes share the repository, the build, the release directory, the environment, the
   Linux user and `shared/`. One deploy updates all of them; one rollback puts all back.
 - Each has its own command, start folder, port (if any), health path, memory limit, unit,
   journal and Restart button.
@@ -215,7 +216,9 @@ refused.
 
 ## Environment
 
-Every process reads the same environment, written by Ferrum to `shared/.env`.
+Every process reads the same environment, which Ferrum writes to a root-only file the unit
+loads at start. Read variables from the process environment; Ferrum's file is not readable by
+the app.
 
 Ferrum sets: `PORT` (per process, for the one that owns it), `<NAME>_PORT` for every port
 process, `HOST=127.0.0.1`, the database and Redis addresses under the labels the file names

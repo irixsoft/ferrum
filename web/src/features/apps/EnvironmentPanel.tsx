@@ -282,7 +282,7 @@ export function EnvironmentPanel({
     <Card>
       <CardHeader
         title="Environment"
-        hint="Written to shared/.env at 0600, owned by the app user, read by the unit and the build"
+        hint="Written to a root-only file the unit loads at start; the build gets the same values"
         action={
           <span className="flex gap-1">
             <ImportEnv

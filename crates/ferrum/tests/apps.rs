@@ -310,7 +310,7 @@ async fn env_values_are_write_only() {
     assert!(!got.text.contains("hunter2"), "{}", got.text);
     let env = h
         .platform
-        .written("/var/lib/ferrum/apps/ledger/shared/.env")
+        .written("/var/lib/ferrum/apps/ledger/env")
         .unwrap();
     assert!(env.contains("SECRET=hunter2\n"));
     assert!(env.contains("PORT="));
@@ -334,7 +334,7 @@ async fn env_values_are_write_only() {
     assert_eq!(kept.status, StatusCode::NO_CONTENT, "{}", kept.json);
     let env = h
         .platform
-        .written("/var/lib/ferrum/apps/ledger/shared/.env")
+        .written("/var/lib/ferrum/apps/ledger/env")
         .unwrap();
     assert!(
         env.contains("SECRET=hunter2\n") && env.contains("OTHER=o\n"),

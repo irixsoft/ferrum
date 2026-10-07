@@ -790,7 +790,14 @@ impl Job {
                     .platform
                     .symlink_swap(Path::new(&previous.dir), &releases::current_link(&self.app))?;
                 releases::set_current(&self.ctx.state, &self.app.id, Some(&previous.id)).await?;
-                self.reapply_previous(&previous).await;
+                if let Some(before) = self.before_manifest.take()
+                    && let Err(e) = self.restore_configuration(&before).await
+                {
+                    self.say(&format!(
+                        "The configuration from before this tag could not be restored: {e:#}"
+                    ))
+                    .await?;
+                }
                 let _ =
                     provision::write_units(&self.ctx.state, self.ctx.platform.as_ref(), &self.app)
                         .await;
@@ -845,27 +852,6 @@ impl Job {
         )
         .await;
         Ok(outcome)
-    }
-
-    /// The previous release's own file decides its processes again; a file that will not
-    /// apply leaves the current list, which still names units that exist.
-    async fn reapply_previous(&mut self, previous: &Release) {
-        if !self.app.follow_repo_file {
-            return;
-        }
-        let work = work_dir(Path::new(&previous.dir), &self.app.root);
-        if let Ok(Some(manifest)) = manifest::read_dir(self.ctx.platform.as_ref(), &work)
-            && let Ok(applied) = apps::apply_manifest(
-                &self.ctx.state,
-                self.ctx.platform.as_ref(),
-                &self.app,
-                &manifest,
-            )
-            .await
-        {
-            self.app = applied;
-            let _ = write_env(&self.ctx.state, self.ctx.platform.as_ref(), &self.app).await;
-        }
     }
 
     async fn maintenance_off_step(&mut self) -> anyhow::Result<()> {
@@ -1003,7 +989,7 @@ impl Job {
     }
 }
 
-/// The same content as `shared/.env`, so a command sees what the unit will, plus the
+/// The same content as the env file, so a command sees what the unit will, plus the
 /// toolchain, a writable home and the caches.
 pub async fn command_env(
     ctx: &Ctx,

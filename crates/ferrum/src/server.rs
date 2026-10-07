@@ -287,6 +287,11 @@ pub async fn serve(data_dir: &Path) -> anyhow::Result<()> {
         }
         Err(e) => tracing::warn!(error = %e, "securing the app directories"),
     }
+    match ferrum_core::apps::provision::move_env_files(&state, deps.platform.as_ref()).await {
+        Ok(0) => {}
+        Ok(n) => tracing::info!(apps = n, "app environment files moved out of shared/"),
+        Err(e) => tracing::warn!(error = %e, "moving the app environment files"),
+    }
     match ferrum_core::redis::refresh(&state, deps.platform.as_ref()).await {
         Ok(0) => {}
         Ok(n) => tracing::info!(instances = n, "redis configuration refreshed"),

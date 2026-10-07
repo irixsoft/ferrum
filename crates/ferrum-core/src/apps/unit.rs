@@ -1,6 +1,6 @@
 use super::processes::Process;
 pub use super::processes::{legacy_unit_name, legacy_unit_path, unit_name, unit_path, unit_prefix};
-use super::provision::{app_dir, user_name};
+use super::provision::{app_dir, env_path, user_name};
 use super::{App, AppError};
 use crate::deploy::steps::work_dir;
 use crate::runtime::{self, Phase, RuntimeKind, toolchain};
@@ -43,7 +43,7 @@ pub fn render_unit(
     unit.push_str(&format!("WorkingDirectory={}\n", workdir.display()));
     unit.push_str(&format!(
         "EnvironmentFile={}\n",
-        dir.join("shared/.env").display()
+        env_path(&app.slug).display()
     ));
     for (key, value) in runtime::by_kind(app.runtime).env_for(Phase::Run, toolchain, process.port) {
         match extra {
@@ -136,7 +136,7 @@ mod tests {
             "User=ferrum-ledger",
             "Group=ferrum-ledger",
             "WorkingDirectory=/var/lib/ferrum/apps/ledger/current",
-            "EnvironmentFile=/var/lib/ferrum/apps/ledger/shared/.env",
+            "EnvironmentFile=/var/lib/ferrum/apps/ledger/env",
             "Environment=PATH=/var/lib/ferrum/runtimes/node/22.11.0/bin:/usr/local/bin:/usr/bin:/bin",
             "Environment=NODE_ENV=production",
             "Environment=PORT=20000",
