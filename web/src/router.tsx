@@ -29,9 +29,8 @@ function Gate() {
 
   if (enrolling) return <Outlet />;
   if (isLoading) return null;
-  if (!data) {
-    return error instanceof ApiError && error.status === 401 ? <LoginPage /> : <Unreachable />;
-  }
+  if (error instanceof ApiError && error.status === 401) return <LoginPage />;
+  if (!data) return <Unreachable />;
 
   return (
     <Shell>

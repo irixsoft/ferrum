@@ -2,6 +2,7 @@ use super::domains::{Domain, Job};
 use super::provision::app_dir;
 use super::{App, Route};
 use crate::deploy::maintenance;
+use crate::deploy::steps::work_dir;
 use crate::{ACME_ROOT, PAGES_DIR, acme, logs};
 use ferrum_platform::ubuntu::{NGINX_CONF_DIR, NGINX_CUSTOM_DIR};
 use std::fmt::Write;
@@ -164,7 +165,7 @@ fn body(app: &App, target: &str) -> String {
             continue;
         };
         if let Some(static_dir) = process.static_dir() {
-            let root = app_dir(&app.slug).join("current").join(static_dir);
+            let root = work_dir(&app_dir(&app.slug).join("current"), &app.root).join(static_dir);
             if route.path == "/" {
                 let _ = writeln!(out, "    root {};", root.display());
                 out.push_str("    index index.html;\n\n");
@@ -456,6 +457,18 @@ mod tests {
         assert!(v.contains("root /var/lib/ferrum/apps/docs/current/dist;"));
         assert!(v.contains("try_files $uri $uri/ /index.html;"));
         assert!(!v.contains("proxy_pass"));
+    }
+
+    #[test]
+    fn a_folder_is_served_from_under_the_app_s_root_directory() {
+        let mut a = app("docs");
+        a.root = "apps/site".into();
+        a.processes = vec![folder("web", "dist")];
+        let v = render_vhost(&a, &[]);
+        assert!(
+            v.contains("root /var/lib/ferrum/apps/docs/current/apps/site/dist;"),
+            "{v}"
+        );
     }
 
     #[test]

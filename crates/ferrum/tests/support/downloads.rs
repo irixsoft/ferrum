@@ -29,6 +29,11 @@ pub fn node_tarball() -> Vec<u8> {
     let mut tar = tar::Builder::new(gz);
     for (path, data, mode) in [
         ("node-v22.11.0-linux-x64/bin/node", &b"#!node"[..], 0o755),
+        (
+            "node-v22.11.0-linux-x64/lib/node_modules/corepack/dist/pnpm.js",
+            &b"#!node"[..],
+            0o755,
+        ),
         ("node-v22.11.0-linux-x64/LICENSE", &b"MIT"[..], 0o644),
     ] {
         let mut header = tar::Header::new_gnu();

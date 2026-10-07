@@ -57,8 +57,28 @@ pub async fn require_caller(
     if caller.is_read_only() && !request.method().is_safe() {
         return Err(ApiError::new(axum::http::StatusCode::FORBIDDEN, READ_ONLY));
     }
+    if caller.user().is_some() && !request.method().is_safe() {
+        from_the_panel(&app, request.headers()).await?;
+    }
     request.extensions_mut().insert(caller);
     Ok(next.run(request).await)
+}
+
+const FOREIGN_ORIGIN: &str = "This request did not come from the panel.";
+
+/// The cookie also rides along from an app on a sibling subdomain, so changes need the panel's origin.
+async fn from_the_panel(app: &AppState, headers: &HeaderMap) -> Result<(), ApiError> {
+    let hostname = ferrum_core::setup::hostname(&app.db).await?;
+    let origin = header(headers, axum::http::header::ORIGIN.as_str());
+    match (hostname, origin) {
+        (Some(host), Some(origin)) if origin.eq_ignore_ascii_case(&format!("https://{host}")) => {
+            Ok(())
+        }
+        _ => Err(ApiError::new(
+            axum::http::StatusCode::FORBIDDEN,
+            FOREIGN_ORIGIN,
+        )),
+    }
 }
 
 pub async fn resolve(app: &AppState, headers: &HeaderMap) -> Result<Caller, ApiError> {

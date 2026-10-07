@@ -1,6 +1,7 @@
 use super::provision::app_dir;
 use super::{App, AppError};
 use crate::postgres::DbError;
+use crate::runtime::RuntimeKind;
 use crate::secrets::{self, Key};
 use crate::state::State;
 use crate::{postgres, redis};
@@ -176,9 +177,14 @@ pub fn port_var(name: &str) -> String {
 }
 
 /// The variables Ferrum sets that a user variable may never shadow.
-pub fn reserved_keys(ports: &[(String, u16)]) -> Vec<String> {
+pub fn reserved_keys(ports: &[(String, u16)], runtime: RuntimeKind) -> Vec<String> {
     let mut keys = vec!["PORT".to_string(), "HOST".to_string()];
     keys.extend(ports.iter().map(|(name, _)| port_var(name)));
+    let owned: &[&str] = match runtime {
+        RuntimeKind::Node | RuntimeKind::Bun => &["NODE_ENV"],
+        RuntimeKind::Dotnet => &["ASPNETCORE_URLS", "DOTNET_ROOT"],
+    };
+    keys.extend(owned.iter().map(|k| k.to_string()));
     keys
 }
 
@@ -434,9 +440,10 @@ pub fn pairs(
     vars: &[(String, String)],
     managed: &Managed,
     ports: &[(String, u16)],
+    runtime: RuntimeKind,
 ) -> Vec<(String, String)> {
     let managed = managed.pairs();
-    let reserved = reserved_keys(ports);
+    let reserved = reserved_keys(ports, runtime);
     let mut out: Vec<(String, String)> = vars
         .iter()
         .filter(|(key, _)| !managed.iter().any(|(m, _)| m == key) && !reserved.contains(key))
@@ -451,9 +458,14 @@ pub fn pairs(
 }
 
 /// systemd's `EnvironmentFile=` dialect: no expansion, but an unquoted backslash is an escape.
-pub fn render(vars: &[(String, String)], managed: &Managed, ports: &[(String, u16)]) -> String {
+pub fn render(
+    vars: &[(String, String)],
+    managed: &Managed,
+    ports: &[(String, u16)],
+    runtime: RuntimeKind,
+) -> String {
     let mut out = String::new();
-    for (key, value) in pairs(vars, managed, ports) {
+    for (key, value) in pairs(vars, managed, ports, runtime) {
         out.push_str(&key);
         out.push('=');
         out.push_str(&quote(&value));
@@ -500,6 +512,7 @@ mod tests {
             ],
             &Managed::default(),
             &ports(&[("web", 20000), ("ws", 20001)]),
+            RuntimeKind::Node,
         );
         assert_eq!(
             out,
@@ -514,10 +527,12 @@ mod tests {
                 ("PORT".into(), "80".into()),
                 ("WEB_PORT".into(), "81".into()),
                 ("HOST".into(), "0.0.0.0".into()),
+                ("NODE_ENV".into(), "development".into()),
                 ("KEEP".into(), "1".into()),
             ],
             &Managed::default(),
             &ports(&[("web", 20000)]),
+            RuntimeKind::Bun,
         );
         assert_eq!(out, "KEEP=1\nWEB_PORT=20000\nHOST=127.0.0.1\n");
     }
@@ -548,6 +563,7 @@ mod tests {
             &[("APP_KEY".into(), "x".into())],
             &managed,
             &ports(&[("web", 20000)]),
+            RuntimeKind::Node,
         );
         assert_eq!(
             out,
@@ -565,6 +581,7 @@ mod tests {
             &[("DATABASE_URL".into(), "postgres://stale".into())],
             &managed,
             &[],
+            RuntimeKind::Node,
         );
         assert_eq!(out.matches("DATABASE_URL=").count(), 1);
         assert!(out.contains("DATABASE_URL=postgres://real\n"));
@@ -718,8 +735,12 @@ mod tests {
         assert_eq!(port_var("ws"), "WS_PORT");
         assert_eq!(port_var("admin_ui"), "ADMIN_UI_PORT");
         assert_eq!(
-            reserved_keys(&[("web".into(), 1)]),
-            vec!["PORT", "HOST", "WEB_PORT"]
+            reserved_keys(&[("web".into(), 1)], RuntimeKind::Node),
+            vec!["PORT", "HOST", "WEB_PORT", "NODE_ENV"]
+        );
+        assert_eq!(
+            reserved_keys(&[], RuntimeKind::Dotnet),
+            vec!["PORT", "HOST", "ASPNETCORE_URLS", "DOTNET_ROOT"]
         );
     }
 

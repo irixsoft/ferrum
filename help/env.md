@@ -1,6 +1,6 @@
 # Environment variables
 
-Every process of an app reads the same environment, written by Ferrum to `shared/.env` as the app's own user, readable by nobody else.
+Every process of an app reads the same environment, written by Ferrum to `/var/lib/ferrum/apps/<slug>/env`. Only root can read the file; systemd hands its variables to each process when it starts, so the app sees them in its environment, not on disk.
 
 ## What you set
 

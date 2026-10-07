@@ -23,6 +23,7 @@ jobs:
           path-to-signatures: ".github/cla-signatures.json"
           path-to-document: "https://github.com/irixsoft/ferrum/blob/main/CLA.md"
           branch: "cla-signatures"
+          allowlist: "msaeedsakib,dependabot[bot]"
           custom-notsigned-prcomment: "Thanks for the pull request. Before it can be reviewed, please read the [Contributor License Agreement](https://github.com/irixsoft/ferrum/blob/main/CLA.md) and sign it by commenting the sentence below."
           custom-pr-sign-comment: "I have read the Ferrum Contributor License Agreement and I agree to it."
           custom-allsigned-prcomment: "All contributors have signed the CLA."

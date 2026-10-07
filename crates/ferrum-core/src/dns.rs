@@ -144,7 +144,8 @@ pub fn zone_candidates(name: &str) -> Vec<String> {
         .collect()
 }
 
-pub async fn authoritative_ns(name: &str) -> Result<Vec<IpAddr>, DnsLookupError> {
+/// Each authoritative nameserver of `name` as its addresses, IPv4 and IPv6 alike.
+pub async fn authoritative_ns(name: &str) -> Result<Vec<Vec<IpAddr>>, DnsLookupError> {
     let resolver = public_resolver(name)?;
     for candidate in zone_candidates(name) {
         let servers: Vec<String> = match resolver.ns_lookup(format!("{candidate}.")).await {
@@ -162,18 +163,17 @@ pub async fn authoritative_ns(name: &str) -> Result<Vec<IpAddr>, DnsLookupError>
         if servers.is_empty() {
             continue;
         }
-        let mut ips = Vec::new();
+        let mut groups: Vec<Vec<IpAddr>> = Vec::new();
         for server in servers {
             let Ok(found) = resolver.lookup_ip(server.as_str()).await else {
                 continue;
             };
-            for ip in found.iter() {
-                if !ips.contains(&ip) {
-                    ips.push(ip);
-                }
+            let ips: Vec<IpAddr> = found.iter().collect();
+            if !ips.is_empty() && !groups.contains(&ips) {
+                groups.push(ips);
             }
         }
-        return Ok(ips);
+        return Ok(groups);
     }
     Ok(Vec::new())
 }
@@ -227,8 +227,8 @@ pub async fn txt_visible_on_authoritatives(
     let started = std::time::Instant::now();
     loop {
         let mut missing = 0;
-        for ip in &servers {
-            let seen = txt_at(&[*ip], name).await.unwrap_or_default();
+        for addresses in &servers {
+            let seen = txt_at(addresses, name).await.unwrap_or_default();
             if !seen.iter().any(|v| v == value) {
                 missing += 1;
             }
@@ -373,12 +373,12 @@ mod tests {
     #[tokio::test]
     #[ignore]
     async fn finds_the_authoritative_servers_of_a_known_zone() {
-        let ips = authoritative_ns("_acme-challenge.www.cloudflare.com")
+        let servers = authoritative_ns("_acme-challenge.www.cloudflare.com")
             .await
             .unwrap();
-        assert!(!ips.is_empty());
+        assert!(!servers.is_empty());
         assert!(
-            txt_at(&ips, "cloudflare.com")
+            txt_at(&servers[0], "cloudflare.com")
                 .await
                 .unwrap()
                 .iter()

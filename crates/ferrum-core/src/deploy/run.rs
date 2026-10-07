@@ -3,6 +3,7 @@ use super::steps::Job;
 use super::{Outcome, by_id};
 use crate::apps;
 use crate::github::Api;
+use crate::runtime::Mirrors;
 use crate::runtime::toolchain::Store;
 use crate::settings;
 use crate::state::State;
@@ -21,8 +22,10 @@ pub struct Ctx {
     pub platform: Arc<dyn Platform>,
     pub github: Api,
     pub http: reqwest::Client,
+    pub probe: reqwest::Client,
     pub log: Log,
     pub toolchains: Store,
+    pub mirrors: Mirrors,
     pub build_memory_mb: u64,
     pub build_timeout: Duration,
     pub migrate_timeout: Duration,
@@ -45,8 +48,10 @@ impl Ctx {
             platform,
             github,
             http,
+            probe: crate::http::probe_client(),
             log: Log::default(),
             toolchains,
+            mirrors: Mirrors::default(),
             build_memory_mb: settings::default_memory_mb(total_kb),
             build_timeout: Duration::from_secs(settings::DEFAULT_BUILD_SECS),
             migrate_timeout: Duration::from_secs(settings::DEFAULT_MIGRATE_SECS),
@@ -124,7 +129,7 @@ mod tests {
                     let mut buf = [0u8; 1024];
                     let _ = socket.read(&mut buf).await;
                     let reply = format!(
-                        "HTTP/1.1 {status} X\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                        "HTTP/1.1 {status} X\r\nLocation: http://127.0.0.1:1/\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
                     );
                     let _ = socket.write_all(reply.as_bytes()).await;
                 }
@@ -213,7 +218,7 @@ mod tests {
         });
         let env = calls
             .iter()
-            .rposition(|c| c == "write_file /var/lib/ferrum/apps/ledger/shared/.env 600")
+            .rposition(|c| c == "write_file /var/lib/ferrum/apps/ledger/env 600")
             .unwrap();
         let install = position(&calls, |c| {
             c.starts_with("run_scoped ferrum-build-ledger") && c.contains("bun install")
@@ -390,6 +395,61 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn the_file_s_runtime_and_version_are_used_once_installed() {
+        let (_d, state) = state().await;
+        let p = Arc::new(FakePlatform::new());
+        p.serve_clone(&[("ferrum.toml", "runtime = \"bun\"\nversion = \"1.2.3\"\n")]);
+        let health = Health::serve(200).await;
+        let app = provisioned(&state, &p, "ledger", health.port, |new| {
+            new.follow_repo_file = true;
+        })
+        .await;
+        let ctx = ctx(&state, &p);
+        let (outcome, d) = deploy(&ctx, &app, "abc1234").await;
+        assert_eq!(outcome, Outcome::Failed);
+        assert!(
+            d.failure_reason
+                .as_deref()
+                .unwrap_or_default()
+                .contains("asks for bun 1.2.3, which is not installed"),
+            "{:?}",
+            d.failure_reason
+        );
+
+        sqlx::query("INSERT INTO toolchains (kind, version, path, size_bytes) VALUES ('bun', '1.2.3', '/x', 1)")
+            .execute(&state.pool)
+            .await
+            .unwrap();
+        let (outcome, d) = deploy(&ctx, &app, "abc1235").await;
+        assert_eq!(outcome, Outcome::Live, "{:?}", d.failure_reason);
+        let app = apps::by_slug(&state, "ledger").await.unwrap().unwrap();
+        assert_eq!(app.runtime, RuntimeKind::Bun);
+        assert_eq!(app.toolchain, RuntimeKind::Bun);
+        assert_eq!(app.runtime_version, "1.2.3");
+    }
+
+    #[tokio::test]
+    async fn a_required_database_url_is_met_by_the_linked_database() {
+        let (_d, state) = state().await;
+        let p = Arc::new(FakePlatform::new());
+        p.serve_clone(&[("ferrum.toml", "[env]\nrequired = [\"DATABASE_URL\"]\n")]);
+        let health = Health::serve(200).await;
+        let app = provisioned(&state, &p, "ledger", health.port, |new| {
+            new.follow_repo_file = true;
+        })
+        .await;
+        postgres::create(&state, p.as_ref(), postgres::tests::new("ledger_prod"))
+            .await
+            .unwrap();
+        postgres::link(&state, &app.id, "ledger_prod")
+            .await
+            .unwrap();
+        let ctx = ctx(&state, &p);
+        let (outcome, d) = deploy(&ctx, &app, "abc1234").await;
+        assert_eq!(outcome, Outcome::Live, "{:?}", d.failure_reason);
+    }
+
+    #[tokio::test]
     async fn a_required_variable_without_a_value_refuses_the_deploy_before_the_build() {
         let (_d, state) = state().await;
         let p = Arc::new(FakePlatform::new());
@@ -441,9 +501,7 @@ mod tests {
             )),
             "{vars:?}"
         );
-        let env = p
-            .written("/var/lib/ferrum/apps/ledger/shared/.env")
-            .unwrap();
+        let env = p.written("/var/lib/ferrum/apps/ledger/env").unwrap();
         assert!(env.contains("UPLOADS_DIR=/var/lib/ferrum/apps/ledger/shared/uploads\n"));
         assert!(env.contains("SMTP_PORT=587\n"), "{env}");
         assert!(
@@ -542,8 +600,8 @@ mod tests {
         };
         assert_eq!(
             get("PATH").unwrap(),
-            "/var/lib/ferrum/runtimes/bun/1.2.3:/var/lib/ferrum/runtimes/node/22.11.0/bin:/usr/local/bin:/usr/bin:/bin",
-            "bun commands on a node app put bun first"
+            "/var/lib/ferrum/runtimes/node/22.11.0/bin:/var/lib/ferrum/runtimes/bun/1.2.3:/usr/local/bin:/usr/bin:/bin",
+            "bun commands on a node app find bun, and node is still node"
         );
         assert_eq!(
             get("npm_config_cache").as_deref(),
@@ -576,7 +634,7 @@ mod tests {
 
         let calls = p.calls();
         let link = position(&calls, |c| {
-            c.starts_with("symlink_swap /var/lib/ferrum/apps/ledger/shared/cache/next ")
+            c.starts_with("symlink_as ferrum-ledger /var/lib/ferrum/apps/ledger/shared/cache/next ")
                 && c.ends_with("/.next/cache")
         });
         let build = position(&calls, |c| {
@@ -585,11 +643,18 @@ mod tests {
         let chown = position(&calls, |c| {
             c.starts_with("chown_tree /var/lib/ferrum/apps/ledger/releases/")
         });
-        assert!(link < chown && chown < build, "{calls:#?}");
+        assert!(chown < link && link < build, "{calls:#?}");
         assert!(
             calls.contains(
-                &"make_dirs /var/lib/ferrum/apps/ledger/shared/cache/next 750".to_string()
+                &"make_dirs_as ferrum-ledger /var/lib/ferrum/apps/ledger/shared/cache/next 750"
+                    .to_string()
             )
+        );
+        assert!(
+            !calls
+                .iter()
+                .any(|c| c.starts_with("chown_tree /var/lib/ferrum/apps/ledger/shared")),
+            "root never walks a tree the app controls"
         );
     }
 
@@ -819,6 +884,50 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_tag_that_changes_the_runtime_and_fails_health_rolls_back_onto_the_old_runtime() {
+        let (_d, state) = state().await;
+        let p = Arc::new(FakePlatform::new());
+        p.serve_clone(&[("ferrum.toml", "build = \"bun run build\"\n")]);
+        let health = Health::serve(200).await;
+        let app = provisioned(&state, &p, "ledger", health.port, |new| {
+            new.follow_repo_file = true;
+        })
+        .await;
+        let ctx = ctx(&state, &p);
+        let (first, _) = deploy(&ctx, &app, "1111111").await;
+        assert_eq!(first, Outcome::Live);
+        let before = apps::by_slug(&state, "ledger").await.unwrap().unwrap();
+
+        sqlx::query("INSERT INTO toolchains (kind, version, path, size_bytes) VALUES ('bun', '1.2.3', '/x', 1)")
+            .execute(&state.pool)
+            .await
+            .unwrap();
+        p.serve_clone(&[("ferrum.toml", "runtime = \"bun\"\nversion = \"1.2.3\"\n")]);
+        let broken = Health::serve(500).await;
+        sqlx::query("UPDATE app_ports SET port = ? WHERE app_id = ?")
+            .bind(broken.port as i64)
+            .bind(&app.id)
+            .execute(&state.pool)
+            .await
+            .unwrap();
+        let app = apps::by_slug(&state, "ledger").await.unwrap().unwrap();
+        let (outcome, d) = deploy(&ctx, &app, "2222222").await;
+        assert_eq!(outcome, Outcome::RolledBack, "{:?}", d.failure_reason);
+
+        let after = apps::by_slug(&state, "ledger").await.unwrap().unwrap();
+        assert_eq!(after.runtime, before.runtime);
+        assert_eq!(after.toolchain, before.toolchain);
+        assert_eq!(after.runtime_version, before.runtime_version);
+        let unit = p
+            .written("/etc/systemd/system/ferrum-app-ledger-web.service")
+            .unwrap();
+        assert!(
+            unit.contains(&format!("runtimes/node/{}/bin", before.runtime_version)),
+            "{unit}"
+        );
+    }
+
+    #[tokio::test]
     async fn failed_health_rolls_back_to_the_previous_release_and_restarts_again() {
         let (_d, state) = state().await;
         let p = Arc::new(FakePlatform::new());
@@ -1023,6 +1132,71 @@ mod tests {
             "a unit that does not exist yet is not stopped: {calls:#?}"
         );
         assert!(calls.contains(&"service enable-now ferrum-app-ledger-jobs".to_string()));
+    }
+
+    #[tokio::test]
+    async fn a_redirect_to_somewhere_unreachable_still_counts_as_healthy() {
+        let (_d, state) = state().await;
+        let p = Arc::new(FakePlatform::new());
+        let health = Health::serve(302).await;
+        let app = provisioned(&state, &p, "ledger", health.port, |_| {}).await;
+        let ctx = ctx(&state, &p);
+        let (outcome, d) = deploy(&ctx, &app, "abc1234").await;
+        assert_eq!(outcome, Outcome::Live, "{:?}", d.failure_reason);
+    }
+
+    #[tokio::test]
+    async fn a_tag_that_adds_a_process_and_fails_to_build_leaves_the_app_as_it_was() {
+        let (_d, state) = state().await;
+        let p = Arc::new(FakePlatform::new());
+        let web = "[processes.web]\nstart = \"bun run serve\"\nhealth = \"/up\"\n";
+        p.serve_clone(&[("ferrum.toml", web)]);
+        let health = Health::serve(200).await;
+        let app = following_migrating_app(&state, &p, health.port).await;
+        let ctx = ctx(&state, &p);
+        let (first, _) = deploy(&ctx, &app, "1111111").await;
+        assert_eq!(first, Outcome::Live);
+
+        p.serve_clone(&[(
+            "ferrum.toml",
+            "[processes.web]\nstart = \"bun run serve\"\nhealth = \"/up\"\n[processes.jobs]\nstart = \"bun run jobs\"\n",
+        )]);
+        p.script_run("bun run build", &["boom"], Exit::Code(1));
+        let app = apps::by_slug(&state, "ledger").await.unwrap().unwrap();
+        let (failed, _) = deploy(&ctx, &app, "2222222").await;
+        assert_eq!(failed, Outcome::Failed);
+        let app = apps::by_slug(&state, "ledger").await.unwrap().unwrap();
+        let names: Vec<&str> = app.processes.iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(names, ["web"]);
+
+        p.serve_clone(&[("ferrum.toml", web)]);
+        p.script_run("bun run build", &[], Exit::Code(0));
+        let (outcome, d) = deploy(&ctx, &app, "3333333").await;
+        assert_eq!(outcome, Outcome::Live, "{:?}", d.failure_reason);
+    }
+
+    #[tokio::test]
+    async fn a_stored_process_without_a_unit_does_not_block_the_pause() {
+        let (_d, state) = state().await;
+        let p = Arc::new(FakePlatform::new());
+        p.serve_clone(&[(
+            "ferrum.toml",
+            "[processes.web]\nstart = \"bun run serve\"\nhealth = \"/up\"\n[processes.jobs]\nstart = \"bun run jobs\"\n",
+        )]);
+        let health = Health::serve(200).await;
+        let app = following_migrating_app(&state, &p, health.port).await;
+        let ctx = ctx(&state, &p);
+        let (first, _) = deploy(&ctx, &app, "1111111").await;
+        assert_eq!(first, Outcome::Live);
+        p.remove_file(Path::new(
+            "/etc/systemd/system/ferrum-app-ledger-jobs.service",
+        ))
+        .unwrap();
+        p.fail_next("service stop ferrum-app-ledger-jobs");
+
+        let app = apps::by_slug(&state, "ledger").await.unwrap().unwrap();
+        let (outcome, d) = deploy(&ctx, &app, "2222222").await;
+        assert_eq!(outcome, Outcome::Live, "{:?}", d.failure_reason);
     }
 
     #[tokio::test]

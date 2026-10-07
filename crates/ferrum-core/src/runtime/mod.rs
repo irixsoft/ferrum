@@ -148,6 +148,7 @@ pub struct Mirrors {
     pub node_dist: String,
     pub bun_releases: String,
     pub dotnet_script: String,
+    pub corepack: String,
 }
 
 impl Default for Mirrors {
@@ -156,6 +157,7 @@ impl Default for Mirrors {
             node_dist: node::DIST.into(),
             bun_releases: bun::RELEASES.into(),
             dotnet_script: dotnet::INSTALL_SCRIPT.into(),
+            corepack: node::COREPACK.into(),
         }
     }
 }

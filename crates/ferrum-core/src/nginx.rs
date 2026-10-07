@@ -151,6 +151,10 @@ mod tests {
         assert!(conf.contains("proxy_set_header Upgrade $http_upgrade;"));
         assert!(conf.contains("proxy_set_header Connection $connection_upgrade;"));
         assert!(conf.contains("proxy_read_timeout 3600s;"));
+        assert!(
+            conf.contains("proxy_buffering off;"),
+            "live logs reach the browser line by line"
+        );
         assert_eq!(conf.matches("proxy_set_header Host $host;").count(), 1);
         assert_eq!(conf.matches("proxy_http_version 1.1;").count(), 1);
         assert_eq!(conf.matches("proxy_pass http://127.0.0.1:8443;").count(), 2);

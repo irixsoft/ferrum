@@ -10,6 +10,9 @@ use serde::Deserialize;
 use std::path::Path;
 
 pub const DIST: &str = "https://nodejs.org/dist";
+/// Node 25 and later ship without corepack, which `pnpm` and `yarn` run through.
+pub const COREPACK: &str = "https://registry.npmjs.org/corepack/-/corepack-0.36.0.tgz";
+pub const COREPACK_DIR: &str = "lib/node_modules/corepack";
 
 const FRAMEWORK_CONFIGS: [&str; 7] = [
     "next.config.*",
@@ -261,12 +264,23 @@ impl Runtime for Node {
         "bin/node"
     }
 
+    fn links(&self) -> &'static [(&'static str, &'static str)] {
+        &[
+            ("bin/pnpm", "../lib/node_modules/corepack/dist/pnpm.js"),
+            ("bin/yarn", "../lib/node_modules/corepack/dist/yarn.js"),
+        ]
+    }
+
     fn valid_version(&self, version: &str) -> bool {
         semver_like(version, 3)
     }
 
     fn env_for(&self, phase: Phase, toolchain: &Path, _port: Option<u16>) -> Vec<(String, String)> {
-        let mut env = vec![path_with(&toolchain.join("bin"))];
+        let mut env = vec![
+            path_with(&toolchain.join("bin")),
+            ("COREPACK_ENABLE_DOWNLOAD_PROMPT".into(), "0".into()),
+            ("COREPACK_ENABLE_AUTO_PIN".into(), "0".into()),
+        ];
         if phase == Phase::Run {
             env.push(("NODE_ENV".into(), "production".into()));
         }

@@ -120,13 +120,16 @@ pub struct AppState {
 impl AppState {
     pub fn new(db: State, deps: Deps) -> Self {
         let http = ferrum_core::http::client();
-        let ctx = Ctx::new(
-            db.clone(),
-            deps.platform.clone(),
-            deps.github.clone(),
-            http.clone(),
-            deps.toolchains.clone(),
-        );
+        let ctx = Ctx {
+            mirrors: deps.mirrors.clone(),
+            ..Ctx::new(
+                db.clone(),
+                deps.platform.clone(),
+                deps.github.clone(),
+                http.clone(),
+                deps.toolchains.clone(),
+            )
+        };
         let updater = Updater::new(
             db.clone(),
             deps.platform.clone(),
@@ -275,6 +278,19 @@ pub async fn serve(data_dir: &Path) -> anyhow::Result<()> {
             Ok(false) => {}
             Err(e) => tracing::warn!(error = %e, "refreshing the panel vhost"),
         }
+    }
+    match ferrum_core::apps::provision::secure_layouts(&state, deps.platform.as_ref()).await {
+        Ok(failed) => {
+            for (slug, e) in failed {
+                tracing::warn!(app = %slug, error = %e, "securing the app's directory");
+            }
+        }
+        Err(e) => tracing::warn!(error = %e, "securing the app directories"),
+    }
+    match ferrum_core::apps::provision::move_env_files(&state, deps.platform.as_ref()).await {
+        Ok(0) => {}
+        Ok(n) => tracing::info!(apps = n, "app environment files moved out of shared/"),
+        Err(e) => tracing::warn!(error = %e, "moving the app environment files"),
     }
     match ferrum_core::redis::refresh(&state, deps.platform.as_ref()).await {
         Ok(0) => {}

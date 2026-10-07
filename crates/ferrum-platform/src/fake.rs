@@ -478,6 +478,32 @@ impl Platform for FakePlatform {
         self.record(format!("chown {} {user}", path.to_string_lossy()))
     }
 
+    fn secure_dir(&self, path: &Path, mode: u32, owner: &str) -> Result<(), PlatformError> {
+        let p = path.to_string_lossy().to_string();
+        self.record(format!("secure_dir {p} {mode:o} {owner}"))?;
+        let mut inner = self.inner.lock().unwrap();
+        if inner.links.contains_key(&p) {
+            return Err(std::io::Error::other(format!("{p} is a link, not a directory")).into());
+        }
+        inner.dirs.insert(p);
+        Ok(())
+    }
+
+    fn make_dirs_as(&self, user: &str, path: &Path, mode: u32) -> Result<(), PlatformError> {
+        let p = path.to_string_lossy().to_string();
+        self.record(format!("make_dirs_as {user} {p} {mode:o}"))?;
+        self.inner.lock().unwrap().dirs.insert(p);
+        Ok(())
+    }
+
+    fn symlink_as(&self, user: &str, target: &Path, link: &Path) -> Result<(), PlatformError> {
+        let target = target.to_string_lossy().to_string();
+        let link = link.to_string_lossy().to_string();
+        self.record(format!("symlink_as {user} {target} {link}"))?;
+        self.inner.lock().unwrap().links.insert(link, target);
+        Ok(())
+    }
+
     fn user_exists(&self, name: &str) -> bool {
         self.inner.lock().unwrap().users.contains(name)
     }

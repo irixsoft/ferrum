@@ -1,9 +1,6 @@
 import { Button } from "@/components/ui/Button";
+import { sharedDir } from "@/lib/slug";
 import { cn } from "@/lib/utils";
-
-export function sharedDir(slug: string): string {
-  return `/var/lib/ferrum/apps/${slug.trim() || "<slug>"}/shared`;
-}
 
 /** Shown wherever a value is typed, since nobody can guess where an app lives on the server. */
 export function SharedDirHint({ slug, className }: { slug: string; className?: string }) {

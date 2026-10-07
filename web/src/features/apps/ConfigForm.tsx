@@ -8,6 +8,7 @@ import { Segmented } from "@/components/ui/Segmented";
 import { runtimeLabel } from "@/components/RuntimeMark";
 import { useGithubTags } from "@/lib/api";
 import { isFolder, reconcileDomains, reconcileRoutes, renameInDomains, renameInRoutes, routable } from "@/lib/processes";
+import { SLUG_MAX, slugify } from "@/lib/slug";
 import { DomainsEditor, type DomainDraft } from "./DomainsEditor";
 import { SharedDirHint } from "./SharedDirHint";
 import type {
@@ -60,13 +61,6 @@ const KINDS = [
   { value: "command", label: "Command" },
   { value: "folder", label: "Folder" },
 ] as const;
-
-export const slugify = (name: string) =>
-  name
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "")
-    .slice(0, 40);
 
 const orNull = (s: string) => (s.trim() ? s.trim() : null);
 
@@ -301,6 +295,7 @@ export function ConfigForm({
             <input
               value={draft.slug}
               disabled={!creating}
+              maxLength={SLUG_MAX}
               onChange={(e) => set("slug", e.target.value)}
               className={MONO}
             />

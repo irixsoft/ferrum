@@ -14,6 +14,9 @@ pub const STARTUP_BUDGET_SECS: u32 = 120;
 const WEB_SDK: &str = "Microsoft.NET.Sdk.Web";
 const BLAZOR_WASM_SDK: &str = "Microsoft.NET.Sdk.BlazorWebAssembly";
 const EF_MARKER: &str = "Microsoft.EntityFrameworkCore";
+pub const TOOL_MANIFEST: &str = ".config/dotnet-tools.json";
+const EF_TOOL: &str = "dotnet-ef";
+const PUBLISH_DIR: &str = "out";
 
 pub struct Dotnet;
 
@@ -38,14 +41,30 @@ pub struct Project {
 impl Project {
     pub fn publish(&self) -> String {
         if self.path.contains('/') {
-            format!("dotnet publish {} -c Release -o out", self.path)
+            format!("dotnet publish {} -c Release -o {PUBLISH_DIR}", self.path)
         } else {
-            "dotnet publish -c Release -o out".to_string()
+            format!("dotnet publish -c Release -o {PUBLISH_DIR}")
         }
     }
 
     pub fn start(&self) -> String {
-        format!("dotnet out/{}.dll", self.assembly)
+        format!("dotnet {}.dll", self.assembly)
+    }
+
+    /// `dotnet ef` exists only through a tool manifest that names it.
+    pub fn migrate(&self, tree: &RepoTree) -> Option<String> {
+        let tools = tree.read(TOOL_MANIFEST)?;
+        if !self.uses_ef || !tools.contains(EF_TOOL) {
+            return None;
+        }
+        let project = if self.path.contains('/') {
+            format!(" --project {}", self.path)
+        } else {
+            String::new()
+        };
+        Some(format!(
+            "dotnet tool restore && dotnet ef database update{project}"
+        ))
     }
 }
 
@@ -125,11 +144,12 @@ impl Runtime for Dotnet {
             commands: Commands {
                 install: None,
                 build: Some(project.publish()),
-                migrate: project
-                    .uses_ef
-                    .then(|| "dotnet ef database update".to_string()),
+                migrate: project.migrate(tree),
             },
-            processes: vec![NewProcess::web(&project.start(), None)],
+            processes: vec![NewProcess {
+                dir: PUBLISH_DIR.into(),
+                ..NewProcess::web(&project.start(), None)
+            }],
             health: Health {
                 path: "/".into(),
                 startup_budget_secs: STARTUP_BUDGET_SECS,
@@ -203,29 +223,46 @@ mod tests {
             d.commands.build.as_deref(),
             Some("dotnet publish Api/Api.csproj -c Release -o out")
         );
-        assert_eq!(d.start(), Some("dotnet out/Api.dll"));
+        assert_eq!(d.start(), Some("dotnet Api.dll"));
+        assert_eq!(
+            d.processes[0].dir, "out",
+            "the publish folder is the content root"
+        );
         assert_eq!(d.health.startup_budget_secs, 120);
         assert!(d.commands.migrate.is_none());
         assert_eq!(d.confidence, 80);
     }
 
+    const EF_PROJECT: &str = r#"<Project Sdk="Microsoft.NET.Sdk.Web"><PropertyGroup><TargetFramework>net10.0</TargetFramework><AssemblyName>ShopWeb</AssemblyName></PropertyGroup><ItemGroup><PackageReference Include="Microsoft.EntityFrameworkCore.Design" /></ItemGroup></Project>"#;
+    const EF_TOOLS: &str = r#"{"version":1,"isRoot":true,"tools":{"dotnet-ef":{"version":"9.0.0","commands":["dotnet-ef"]}}}"#;
+
     #[test]
-    fn a_root_project_publishes_without_naming_itself_and_ef_adds_a_migration() {
-        let tree = RepoTree::from_files(&[(
-            "Shop.csproj",
-            r#"<Project Sdk="Microsoft.NET.Sdk.Web"><PropertyGroup><TargetFramework>net10.0</TargetFramework><AssemblyName>ShopWeb</AssemblyName></PropertyGroup><ItemGroup><PackageReference Include="Microsoft.EntityFrameworkCore.Design" /></ItemGroup></Project>"#,
-        )]);
+    fn a_root_project_publishes_without_naming_itself_and_ef_migrates_through_its_tool() {
+        let tree = RepoTree::from_files(&[("Shop.csproj", EF_PROJECT), (TOOL_MANIFEST, EF_TOOLS)]);
         let d = Dotnet.detect(&tree).unwrap();
         assert_eq!(d.version.as_deref(), Some("10.0"));
         assert_eq!(
             d.commands.build.as_deref(),
             Some("dotnet publish -c Release -o out")
         );
-        assert_eq!(d.start(), Some("dotnet out/ShopWeb.dll"));
+        assert_eq!(d.start(), Some("dotnet ShopWeb.dll"));
         assert_eq!(
             d.commands.migrate.as_deref(),
-            Some("dotnet ef database update")
+            Some("dotnet tool restore && dotnet ef database update")
         );
+
+        let nested =
+            RepoTree::from_files(&[("Shop/Shop.csproj", EF_PROJECT), (TOOL_MANIFEST, EF_TOOLS)]);
+        assert_eq!(
+            Dotnet.detect(&nested).unwrap().commands.migrate.as_deref(),
+            Some("dotnet tool restore && dotnet ef database update --project Shop/Shop.csproj")
+        );
+    }
+
+    #[test]
+    fn ef_without_its_tool_gets_no_migration_it_could_not_run() {
+        let tree = RepoTree::from_files(&[("Shop.csproj", EF_PROJECT)]);
+        assert!(Dotnet.detect(&tree).unwrap().commands.migrate.is_none());
     }
 
     #[test]
@@ -235,7 +272,7 @@ mod tests {
             ("Web/Web.csproj", r#"<Project Sdk="Microsoft.NET.Sdk.Web">"#),
         ]);
         let d = Dotnet.detect(&tree).unwrap();
-        assert_eq!(d.start(), Some("dotnet out/Web.dll"));
+        assert_eq!(d.start(), Some("dotnet Web.dll"));
     }
 
     #[test]

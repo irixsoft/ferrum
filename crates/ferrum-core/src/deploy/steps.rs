@@ -12,7 +12,7 @@ use crate::runtime::toolchain;
 use crate::runtime::{Phase, RuntimeKind};
 use crate::{postgres, runtime as rt};
 use anyhow::{Context, bail};
-use ferrum_platform::ubuntu::GIT;
+use ferrum_platform::ubuntu::{GIT, SYSTEMD_UNIT_DIR};
 use ferrum_platform::{Exit, RunSpec, ServiceAction, Stream};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -32,6 +32,7 @@ pub struct Job {
     stopped: Vec<String>,
     refused: bool,
     previous: Option<Release>,
+    before_manifest: Option<App>,
 }
 
 impl Job {
@@ -51,6 +52,7 @@ impl Job {
             stopped: Vec::new(),
             refused: false,
             previous: None,
+            before_manifest: None,
         }
     }
 
@@ -65,14 +67,24 @@ impl Job {
             .expect("cloned before reading the manifest");
         self.manifest_step(&dir).await?;
         self.packages_step().await?;
-        toolchain::link(
-            self.ctx.platform.as_ref(),
-            rt::by_kind(self.app.toolchain),
-            &self
-                .ctx
-                .toolchains
-                .dir(self.app.toolchain, &self.app.runtime_version),
-        )?;
+        let runtime = rt::by_kind(self.app.toolchain);
+        let toolchain_dir = self
+            .ctx
+            .toolchains
+            .dir(self.app.toolchain, &self.app.runtime_version);
+        if toolchain::uses_corepack(&self.app) {
+            toolchain::complete(
+                self.ctx.platform.as_ref(),
+                &self.ctx.http,
+                runtime,
+                &toolchain_dir,
+                &self.ctx.mirrors,
+                &mut |_| {},
+            )
+            .await?;
+        } else {
+            toolchain::link(self.ctx.platform.as_ref(), runtime, &toolchain_dir)?;
+        }
         self.command_step(DeployState::InstallingDeps, "install")
             .await?;
         self.command_step(DeployState::Building, "build").await?;
@@ -181,6 +193,9 @@ impl Job {
         if let Some(reason) = self.missing_variables(&manifest).await? {
             return self.refuse(reason).await;
         }
+        if let Some(reason) = self.missing_toolchain(&manifest).await? {
+            return self.refuse(reason).await;
+        }
         let platform = self.ctx.platform.as_ref();
         let applied =
             match apps::apply_manifest(&self.ctx.state, platform, &self.app, &manifest).await {
@@ -192,7 +207,7 @@ impl Job {
                 }
             };
         self.say(&describe_manifest(&manifest, &applied)).await?;
-        self.app = applied;
+        self.before_manifest = Some(std::mem::replace(&mut self.app, applied));
         write_env(&self.ctx.state, self.ctx.platform.as_ref(), &self.app).await?;
         Ok(())
     }
@@ -203,7 +218,8 @@ impl Job {
         let Some(required) = &manifest.env else {
             return Ok(None);
         };
-        let stored = env::keys(&self.ctx.state, &self.app.id).await?;
+        let mut stored = env::keys(&self.ctx.state, &self.app.id).await?;
+        stored.extend(env::managed_for(&self.ctx.state, &self.app).await?.keys());
         let missing: Vec<&str> = required
             .iter()
             .filter(|r| !r.optional && r.default.is_none() && !stored.contains(&r.key))
@@ -220,6 +236,35 @@ impl Job {
         Ok(Some(format!(
             "{} {is} required by {TOML_NAME} and {has} no value; set {it} on the Environment tab.",
             missing.join(", ")
+        )))
+    }
+
+    /// A runtime or version the file names that is not installed; a deploy never downloads one.
+    async fn missing_toolchain(&self, manifest: &Manifest) -> anyhow::Result<Option<String>> {
+        if manifest.runtime.is_none() && manifest.version.is_none() {
+            return Ok(None);
+        }
+        let kind = manifest.runtime.unwrap_or(self.app.toolchain);
+        let Some(version) = manifest
+            .version
+            .as_deref()
+            .or((kind == self.app.toolchain).then_some(self.app.runtime_version.as_str()))
+        else {
+            return Ok(Some(format!(
+                "{TOML_NAME} names the runtime {kind} without a version; add `version`."
+            )));
+        };
+        if kind == self.app.toolchain && version == self.app.runtime_version {
+            return Ok(None);
+        }
+        if toolchain::find(&self.ctx.state, kind, version)
+            .await?
+            .is_some()
+        {
+            return Ok(None);
+        }
+        Ok(Some(format!(
+            "{TOML_NAME} asks for {kind} {version}, which is not installed; install it on the Runtimes page."
         )))
     }
 
@@ -324,6 +369,16 @@ impl Job {
         {
             let _ = self.ctx.platform.remove_tree(dir);
         }
+        if let Some(before) = self.before_manifest.take()
+            && !self.swapped
+            && let Err(e) = self.restore_configuration(&before).await
+        {
+            let _ = self
+                .say(&format!(
+                    "The configuration from before this tag could not be restored: {e:#}"
+                ))
+                .await;
+        }
         super::finish(
             &self.ctx.state,
             &self.deploy.id,
@@ -344,6 +399,31 @@ impl Job {
             .await;
         }
         Ok(Outcome::Failed)
+    }
+
+    /// Labels, roles and filled-in defaults stay; what a running release reads is put back.
+    async fn restore_configuration(&mut self, before: &App) -> anyhow::Result<()> {
+        self.app = apps::update(
+            &self.ctx.state,
+            &before.slug,
+            apps::AppChanges {
+                runtime: Some(before.runtime),
+                toolchain: Some(before.toolchain),
+                runtime_version: Some(before.runtime_version.clone()),
+                commands: Some(before.commands.clone()),
+                processes: Some(
+                    before
+                        .processes
+                        .iter()
+                        .map(apps::processes::NewProcess::from)
+                        .collect(),
+                ),
+                routes: Some(before.routes.iter().map(apps::NewRoute::from).collect()),
+                ..apps::AppChanges::default()
+            },
+        )
+        .await?;
+        write_env(&self.ctx.state, self.ctx.platform.as_ref(), &self.app).await
     }
 
     async fn start_stopped(&mut self) {
@@ -422,10 +502,9 @@ impl Job {
             .await?;
             self.deploy.commit_sha = Some(head.clone());
         }
-        self.prepare_caches(&dir)?;
         let user = user_name(&self.app.slug);
         platform.chown_tree(&dir, &user)?;
-        platform.chown_tree(&self.shared().join("cache"), &user)?;
+        self.prepare_caches(&dir, &user)?;
         write_env(&self.ctx.state, platform.as_ref(), &self.app).await?;
         self.say(&format!("Checked out {}", short(&head))).await?;
         Ok(())
@@ -433,16 +512,16 @@ impl Job {
 
     /// Framework caches live under `shared/` and are reached through a link, because the release
     /// is read-only to the running unit.
-    fn prepare_caches(&self, dir: &Path) -> anyhow::Result<()> {
+    fn prepare_caches(&self, dir: &Path, user: &str) -> anyhow::Result<()> {
         let platform = &self.ctx.platform;
         let cache = self.shared().join("cache");
         for name in ["npm", "bun", "pnpm", "yarn", "nuget", "next"] {
-            platform.make_dirs(&cache.join(name), 0o750)?;
+            platform.make_dirs_as(user, &cache.join(name), 0o750)?;
         }
         if self.app.toolchain != RuntimeKind::Dotnet {
             let work = work_dir(dir, &self.app.root);
-            platform.make_dirs(&work.join(".next"), 0o755)?;
-            platform.symlink_swap(&cache.join("next"), &work.join(".next/cache"))?;
+            platform.make_dirs_as(user, &work.join(".next"), 0o755)?;
+            platform.symlink_as(user, &cache.join("next"), &work.join(".next/cache"))?;
         }
         Ok(())
     }
@@ -557,6 +636,10 @@ impl Job {
         self.maintenance_on = true;
         if self.app.current_release_id.is_some() {
             for unit in self.running.clone() {
+                let file = Path::new(SYSTEMD_UNIT_DIR).join(format!("{unit}.service"));
+                if !self.ctx.platform.file_exists(&file) {
+                    continue;
+                }
                 self.ctx
                     .platform
                     .service(ServiceAction::Stop, &unit)
@@ -642,7 +725,13 @@ impl Job {
             let url = format!("http://127.0.0.1:{port}{path}");
             let started = Instant::now();
             loop {
-                let answer = self.ctx.http.get(&url).timeout(HEALTH_TIMEOUT).send().await;
+                let answer = self
+                    .ctx
+                    .probe
+                    .get(&url)
+                    .timeout(HEALTH_TIMEOUT)
+                    .send()
+                    .await;
                 if let Ok(res) = answer
                     && (res.status().is_success() || res.status().is_redirection())
                 {
@@ -701,7 +790,14 @@ impl Job {
                     .platform
                     .symlink_swap(Path::new(&previous.dir), &releases::current_link(&self.app))?;
                 releases::set_current(&self.ctx.state, &self.app.id, Some(&previous.id)).await?;
-                self.reapply_previous(&previous).await;
+                if let Some(before) = self.before_manifest.take()
+                    && let Err(e) = self.restore_configuration(&before).await
+                {
+                    self.say(&format!(
+                        "The configuration from before this tag could not be restored: {e:#}"
+                    ))
+                    .await?;
+                }
                 let _ =
                     provision::write_units(&self.ctx.state, self.ctx.platform.as_ref(), &self.app)
                         .await;
@@ -756,27 +852,6 @@ impl Job {
         )
         .await;
         Ok(outcome)
-    }
-
-    /// The previous release's own file decides its processes again; a file that will not
-    /// apply leaves the current list, which still names units that exist.
-    async fn reapply_previous(&mut self, previous: &Release) {
-        if !self.app.follow_repo_file {
-            return;
-        }
-        let work = work_dir(Path::new(&previous.dir), &self.app.root);
-        if let Ok(Some(manifest)) = manifest::read_dir(self.ctx.platform.as_ref(), &work)
-            && let Ok(applied) = apps::apply_manifest(
-                &self.ctx.state,
-                self.ctx.platform.as_ref(),
-                &self.app,
-                &manifest,
-            )
-            .await
-        {
-            self.app = applied;
-            let _ = write_env(&self.ctx.state, self.ctx.platform.as_ref(), &self.app).await;
-        }
     }
 
     async fn maintenance_off_step(&mut self) -> anyhow::Result<()> {
@@ -914,7 +989,7 @@ impl Job {
     }
 }
 
-/// The same content as `shared/.env`, so a command sees what the unit will, plus the
+/// The same content as the env file, so a command sees what the unit will, plus the
 /// toolchain, a writable home and the caches.
 pub async fn command_env(
     ctx: &Ctx,
@@ -933,7 +1008,7 @@ pub async fn command_env(
     if let Some(extra) = toolchain::extra_for(&ctx.state, &ctx.toolchains, app).await?
         && let Some(path) = env.iter_mut().find(|(k, _)| k == "PATH")
     {
-        path.1 = format!("{}:{}", extra.display(), path.1);
+        path.1 = toolchain::path_with_extra(&path.1, &extra, app.toolchain);
     }
     let shared = app_dir(&app.slug).join("shared");
     let user = user_name(&app.slug);
@@ -947,6 +1022,7 @@ pub async fn command_env(
         ("npm_config_store_dir", "pnpm"),
         ("YARN_CACHE_FOLDER", "yarn"),
         ("NUGET_PACKAGES", "nuget"),
+        ("COREPACK_HOME", "corepack"),
     ] {
         env.push((
             key.into(),
@@ -955,7 +1031,7 @@ pub async fn command_env(
     }
     let vars = env::all(&ctx.state, &app.id).await?;
     let managed = env::managed_for(&ctx.state, app).await?;
-    env.extend(env::pairs(&vars, &managed, &app.ports()));
+    env.extend(env::pairs(&vars, &managed, &app.ports(), app.runtime));
     Ok(dedup_last(env))
 }
 

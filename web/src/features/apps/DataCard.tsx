@@ -168,8 +168,8 @@ export function DataCard({ app }: { app: AppDetail }) {
       </CardBody>
       <CardFoot>
         <span>
-          <Code>DATABASE_URL</Code> and <Code>REDIS_URL</Code> are rewritten into{" "}
-          <Code>shared/.env</Code> on every change. Unlinking never deletes a database.
+          <Code>DATABASE_URL</Code> and <Code>REDIS_URL</Code> are rewritten into the app's environment
+          on every change. Unlinking never deletes a database.
         </span>
       </CardFoot>
     </Card>
