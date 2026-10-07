@@ -102,6 +102,7 @@ pub async fn harness_with_deps(github_base: &str, downloads: &str) -> Harness {
             node_dist: downloads.to_string(),
             bun_releases: downloads.to_string(),
             dotnet_script: format!("{downloads}/dotnet-install.sh"),
+            corepack: format!("{downloads}/corepack.tgz"),
         },
         codename: "noble".into(),
         directory: Directory::Custom {
@@ -314,6 +315,9 @@ impl Harness {
         req.headers_mut()
             .entry(header::USER_AGENT)
             .or_insert(USER_AGENT.parse().unwrap());
+        req.headers_mut()
+            .entry(header::ORIGIN)
+            .or_insert(format!("https://{HOSTNAME}").parse().unwrap());
         let res = self.app.clone().oneshot(req).await.unwrap();
         let status = res.status();
         let headers = res.headers().clone();

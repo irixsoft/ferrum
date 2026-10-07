@@ -11,6 +11,8 @@ use ferrum_platform::ubuntu::{NGINX_UNIT, SYSTEMD_UNIT_DIR};
 use ferrum_platform::{Platform, ServiceAction};
 use std::path::{Path, PathBuf};
 
+const ROOT: &str = "root";
+
 pub fn app_dir(slug: &str) -> PathBuf {
     Path::new(APPS_DIR).join(slug)
 }
@@ -28,20 +30,9 @@ pub async fn provision(state: &State, platform: &dyn Platform, app: &App) -> any
             .with_context(|| format!("creating the system user {user}"))?;
     }
 
-    for (sub, mode) in [
-        ("", 0o755),
-        ("releases", 0o755),
-        ("shared", 0o750),
-        ("shared/cache", 0o750),
-        ("shared/storage", 0o750),
-    ] {
-        let path = if sub.is_empty() {
-            dir.clone()
-        } else {
-            dir.join(sub)
-        };
-        platform.make_dirs(&path, mode)?;
-        platform.chown(&path, &user)?;
+    secure_layout(platform, &app.slug)?;
+    for sub in ["shared/cache", "shared/storage"] {
+        platform.make_dirs_as(&user, &dir.join(sub), 0o750)?;
     }
     write_env(state, platform, app).await?;
     write_units(state, platform, app).await?;
@@ -54,6 +45,33 @@ pub async fn provision(state: &State, platform: &dyn Platform, app: &App) -> any
     nginx::replace_and_reload(platform, &vhost_path(&app.slug), &render_for(platform, app))
         .context("nginx refused the generated site configuration")?;
     Ok(())
+}
+
+/// The app's directory and its releases belong to root; only `shared/` belongs to the app.
+pub fn secure_layout(platform: &dyn Platform, slug: &str) -> anyhow::Result<()> {
+    let dir = app_dir(slug);
+    platform.secure_dir(&dir, 0o755, ROOT)?;
+    platform.secure_dir(&dir.join("releases"), 0o755, ROOT)?;
+    platform.secure_dir(&dir.join("shared"), 0o750, &user_name(slug))?;
+    Ok(())
+}
+
+/// Brings every app's directory to the layout `secure_layout` makes, at daemon start. Returns the
+/// apps it could not secure, each with the reason.
+pub async fn secure_layouts(
+    state: &State,
+    platform: &dyn Platform,
+) -> anyhow::Result<Vec<(String, anyhow::Error)>> {
+    let mut failed = Vec::new();
+    for app in apps::list(state).await? {
+        if !platform.file_exists(&app_dir(&app.slug)) {
+            continue;
+        }
+        if let Err(e) = secure_layout(platform, &app.slug) {
+            failed.push((app.slug, e));
+        }
+    }
+    Ok(failed)
 }
 
 /// One unit per command process; a unit for a process the app no longer has is stopped and
@@ -69,7 +87,7 @@ pub async fn write_units(state: &State, platform: &dyn Platform, app: &App) -> a
         platform.write_file(&path, &unit, 0o644)?;
         wanted.push(path);
     }
-    let stale = stale_units(platform, app, &wanted)?;
+    let stale = stale_units(platform, app, &wanted, legacy_is_ours(state, app).await?)?;
     for path in &stale {
         let name = path
             .file_stem()
@@ -85,10 +103,22 @@ pub async fn write_units(state: &State, platform: &dyn Platform, app: &App) -> a
     Ok(())
 }
 
+/// `ferrum-app-<slug>` is also the unit of process `p` of an app whose slug is `<slug>` minus `-p`.
+async fn legacy_is_ours(state: &State, app: &App) -> anyhow::Result<bool> {
+    let legacy = legacy_unit_name(&app.slug);
+    Ok(!apps::list(state).await?.iter().any(|other| {
+        other.id != app.id
+            && other
+                .command_processes()
+                .any(|p| p.unit_name(&other.slug) == legacy)
+    }))
+}
+
 fn stale_units(
     platform: &dyn Platform,
     app: &App,
     wanted: &[PathBuf],
+    legacy_is_ours: bool,
 ) -> anyhow::Result<Vec<PathBuf>> {
     let prefix = unit_prefix(&app.slug);
     let mut stale: Vec<PathBuf> = platform
@@ -104,7 +134,7 @@ fn stale_units(
         .filter(|path| !wanted.contains(path))
         .collect();
     let legacy = legacy_unit_path(&app.slug);
-    if platform.file_exists(&legacy) {
+    if legacy_is_ours && platform.file_exists(&legacy) {
         stale.push(legacy);
     }
     Ok(stale)
@@ -116,7 +146,7 @@ pub async fn migrate_units(state: &State, platform: &dyn Platform) -> anyhow::Re
     let mut migrated = 0;
     for app in apps::list(state).await? {
         let legacy = legacy_unit_path(&app.slug);
-        if !platform.file_exists(&legacy) {
+        if !platform.file_exists(&legacy) || !legacy_is_ours(state, &app).await? {
             continue;
         }
         let was_active = platform.service_is_active(&legacy_unit_name(&app.slug));
@@ -164,7 +194,7 @@ pub async fn write_env(state: &State, platform: &dyn Platform, app: &App) -> any
     let env_path = app_dir(&app.slug).join("shared/.env");
     platform.write_file(
         &env_path,
-        &env::render(&vars, &managed, &app.ports()),
+        &env::render(&vars, &managed, &app.ports(), app.runtime),
         0o600,
     )?;
     platform.chown(&env_path, &user_name(&app.slug))?;
@@ -177,7 +207,7 @@ pub async fn reprovision(state: &State, platform: &dyn Platform, app: &App) -> a
 
 pub async fn deprovision(state: &State, platform: &dyn Platform, app: &App) -> anyhow::Result<()> {
     redis::release(state, platform, app).await?;
-    for unit in stale_units(platform, app, &[])? {
+    for unit in stale_units(platform, app, &[], legacy_is_ours(state, app).await?)? {
         let name = unit
             .file_stem()
             .map(|s| s.to_string_lossy().into_owned())
@@ -254,23 +284,19 @@ mod tests {
                 && test < nginx,
             "{calls:#?}"
         );
-        for path in [
-            "",
-            "/releases",
-            "/shared",
-            "/shared/cache",
-            "/shared/storage",
-            "/shared/.env",
+        for expected in [
+            "secure_dir /var/lib/ferrum/apps/ledger 755 root",
+            "secure_dir /var/lib/ferrum/apps/ledger/releases 755 root",
+            "secure_dir /var/lib/ferrum/apps/ledger/shared 750 ferrum-ledger",
+            "make_dirs_as ferrum-ledger /var/lib/ferrum/apps/ledger/shared/cache 750",
+            "make_dirs_as ferrum-ledger /var/lib/ferrum/apps/ledger/shared/storage 750",
+            "chown /var/lib/ferrum/apps/ledger/shared/.env ferrum-ledger",
         ] {
-            let chown = format!("chown /var/lib/ferrum/apps/ledger{path} ferrum-ledger");
-            assert!(calls.contains(&chown), "{calls:#?}");
+            assert!(calls.contains(&expected.to_string()), "{calls:#?}");
         }
         assert!(
             !calls.iter().any(|c| c.starts_with("chown_tree")),
             "a recursive chown walks a cache a build may be deleting under it"
-        );
-        assert!(
-            calls.contains(&"make_dirs /var/lib/ferrum/apps/ledger/shared/storage 750".to_string())
         );
         assert!(
             !calls
@@ -379,6 +405,68 @@ mod tests {
         assert!(
             !calls.iter().any(|c| c.contains("ferrum-app-ledger-2-web")),
             "{calls:#?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_app_named_after_another_app_s_process_leaves_that_unit_alone() {
+        let (_d, state) = state().await;
+        let platform = FakePlatform::new();
+        let ledger = create(&state, new_app("ledger", &[("/", "main", false)]))
+            .await
+            .unwrap();
+        provision(&state, &platform, &ledger).await.unwrap();
+        let unit = "/etc/systemd/system/ferrum-app-ledger-web.service";
+        assert!(platform.written(unit).is_some());
+
+        let twin = create(&state, new_app("ledger-web", &[("/", "main", false)]))
+            .await
+            .unwrap();
+        provision(&state, &platform, &twin).await.unwrap();
+        assert_eq!(migrate_units(&state, &platform).await.unwrap(), 0);
+        deprovision(&state, &platform, &twin).await.unwrap();
+
+        assert!(!platform.removed(unit), "{:#?}", platform.calls());
+        assert!(
+            !platform
+                .calls()
+                .contains(&"service stop ferrum-app-ledger-web".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn an_app_whose_shared_directory_is_a_link_is_reported_and_the_others_secured() {
+        let (_d, state) = state().await;
+        let platform = FakePlatform::new();
+        for slug in ["ledger", "notes"] {
+            let app = create(&state, new_app(slug, &[("/", "main", false)]))
+                .await
+                .unwrap();
+            provision(&state, &platform, &app).await.unwrap();
+        }
+        platform
+            .symlink_swap(
+                Path::new("/etc"),
+                Path::new("/var/lib/ferrum/apps/notes/shared"),
+            )
+            .unwrap();
+
+        let failed = secure_layouts(&state, &platform).await.unwrap();
+
+        assert_eq!(failed.len(), 1);
+        assert_eq!(failed[0].0, "notes");
+        assert!(
+            failed[0].1.to_string().contains("is a link"),
+            "{:#}",
+            failed[0].1
+        );
+        assert!(
+            platform
+                .calls()
+                .iter()
+                .filter(|c| c.as_str() == "secure_dir /var/lib/ferrum/apps/ledger 755 root")
+                .count()
+                >= 2
         );
     }
 

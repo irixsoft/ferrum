@@ -19,7 +19,10 @@ use processes::{NewProcess, Process, WEB};
 use serde::{Deserialize, Serialize};
 use sqlx::Sqlite;
 
-pub const SLUG_MAX: usize = 40;
+/// `ferrum-<slug>` is the app's Linux user, and a user name is at most 32 characters.
+pub const SLUG_MAX: usize = 25;
+/// Their site files would land on `ferrum-panel.conf` and `ferrum-acme.conf`.
+const RESERVED_SLUGS: [&str; 2] = ["panel", "acme"];
 const NAME_MAX: usize = 80;
 
 #[derive(Debug, thiserror::Error)]
@@ -245,8 +248,14 @@ fn invalid(message: impl Into<String>) -> AppError {
 pub fn validate(new: &NewApp) -> Result<Vec<NewDomain>, AppError> {
     if !valid_slug(&new.slug) {
         return Err(invalid(
-            "A slug is 1 to 40 characters of lowercase letters, digits and hyphens, and cannot start or end with a hyphen.",
+            "A slug is 1 to 25 characters of lowercase letters, digits and hyphens, and cannot start or end with a hyphen.",
         ));
+    }
+    if RESERVED_SLUGS.contains(&new.slug.as_str()) {
+        return Err(invalid(format!(
+            "{} is a name Ferrum uses for its own files; pick another slug.",
+            new.slug
+        )));
     }
     if new.name.trim().is_empty() || new.name.len() > NAME_MAX {
         return Err(invalid("An application needs a name."));
@@ -561,6 +570,9 @@ pub async fn apply_manifest(
         state,
         &app.slug,
         AppChanges {
+            runtime: manifest.runtime,
+            toolchain: manifest.runtime,
+            runtime_version: manifest.version.clone(),
             commands: Some(commands),
             processes,
             routes,
@@ -1024,7 +1036,18 @@ pub(crate) mod tests {
     #[tokio::test]
     async fn a_slug_must_be_a_valid_hostname_label_and_unit_name() {
         let (_d, state) = state().await;
-        for bad in ["", "-a", "a-", "A", "a b", "a/b", "a..b", &"x".repeat(41)] {
+        for bad in [
+            "",
+            "-a",
+            "a-",
+            "A",
+            "a b",
+            "a/b",
+            "a..b",
+            &"x".repeat(26),
+            "panel",
+            "acme",
+        ] {
             assert!(
                 create(&state, new_app(bad, &[("/", "main", false)]))
                     .await
@@ -1032,11 +1055,14 @@ pub(crate) mod tests {
                 "{bad:?}"
             );
         }
-        assert!(
-            create(&state, new_app("my-app-2", &[("/", "main", false)]))
-                .await
-                .is_ok()
-        );
+        for good in ["my-app-2", &"x".repeat(25)] {
+            assert!(
+                create(&state, new_app(good, &[("/", "main", false)]))
+                    .await
+                    .is_ok(),
+                "{good:?}"
+            );
+        }
     }
 
     #[tokio::test]

@@ -83,6 +83,8 @@ pub struct EnvKeySpec {
 /// them; a command, `packages` or `env` left `None` means the file does not state it.
 #[derive(Debug, Clone, Serialize)]
 pub struct Manifest {
+    pub runtime: Option<RuntimeKind>,
+    pub version: Option<String>,
     pub processes: Vec<NewProcess>,
     pub routes: Vec<NewRoute>,
     pub commands: Commands,
@@ -136,6 +138,8 @@ pub fn from_toml(t: &FerrumToml) -> Result<Manifest, String> {
         None => None,
     };
     Ok(Manifest {
+        runtime: t.runtime,
+        version: t.version.clone(),
         routes: routes_for(&processes, routes),
         processes,
         commands: Commands {

@@ -18,6 +18,16 @@ pub fn client() -> reqwest::Client {
         .expect("a reqwest client with no custom TLS settings always builds")
 }
 
+/// For health checks: a redirect is an answer, not somewhere to go.
+pub fn probe_client() -> reqwest::Client {
+    ensure_tls();
+    reqwest::Client::builder()
+        .user_agent(USER_AGENT)
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .expect("a reqwest client with no custom TLS settings always builds")
+}
+
 pub fn client_with_timeout(timeout: Duration) -> reqwest::Client {
     ensure_tls();
     reqwest::Client::builder()

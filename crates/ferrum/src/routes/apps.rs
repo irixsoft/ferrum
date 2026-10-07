@@ -201,10 +201,15 @@ async fn show(
 
 /// Everything the panel's app page reads: env *keys*, never values.
 pub(crate) async fn detail(app: &AppState, found: &App) -> anyhow::Result<serde_json::Value> {
-    let entries = env::entries(&app.db, &found.id).await?;
     let databases = postgres::names_for(&app.db, &found.id).await?;
     let instance = redis::for_app(&app.db, &found.id).await?;
     let managed = env::managed_for(&app.db, found).await?;
+    let managed_keys = managed.keys();
+    let entries: Vec<_> = env::entries(&app.db, &found.id)
+        .await?
+        .into_iter()
+        .filter(|e| e.set || !managed_keys.contains(&e.key))
+        .collect();
     let current = match &found.current_release_id {
         Some(id) => releases::by_id(&app.db, id).await?,
         None => None,
@@ -491,6 +496,18 @@ async fn update(
 /// package dropped from the list is uninstalled unless another app lists it or the host had it.
 pub(crate) async fn apply(app: &AppState, slug: &str, changes: AppChanges) -> ApiResult<App> {
     let current = find(app, slug).await?;
+    let kind = changes.toolchain.unwrap_or(current.toolchain);
+    let version = changes
+        .runtime_version
+        .as_deref()
+        .unwrap_or(&current.runtime_version);
+    if (kind != current.toolchain || version != current.runtime_version)
+        && toolchain::find(&app.db, kind, version).await?.is_none()
+    {
+        return Err(ApiError::conflict(format!(
+            "{kind} {version} is not installed yet."
+        )));
+    }
     let mut preexisting = Vec::new();
     let mut dropped = None;
     if let Some(packages) = &changes.packages {

@@ -2,11 +2,12 @@ use super::processes::Process;
 pub use super::processes::{legacy_unit_name, legacy_unit_path, unit_name, unit_path, unit_prefix};
 use super::provision::{app_dir, user_name};
 use super::{App, AppError};
-use crate::runtime::{self, Phase};
+use crate::deploy::steps::work_dir;
+use crate::runtime::{self, Phase, RuntimeKind, toolchain};
 use ferrum_platform::ubuntu::SH;
 use std::path::Path;
 
-/// `extra` is the other tool's toolchain when the commands name it, first on PATH as at build.
+/// `extra` is the other tool's toolchain when the commands name it, on PATH as at build.
 /// The process gets its own port as `PORT`; the siblings' ports come from the env file.
 pub fn render_unit(
     app: &App,
@@ -23,10 +24,11 @@ pub fn render_unit(
     let dir = app_dir(&app.slug);
     let user = user_name(&app.slug);
     let unit_name = process.unit_name(&app.slug);
+    let root = work_dir(&dir.join("current"), &app.root);
     let workdir = if process.dir.is_empty() {
-        dir.join("current")
+        root
     } else {
-        dir.join("current").join(&process.dir)
+        root.join(&process.dir)
     };
     let mut unit = String::new();
     unit.push_str("[Unit]\n");
@@ -45,11 +47,18 @@ pub fn render_unit(
     ));
     for (key, value) in runtime::by_kind(app.runtime).env_for(Phase::Run, toolchain, process.port) {
         match extra {
-            Some(extra) if key == "PATH" => {
-                unit.push_str(&format!("Environment={key}={}:{value}\n", extra.display()))
-            }
+            Some(extra) if key == "PATH" => unit.push_str(&format!(
+                "Environment={key}={}\n",
+                toolchain::path_with_extra(&value, extra, app.toolchain)
+            )),
             _ => unit.push_str(&format!("Environment={key}={value}\n")),
         }
+    }
+    if app.toolchain == RuntimeKind::Node {
+        unit.push_str(&format!(
+            "Environment=COREPACK_HOME={}\n",
+            dir.join("shared/cache/corepack").display()
+        ));
     }
     if let Some(port) = process.port {
         unit.push_str(&format!("Environment=PORT={port}\n"));
@@ -92,6 +101,24 @@ mod tests {
     use crate::apps::processes::ProcessKind;
     use crate::apps::tests::{app, folder, process, worker};
     use crate::runtime::RuntimeKind;
+
+    #[test]
+    fn a_process_starts_under_the_app_s_root_directory() {
+        let mut a = app("ledger");
+        a.root = "apps/web".into();
+        let toolchain = Path::new("/var/lib/ferrum/runtimes/node/22.11.0");
+        let u = render_unit(&a, &a.processes[0], toolchain, None).unwrap();
+        assert!(
+            u.contains("WorkingDirectory=/var/lib/ferrum/apps/ledger/current/apps/web\n"),
+            "{u}"
+        );
+        a.processes[0].dir = "server".into();
+        let u = render_unit(&a, &a.processes[0], toolchain, None).unwrap();
+        assert!(
+            u.contains("WorkingDirectory=/var/lib/ferrum/apps/ledger/current/apps/web/server\n"),
+            "{u}"
+        );
+    }
 
     #[test]
     fn the_unit_runs_as_the_app_user_from_current_with_the_env_file_its_port_and_the_toolchain_on_path()
@@ -147,7 +174,7 @@ mod tests {
     }
 
     #[test]
-    fn the_other_tool_s_toolchain_comes_first_on_path_when_the_commands_name_it() {
+    fn the_other_tool_s_toolchain_is_on_path_with_node_always_before_bun() {
         let a = app("ledger");
         let u = render_unit(
             &a,
@@ -157,7 +184,21 @@ mod tests {
         )
         .unwrap();
         assert!(u.contains(
-            "Environment=PATH=/var/lib/ferrum/runtimes/bun/1.2.3:/var/lib/ferrum/runtimes/node/22.11.0/bin:/usr/local/bin:/usr/bin:/bin\n"
+            "Environment=PATH=/var/lib/ferrum/runtimes/node/22.11.0/bin:/var/lib/ferrum/runtimes/bun/1.2.3:/usr/local/bin:/usr/bin:/bin\n"
+        ), "{u}");
+
+        let mut b = app("ledger");
+        b.runtime = RuntimeKind::Bun;
+        b.toolchain = RuntimeKind::Bun;
+        let u = render_unit(
+            &b,
+            &b.processes[0],
+            Path::new("/var/lib/ferrum/runtimes/bun/1.2.3"),
+            Some(Path::new("/var/lib/ferrum/runtimes/node/22.11.0/bin")),
+        )
+        .unwrap();
+        assert!(u.contains(
+            "Environment=PATH=/var/lib/ferrum/runtimes/node/22.11.0/bin:/var/lib/ferrum/runtimes/bun/1.2.3:/usr/local/bin:/usr/bin:/bin\n"
         ), "{u}");
     }
 

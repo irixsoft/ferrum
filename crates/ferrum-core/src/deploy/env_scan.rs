@@ -67,8 +67,11 @@ pub fn keys_in_failure(lines: &[String]) -> Vec<String> {
             }
         }
         if lower.contains(MISSING_WORD) {
+            let about_env = lower.contains("environment") || lower.contains(" env");
             for word in words(trimmed) {
-                add(word);
+                if about_env || (word.contains('_') && !word.starts_with("ERR_")) {
+                    add(word);
+                }
             }
         }
     }
@@ -180,7 +183,7 @@ mod tests {
         );
 
         let quiet = lines(
-            "Compiled successfully\nerror TS2307: Cannot find module './x'\nMissing semicolon at line 4",
+            "Compiled successfully\nerror TS2307: Cannot find module './x'\nMissing semicolon at line 4\nsrc/a.ts(3,7): error TS2741: Property 'id' is missing in type 'A' but required in type 'B'.\n ERR_PNPM_NO_SCRIPT  Missing script: build\nwarning CS1591: Missing XML comment for publicly visible type\nENOENT: missing file HTTP API",
         );
         assert!(
             keys_in_failure(&quiet).is_empty(),

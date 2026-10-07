@@ -1,6 +1,7 @@
 mod support;
 
-use axum::http::StatusCode;
+use axum::body::Body;
+use axum::http::{Request, StatusCode, header};
 use ferrum_core::tokens;
 use support::*;
 
@@ -153,6 +154,49 @@ async fn a_read_only_token_reads_everywhere_and_writes_nowhere() {
         h.delete_with_bearer("/api/tokens/any", &token).await.status,
         StatusCode::FORBIDDEN
     );
+}
+
+fn read_all(origin: &str, auth: (axum::http::HeaderName, String)) -> Request<Body> {
+    Request::builder()
+        .method("POST")
+        .uri("/api/events/read")
+        .header(header::CONTENT_TYPE, "application/json")
+        .header(header::ORIGIN, origin)
+        .header(auth.0, auth.1)
+        .body(Body::from(r#"{"all":true}"#))
+        .unwrap()
+}
+
+#[tokio::test]
+async fn a_change_on_the_session_cookie_must_come_from_the_panel() {
+    let (h, cookie) = signed_in().await;
+    let session = (header::COOKIE, format!("ferrum_session={cookie}"));
+    for origin in [
+        "https://app.example.com",
+        "null",
+        "http://panel.example.com",
+    ] {
+        let res = h.send(read_all(origin, session.clone())).await;
+        assert_eq!(res.status, StatusCode::FORBIDDEN, "{origin}");
+    }
+    let res = h
+        .send(read_all("https://panel.example.com", session.clone()))
+        .await;
+    assert_eq!(res.status, StatusCode::NO_CONTENT);
+    assert_eq!(
+        h.get_with_cookie("/api/me", &cookie).await.status,
+        StatusCode::OK,
+        "a read needs no origin"
+    );
+}
+
+#[tokio::test]
+async fn a_bearer_token_is_not_held_to_the_panel_s_origin() {
+    let h = harness().await;
+    let token = h.machine_token(false).await;
+    let bearer = (header::AUTHORIZATION, format!("Bearer {token}"));
+    let res = h.send(read_all("https://app.example.com", bearer)).await;
+    assert_ne!(res.status, StatusCode::FORBIDDEN);
 }
 
 #[tokio::test]

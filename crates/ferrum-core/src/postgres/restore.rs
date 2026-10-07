@@ -197,6 +197,7 @@ pub fn prepare(
             })
         }
         Format::Custom => {
+            platform.chown_tree(&staged.dir, PG_USER)?;
             let listing = platform
                 .postgres_restore_list(&staged.path)
                 .map_err(host_error)?;

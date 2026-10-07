@@ -7,7 +7,7 @@ use std::collections::HashMap;
 
 pub const TOO_LARGE: &str = "The repository tree is too large to inspect. Set the root directory to the application's folder, or fill in the settings by hand.";
 
-const WANTED: [&str; 7] = [
+const WANTED: [&str; 8] = [
     "package.json",
     ".nvmrc",
     ".node-version",
@@ -15,6 +15,7 @@ const WANTED: [&str; 7] = [
     "global.json",
     "ferrum.toml",
     "README.md",
+    runtime::dotnet::TOOL_MANIFEST,
 ];
 const WANTED_GLOBS: [&str; 1] = ["*.csproj"];
 const MAX_PROJECT_FILES: usize = 10;

@@ -263,6 +263,34 @@ async fn creating_an_app_needs_its_toolchain_installed_first() {
 }
 
 #[tokio::test]
+async fn changing_the_runtime_version_needs_it_installed_first() {
+    let (h, cookie, _github) = signed_in_and_connected().await;
+    h.pretend_toolchain(RuntimeKind::Node, "22.11.0").await;
+    h.post_with_cookie("/api/apps", &new_app_json("ledger"), &cookie)
+        .await;
+    let res = h
+        .patch_with_cookie(
+            "/api/apps/ledger",
+            r#"{"runtime_version":"24.1.0"}"#,
+            &cookie,
+        )
+        .await;
+    assert_eq!(res.status, StatusCode::CONFLICT, "{}", res.json);
+    assert!(res.json["error"].as_str().unwrap().contains("24.1.0"));
+
+    h.pretend_toolchain(RuntimeKind::Node, "24.1.0").await;
+    let res = h
+        .patch_with_cookie(
+            "/api/apps/ledger",
+            r#"{"runtime_version":"24.1.0"}"#,
+            &cookie,
+        )
+        .await;
+    assert_eq!(res.status, StatusCode::OK, "{}", res.json);
+    assert_eq!(res.json["runtime_version"], "24.1.0");
+}
+
+#[tokio::test]
 async fn env_values_are_write_only() {
     let (h, cookie, _github) = signed_in_and_connected().await;
     h.pretend_toolchain(RuntimeKind::Node, "22.11.0").await;

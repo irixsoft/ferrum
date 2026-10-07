@@ -3,8 +3,8 @@ use crate::{
     Ban, CgroupStats, DiskUsage, FirewallRule, JournalLine, KeyFingerprint, MemInfo, Platform,
     PlatformError, ProcStat, RunSpec, ServiceAction, Sshd, exec,
 };
-use std::io::{Read, Seek, SeekFrom};
-use std::os::unix::fs::PermissionsExt;
+use std::io::{Read, Seek, SeekFrom, Write};
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
 pub const NGINX_CONF_DIR: &str = "/etc/nginx/conf.d";
@@ -188,6 +188,7 @@ pub fn journal_argv(unit: &str, lines: &str, follow: bool) -> Vec<String> {
         lines.into(),
         "-q".into(),
         "--no-pager".into(),
+        "--all".into(),
         format!("--output-fields={JOURNAL_FIELDS}"),
     ];
     if follow {
@@ -445,6 +446,12 @@ fn absent_tool(result: Result<String, PlatformError>) -> Result<Option<String>, 
     }
 }
 
+fn authorized_keys_script(root_keys: &str, homes: &str) -> String {
+    format!(
+        "for f in '{root_keys}' '{homes}'/*/{AUTHORIZED_KEYS}; do [ -f \"$f\" ] && ssh-keygen -lf \"$f\"; done; exit 0"
+    )
+}
+
 fn ignore_missing(result: std::io::Result<()>) -> Result<(), PlatformError> {
     match result {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
@@ -459,8 +466,15 @@ fn atomic_write(path: &Path, contents: &str, mode: u32) -> Result<(), PlatformEr
         ".{}.ferrum-tmp",
         path.file_name().and_then(|n| n.to_str()).unwrap_or("file")
     ));
-    std::fs::write(&tmp, contents)?;
-    std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(mode))?;
+    ignore_missing(std::fs::remove_file(&tmp))?;
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(mode)
+        .open(&tmp)?;
+    file.set_permissions(std::fs::Permissions::from_mode(mode))?;
+    file.write_all(contents.as_bytes())?;
+    drop(file);
     std::fs::rename(&tmp, path)?;
     Ok(())
 }
@@ -587,7 +601,51 @@ impl Platform for Ubuntu {
 
     fn chown(&self, path: &Path, user: &str) -> Result<(), PlatformError> {
         let owner = format!("{user}:{user}");
-        exec::run(&["chown", &owner, &path.to_string_lossy()]).map(|_| ())
+        exec::run(&["chown", "-h", &owner, &path.to_string_lossy()]).map(|_| ())
+    }
+
+    fn secure_dir(&self, path: &Path, mode: u32, owner: &str) -> Result<(), PlatformError> {
+        std::fs::create_dir_all(path)?;
+        if std::fs::symlink_metadata(path)?.file_type().is_symlink() {
+            return Err(std::io::Error::other(format!(
+                "{} is a link, not a directory",
+                path.display()
+            ))
+            .into());
+        }
+        self.chown(path, owner)?;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode))?;
+        Ok(())
+    }
+
+    fn make_dirs_as(&self, user: &str, path: &Path, mode: u32) -> Result<(), PlatformError> {
+        let mode = format!("{mode:o}");
+        exec::run(&[
+            "runuser",
+            "-u",
+            user,
+            "--",
+            "mkdir",
+            "-p",
+            "-m",
+            &mode,
+            &path.to_string_lossy(),
+        ])
+        .map(|_| ())
+    }
+
+    fn symlink_as(&self, user: &str, target: &Path, link: &Path) -> Result<(), PlatformError> {
+        exec::run(&[
+            "runuser",
+            "-u",
+            user,
+            "--",
+            "ln",
+            "-sfn",
+            &target.to_string_lossy(),
+            &link.to_string_lossy(),
+        ])
+        .map(|_| ())
     }
 
     fn user_exists(&self, name: &str) -> bool {
@@ -1102,18 +1160,20 @@ impl Platform for Ubuntu {
         exec::run(&["sshd", "-t"]).map(|_| ())
     }
 
+    /// Read through a transient unit: the daemon's own `ProtectHome` hides these files from it.
     fn authorized_keys(&self) -> Result<Vec<KeyFingerprint>, PlatformError> {
-        let mut files = vec![PathBuf::from(ROOT_AUTHORIZED_KEYS)];
-        for home in self.list_dir(Path::new(HOME_DIR))? {
-            files.push(Path::new(HOME_DIR).join(home).join(AUTHORIZED_KEYS));
-        }
-        let mut keys = Vec::new();
-        for file in files.iter().filter(|f| f.is_file()) {
-            if let Ok(out) = exec::run(&["ssh-keygen", "-lf", &file.to_string_lossy()]) {
-                keys.extend(parse_key_fingerprints(&out));
-            }
-        }
-        Ok(keys)
+        let script = authorized_keys_script(ROOT_AUTHORIZED_KEYS, HOME_DIR);
+        let out = exec::run(&[
+            "systemd-run",
+            "--pipe",
+            "--wait",
+            "--quiet",
+            "--collect",
+            SH,
+            "-c",
+            &script,
+        ])?;
+        Ok(parse_key_fingerprints(&out))
     }
 
     fn self_check(&self, binary: &Path) -> Result<String, PlatformError> {
@@ -1197,6 +1257,40 @@ mod tests {
         std::fs::write(&path, script).unwrap();
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
         path
+    }
+
+    #[test]
+    fn a_write_never_follows_a_link_planted_at_its_temporary_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let victim = dir.path().join("victim");
+        std::fs::write(&victim, "untouched").unwrap();
+        std::os::unix::fs::symlink(&victim, dir.path().join("..env.ferrum-tmp")).unwrap();
+        let env = dir.path().join(".env");
+        std::os::unix::fs::symlink(&victim, &env).unwrap();
+
+        atomic_write(&env, "SECRET=x\n", 0o600).unwrap();
+
+        assert_eq!(std::fs::read_to_string(&victim).unwrap(), "untouched");
+        let meta = std::fs::symlink_metadata(&env).unwrap();
+        assert!(meta.file_type().is_file());
+        assert_eq!(meta.permissions().mode() & 0o777, 0o600);
+        assert_eq!(std::fs::read_to_string(&env).unwrap(), "SECRET=x\n");
+    }
+
+    #[test]
+    fn a_secured_directory_that_is_a_link_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let elsewhere = dir.path().join("elsewhere");
+        std::fs::create_dir(&elsewhere).unwrap();
+        std::fs::set_permissions(&elsewhere, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let shared = dir.path().join("shared");
+        std::os::unix::fs::symlink(&elsewhere, &shared).unwrap();
+
+        let e = Ubuntu.secure_dir(&shared, 0o750, "nobody").unwrap_err();
+
+        assert!(e.to_string().contains("is a link"), "{e}");
+        let mode = std::fs::metadata(&elsewhere).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o700);
     }
 
     #[test]
@@ -1456,6 +1550,10 @@ mod tests {
         assert!(argv.windows(2).any(|w| w == ["-n", "200"]));
         assert!(argv.contains(&"--no-pager".to_string()));
         assert!(
+            argv.contains(&"--all".to_string()),
+            "without it a line over 4 KiB arrives as null"
+        );
+        assert!(
             argv.contains(&"--output-fields=MESSAGE,PRIORITY,__REALTIME_TIMESTAMP".to_string())
         );
         assert_eq!(argv.last().unwrap(), "--follow");
@@ -1647,6 +1745,21 @@ mod tests {
         assert_eq!(keys[0].comment, "ferrum test");
         assert_eq!(keys[0].kind, "ED25519");
         assert!(matches!(Ubuntu.ufw_status(), Ok(None) | Err(_)));
+
+        let root = dir.path().join("root/.ssh");
+        let alice = dir.path().join("home/alice/.ssh");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::create_dir_all(&alice).unwrap();
+        std::fs::create_dir_all(dir.path().join("home/bob")).unwrap();
+        let public = std::fs::read(file.with_extension("pub")).unwrap();
+        std::fs::write(root.join("authorized_keys"), &public).unwrap();
+        std::fs::write(alice.join("authorized_keys"), &public).unwrap();
+        let script = authorized_keys_script(
+            &root.join("authorized_keys").to_string_lossy(),
+            &dir.path().join("home").to_string_lossy(),
+        );
+        let out = exec::run(&[SH, "-c", &script]).unwrap();
+        assert_eq!(parse_key_fingerprints(&out).len(), 2, "{out}");
     }
 
     #[test]

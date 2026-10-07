@@ -1,4 +1,4 @@
-use super::{ArchiveFormat, Mirrors, Runtime, RuntimeKind, Source, Target, by_kind};
+use super::{ArchiveFormat, Mirrors, Runtime, RuntimeKind, Source, Target, by_kind, node};
 use crate::apps::App;
 use crate::state::State;
 use crate::time;
@@ -87,17 +87,37 @@ pub async fn find(
         .find(|t| t.kind == kind && t.version == version))
 }
 
-/// The newest installed toolchain of the other tool an app's commands start with: Bun beside
-/// Node when a command starts with `bun`, and the reverse. Never installs one.
-pub async fn extra_for(state: &State, store: &Store, app: &App) -> anyhow::Result<Option<PathBuf>> {
-    let wanted = [&app.commands.install, &app.commands.build]
+/// Adds `extra` to a PATH that starts with the app's own toolchain. Node's directory always
+/// comes before Bun's, whose `node` is Bun itself.
+pub fn path_with_extra(path: &str, extra: &Path, own: RuntimeKind) -> String {
+    let extra = extra.display();
+    match (own, path.split_once(':')) {
+        (RuntimeKind::Bun, _) | (_, None) => format!("{extra}:{path}"),
+        (_, Some((first, rest))) => format!("{first}:{extra}:{rest}"),
+    }
+}
+
+fn first_words(app: &App) -> impl Iterator<Item = &str> {
+    [&app.commands.install, &app.commands.build]
         .into_iter()
         .flatten()
         .map(String::as_str)
         .chain(app.processes.iter().filter_map(|p| p.start()))
-        .filter_map(|c| match c.split_whitespace().next() {
-            Some("bun" | "bunx") => Some(RuntimeKind::Bun),
-            Some("npm" | "npx" | "pnpm" | "yarn" | "node" | "corepack") => Some(RuntimeKind::Node),
+        .filter_map(|c| c.split_whitespace().next())
+}
+
+/// Whether the app's commands run `pnpm` or `yarn`, which a Node toolchain reaches through corepack.
+pub fn uses_corepack(app: &App) -> bool {
+    first_words(app).any(|w| matches!(w, "pnpm" | "pnpx" | "yarn" | "corepack"))
+}
+
+/// The newest installed toolchain of the other tool an app's commands start with: Bun beside
+/// Node when a command starts with `bun`, and the reverse. Never installs one.
+pub async fn extra_for(state: &State, store: &Store, app: &App) -> anyhow::Result<Option<PathBuf>> {
+    let wanted = first_words(app)
+        .filter_map(|w| match w {
+            "bun" | "bunx" => Some(RuntimeKind::Bun),
+            "npm" | "npx" | "pnpm" | "yarn" | "node" | "corepack" => Some(RuntimeKind::Node),
             _ => None,
         })
         .find(|k| *k != app.toolchain);
@@ -166,7 +186,7 @@ pub async fn ensure(
     }
     let dir = store.dir(kind, version);
     if find(state, kind, version).await?.is_some() && dir.join(runtime.binary()).exists() {
-        link(platform, runtime, &dir)?;
+        complete(platform, http, runtime, &dir, mirrors, &mut progress).await?;
         progress(Progress::Ready);
         return Ok(dir);
     }
@@ -194,7 +214,10 @@ pub async fn ensure(
         );
     }
 
-    link(platform, runtime, &partial)?;
+    if let Err(e) = complete(platform, http, runtime, &partial, mirrors, &mut progress).await {
+        remove_if_present(&partial)?;
+        return Err(e);
+    }
     remove_if_present(&dir)?;
     std::fs::rename(&partial, &dir)
         .with_context(|| format!("moving {} into place", dir.display()))?;
@@ -279,6 +302,29 @@ async fn download(
     Ok(bytes)
 }
 
+/// Adds what an installed toolchain is missing, corepack for a Node without one, then its links.
+pub async fn complete(
+    platform: &dyn Platform,
+    http: &reqwest::Client,
+    runtime: &dyn Runtime,
+    dir: &Path,
+    mirrors: &Mirrors,
+    progress: &mut impl FnMut(Progress),
+) -> anyhow::Result<()> {
+    let corepack = dir.join(node::COREPACK_DIR);
+    if runtime.kind() == RuntimeKind::Node
+        && dir.join(runtime.binary()).exists()
+        && !corepack.exists()
+    {
+        let bytes = download(http, &mirrors.corepack, progress).await?;
+        progress(Progress::Extracting);
+        platform
+            .extract_tar_gz(&bytes, &corepack, 1)
+            .context("unpacking corepack")?;
+    }
+    link(platform, runtime, dir)
+}
+
 /// Makes the runtime's links that are missing from `dir`, so toolchains installed before a
 /// link was introduced gain it too.
 pub fn link(platform: &dyn Platform, runtime: &dyn Runtime, dir: &Path) -> anyhow::Result<()> {
@@ -341,6 +387,7 @@ mod tests {
                 node_dist: self.base.clone(),
                 bun_releases: self.base.clone(),
                 dotnet_script: format!("{}/dotnet-install.sh", self.base),
+                corepack: format!("{}/corepack.tgz", self.base),
             }
         }
     }
@@ -348,13 +395,19 @@ mod tests {
     fn tarball() -> Vec<u8> {
         let gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
         let mut tar = tar::Builder::new(gz);
-        let data = b"#!node";
-        let mut header = tar::Header::new_gnu();
-        header.set_size(data.len() as u64);
-        header.set_mode(0o755);
-        header.set_cksum();
-        tar.append_data(&mut header, "node-v22.11.0-linux-x64/bin/node", &data[..])
-            .unwrap();
+        for (path, data) in [
+            ("node-v22.11.0-linux-x64/bin/node", &b"#!node"[..]),
+            (
+                "node-v22.11.0-linux-x64/lib/node_modules/corepack/dist/pnpm.js",
+                &b"#!node"[..],
+            ),
+        ] {
+            let mut header = tar::Header::new_gnu();
+            header.set_size(data.len() as u64);
+            header.set_mode(0o755);
+            header.set_cksum();
+            tar.append_data(&mut header, path, data).unwrap();
+        }
         tar.into_inner().unwrap().finish().unwrap()
     }
 
@@ -397,6 +450,46 @@ mod tests {
         let d = Store::default().dir(RuntimeKind::Node, "22.11.0");
         assert!(d.starts_with(crate::DATA_DIR));
         assert_eq!(d, Path::new("/var/lib/ferrum/runtimes/node/22.11.0"));
+    }
+
+    #[tokio::test]
+    async fn a_node_without_corepack_gets_it_and_pnpm_and_yarn_beside_node() {
+        let downloads = stub_downloads().await;
+        let (dir, state) = state().await;
+        let store = Store::at(dir.path().join("runtimes"));
+        let platform = FakePlatform::new();
+        let installed = store.dir(RuntimeKind::Node, "26.0.0");
+        std::fs::create_dir_all(installed.join("bin")).unwrap();
+        std::fs::write(installed.join("bin/node"), "#!").unwrap();
+        record(&state, RuntimeKind::Node, "26.0.0", &installed, 2)
+            .await
+            .unwrap();
+
+        let http = crate::http::client();
+        ensure(
+            &state,
+            &platform,
+            &http,
+            &store,
+            &node::Node,
+            "26.0.0",
+            target(),
+            &downloads.mirrors(),
+            |_| {},
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(downloads.hits(), 1);
+        assert!(installed.join(node::COREPACK_DIR).exists());
+        let calls = platform.calls();
+        for shim in ["pnpm", "yarn"] {
+            let link = format!(
+                "symlink_swap ../lib/node_modules/corepack/dist/{shim}.js {}",
+                installed.join("bin").join(shim).display()
+            );
+            assert!(calls.contains(&link), "{calls:#?}");
+        }
     }
 
     #[tokio::test]

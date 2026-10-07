@@ -422,11 +422,15 @@ async fn a_custom_dump_creates_the_database_with_what_it_needs_then_loads_as_the
         })
         .unwrap();
     assert!(listed < extension && extension < restore, "{calls:#?}");
+    let readable = calls
+        .iter()
+        .position(|c| {
+            c.starts_with("chown_tree ") && c.contains("restores") && c.contains("postgres")
+        })
+        .expect("postgres must be able to read the upload");
     assert!(
-        calls.iter().any(|c| c.starts_with("chown_tree ")
-            && c.contains("restores")
-            && c.contains("postgres")),
-        "postgres must be able to read the upload: {calls:#?}"
+        readable < listed,
+        "postgres lists the archive it can read: {calls:#?}"
     );
     assert!(
         !staged.exists() && !list.exists(),
