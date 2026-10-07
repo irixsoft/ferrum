@@ -24,6 +24,7 @@ import { Code } from "@/components/ui/Code";
 import { ConfigForm, draftFromDetection, toNewApp, type Draft, type Sources } from "./ConfigForm";
 import { EnvRows, ImportEnv, RequiredNote, blankRow, rowsFromRequired, type EnvRow } from "./EnvironmentPanel";
 import { SharedDirHint } from "./SharedDirHint";
+import { followSlug } from "@/lib/slug";
 import { ago, bytes } from "@/lib/utils";
 import type { App, Detected, GithubRepo, Manifest, Progress } from "@/types/api";
 
@@ -67,6 +68,14 @@ export function NewAppPage() {
     }
   };
 
+  const changeDraft = (next: Draft) => {
+    if (draft && step.kind === "review" && next.slug !== draft.slug) {
+      const required = step.detected.manifest?.env ?? [];
+      setEnvRows((rows) => followSlug(rows, required, draft.slug, next.slug));
+    }
+    setDraft(next);
+  };
+
   const changeToolchain = async (d: Draft) => {
     setSources(({ runtime_version: _dropped, ...rest }) => rest);
     setDraft(d);
@@ -91,7 +100,7 @@ export function NewAppPage() {
     );
     setCandidate(index);
     setSources(built.sources);
-    setDraft(await withResolvedVersion(built.draft));
+    changeDraft(await withResolvedVersion(built.draft));
   };
 
   if (isLoading) return null;
@@ -159,7 +168,7 @@ export function NewAppPage() {
           candidate={candidate}
           onCandidate={chooseCandidate}
           draft={draft}
-          setDraft={setDraft}
+          setDraft={changeDraft}
           onToolchainChange={changeToolchain}
           sources={sources}
           envRows={envRows}
@@ -567,7 +576,7 @@ function ManifestLine({ manifest }: { manifest: Manifest }) {
   );
 }
 
-function ProgressLine({ progress }: { progress: Progress }) {
+export function ProgressLine({ progress }: { progress: Progress }) {
   const width =
     progress.state === "downloading" && progress.total
       ? Math.round((progress.received / progress.total) * 100)

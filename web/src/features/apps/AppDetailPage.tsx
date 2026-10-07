@@ -1,8 +1,9 @@
-import { useState } from "react";
-import { useNavigate } from "@tanstack/react-router";
+import { useEffect, useState } from "react";
+import { useNavigate, useRouterState } from "@tanstack/react-router";
 import { ExternalLink } from "lucide-react";
 import {
   ApiError,
+  installRuntime,
   useCancelDeploy,
   useDeleteApp,
   useDeploys,
@@ -12,6 +13,7 @@ import {
   useRestartApp,
   useRestoreSnapshot,
   useRetryCertificate,
+  useRuntimes,
   useTriggerDeploy,
   useUpdateApp,
 } from "@/lib/api";
@@ -21,7 +23,7 @@ import { ChartKey, MetricChart, type Band } from "@/components/MetricChart";
 import { Meter } from "@/components/ui/Meter";
 import { useShell } from "@/shells/useShell";
 import { PageTitle } from "@/components/PageTitle";
-import { RuntimeMark } from "@/components/RuntimeMark";
+import { RuntimeMark, runtimeLabel } from "@/components/RuntimeMark";
 import { NEVER_LIVE, StatusPill } from "@/components/StatusPill";
 import { DeployLadder, DeployRail } from "@/components/DeployLadder";
 import { Card, CardBody, CardFoot, CardHeader } from "@/components/ui/Card";
@@ -36,15 +38,21 @@ import { ConfigForm, draftFromApp, toChanges, type Draft, type Sources } from ".
 import { DataCard } from "./DataCard";
 import { DeployLog } from "./DeployLog";
 import { EnvironmentPanel } from "./EnvironmentPanel";
-import { sharedDir } from "./SharedDirHint";
+import { ProgressLine } from "./NewAppPage";
 import { NginxPanel } from "./NginxPanel";
 import { LogPanel } from "./LogPanel";
 import { RunPanel } from "./RunPanel";
 import { RollbackDialog } from "./RollbackDialog";
+import { sharedDir } from "@/lib/slug";
 import { ago, bytes, daysUntil, duration } from "@/lib/utils";
-import type { AppDetail, CertStatus, Deploy, Release } from "@/types/api";
+import type { AppDetail, CertStatus, Deploy, Progress, Release } from "@/types/api";
 
 type Tab = "overview" | "configuration" | "environment" | "deploys" | "logs" | "run" | "nginx";
+
+const TABS: Tab[] = ["overview", "configuration", "environment", "deploys", "logs", "run", "nginx"];
+
+/** Event and push links open a tab through `?tab=`. */
+const askedTab = (searchStr: string) => TABS.find((t) => t === new URLSearchParams(searchStr).get("tab"));
 
 const message = (e: unknown) => (e instanceof ApiError ? e.message : e ? String(e) : null);
 const short = (sha: string | null) => (sha ? sha.slice(0, 7) : "");
@@ -58,7 +66,12 @@ export function AppDetailPage({ slug }: { slug: string }) {
   const { data: deploys = [] } = useDeploys(slug);
   const trigger = useTriggerDeploy(slug);
   const restart = useRestartApp(slug);
-  const [tab, setTab] = useState<Tab>("overview");
+  const asked = useRouterState({ select: (s) => askedTab(s.location.searchStr) });
+  const [tab, setTab] = useState<Tab>(asked ?? "overview");
+
+  useEffect(() => {
+    if (asked) setTab(asked);
+  }, [asked]);
 
   if (isLoading) return null;
   if (!app) {
@@ -532,9 +545,34 @@ function Configuration({ app }: { app: AppDetail }) {
   const [draft, setDraft] = useState<Draft>(() => draftFromApp(app));
   const [confirm, setConfirm] = useState("");
   const [uninstall, setUninstall] = useState(true);
+  const [progress, setProgress] = useState<Progress | null>(null);
+  const [installError, setInstallError] = useState<string | null>(null);
+  const [installing, setInstalling] = useState(false);
+  const runtimes = useRuntimes();
   const update = useUpdateApp(app.slug);
   const remove = useDeleteApp(app.slug);
   const removal = usePackageRemoval(app.slug, app.packages.length > 0).data;
+  const version = draft.runtime_version.trim();
+  const runtimeChanged = draft.toolchain !== app.runtime || version !== app.runtime_version;
+  const installed = runtimes.data?.installed.some((t) => t.kind === draft.toolchain && t.version === version);
+
+  const save = async () => {
+    setInstallError(null);
+    if (runtimeChanged && !installed) {
+      setInstalling(true);
+      try {
+        await installRuntime(draft.toolchain, version, setProgress);
+        await runtimes.refetch();
+      } catch (e) {
+        setInstallError(message(e));
+        setProgress(null);
+        return;
+      } finally {
+        setInstalling(false);
+      }
+    }
+    update.mutate(toChanges(draft));
+  };
 
   return (
     <div className="grid gap-4">
@@ -546,17 +584,27 @@ function Configuration({ app }: { app: AppDetail }) {
         creating={false}
       />
       <Card>
-        <CardBody className="pt-5 flex items-center gap-3 flex-wrap">
-          <Button variant="primary" onClick={() => update.mutate(toChanges(draft))} disabled={update.isPending}>
-            Save changes
-          </Button>
-          <span className="text-[12.5px] text-ink-4">
-            Rewrites the env file, the unit and the nginx site. A running app is not restarted.
-          </span>
-          {update.error ? <span className="text-[12.5px] text-fail">{message(update.error)}</span> : null}
-          {update.isSuccess && !update.isPending ? (
-            <span className="text-[12.5px] text-ok">Saved.</span>
+        <CardBody className="pt-5 grid gap-3">
+          {runtimeChanged && runtimes.data && !installed ? (
+            <p className="text-[13px] text-ink-3">
+              {runtimeLabel(draft.toolchain)} {version} is not installed yet. Saving downloads it first.
+            </p>
           ) : null}
+          {progress ? <ProgressLine progress={progress} /> : null}
+          <div className="flex items-center gap-3 flex-wrap">
+            <Button variant="primary" onClick={save} disabled={installing || update.isPending}>
+              {installing ? "Installing…" : "Save changes"}
+            </Button>
+            <span className="text-[12.5px] text-ink-4">
+              Rewrites the env file, the unit and the nginx site. A running app is not restarted.
+            </span>
+            {installError || update.error ? (
+              <span className="text-[12.5px] text-fail">{installError ?? message(update.error)}</span>
+            ) : null}
+            {update.isSuccess && !update.isPending ? (
+              <span className="text-[12.5px] text-ok">Saved.</span>
+            ) : null}
+          </div>
         </CardBody>
       </Card>
 

@@ -1,5 +1,5 @@
 /** The one seam between the panel and the server. Nothing else may fetch. */
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { QueryClient, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type {
   ApiToken,
   App,
@@ -56,6 +56,18 @@ export class ApiError extends Error {
   }
 }
 
+export const queryClient = new QueryClient({
+  defaultOptions: {
+    queries: {
+      staleTime: 5_000,
+      gcTime: 60_000,
+      retry: 1,
+      refetchOnWindowFocus: true,
+    },
+  },
+});
+
+/** A 401 anywhere but `/me` asks `/me` again, so an expired session lands on sign-in. */
 export async function request<T>(path: string, init?: RequestInit): Promise<T> {
   let res: Response;
   try {
@@ -68,6 +80,9 @@ export async function request<T>(path: string, init?: RequestInit): Promise<T> {
     throw new ApiError(0, "Could not reach the server.");
   }
 
+  if (res.status === 401 && path !== "/me") {
+    void queryClient.invalidateQueries({ queryKey: keys.me }, { cancelRefetch: false });
+  }
   return parse<T>(res.status, res.statusText, await res.text());
 }
 
@@ -196,10 +211,21 @@ export function useApp(slug: string) {
 
 const anyRunning = (deploys: Deploy[] | undefined) => deploys?.some((d) => d.state !== null) ?? false;
 
+const anyFinished = (before: Deploy[] | undefined, after: Deploy[]) =>
+  before?.some((d) => d.state !== null && after.some((a) => a.id === d.id && a.state === null)) ?? false;
+
 export function useDeploys(slug?: string) {
+  const client = useQueryClient();
+  const queryKey = slug ? keys.appDeploys(slug) : keys.deploys;
   return useQuery({
-    queryKey: slug ? keys.appDeploys(slug) : keys.deploys,
-    queryFn: () => request<Deploy[]>(slug ? `/apps/${slug}/deploys` : "/deploys"),
+    queryKey,
+    queryFn: async () => {
+      const deploys = await request<Deploy[]>(slug ? `/apps/${slug}/deploys` : "/deploys");
+      if (anyFinished(client.getQueryData<Deploy[]>(queryKey), deploys)) {
+        void client.invalidateQueries({ queryKey: keys.apps });
+      }
+      return deploys;
+    },
     refetchInterval: (query) => (anyRunning(query.state.data) ? 2000 : false),
   });
 }
