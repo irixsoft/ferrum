@@ -553,7 +553,7 @@ function Configuration({ app }: { app: AppDetail }) {
   const remove = useDeleteApp(app.slug);
   const removal = usePackageRemoval(app.slug, app.packages.length > 0).data;
   const version = draft.runtime_version.trim();
-  const runtimeChanged = draft.toolchain !== app.runtime || version !== app.runtime_version;
+  const runtimeChanged = draft.toolchain !== app.toolchain || version !== app.runtime_version;
   const installed = runtimes.data?.installed.some((t) => t.kind === draft.toolchain && t.version === version);
 
   const save = async () => {
