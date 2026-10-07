@@ -6,7 +6,8 @@ import { Card, CardBody, CardFoot, CardHeader } from "@/components/ui/Card";
 import { Button } from "@/components/ui/Button";
 import { Badge } from "@/components/ui/Badge";
 import { Code } from "@/components/ui/Code";
-import { SharedDirHint, sharedDir } from "./SharedDirHint";
+import { expandShared } from "@/lib/slug";
+import { SharedDirHint } from "./SharedDirHint";
 import type { EnvChange, EnvEntry, EnvRequirement, LabelChanges, ManagedVar } from "@/types/api";
 
 /** `value` is null while the stored value is untouched; a required row starts unstored with its default or "". */
@@ -36,7 +37,7 @@ export function RequiredNote({ rows }: { rows: EnvRow[] }) {
 export function rowsFromRequired(required: EnvRequirement[], slug: string): EnvRow[] {
   return required.map((r) => ({
     key: r.key,
-    value: r.default ? r.default.replaceAll("{{shared}}", sharedDir(slug)) : "",
+    value: r.default ? expandShared(r.default, slug) : "",
     stored: false,
     source: "ferrum.toml",
     about: r.about,
