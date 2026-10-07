@@ -14,14 +14,14 @@ description: >
 
 # Running an app on Ferrum
 
-Written for Ferrum 0.2.2. Everything an agent needs is in this file.
+Written for Ferrum 0.2.3. Everything an agent needs is in this file.
 
 ## How Ferrum runs an app
 
 One Ubuntu server. For each app Ferrum keeps a Linux user, a directory
 `/var/lib/ferrum/apps/<slug>/` with `releases/<id>/` (one per deploy), `current` (a symlink
 to the live release), and `shared/` (survives deploys: `.env`, `cache/`, `storage/`). Every
-process is a systemd unit `ferrum-app-<slug>-<process>` started in `current/<dir>` as the
+process is a systemd unit `ferrum-app-<slug>-<process>` started in `current/<root>/<dir>` as the
 app's user with the shared environment. nginx faces the network and proxies each name and
 path to the right process on `127.0.0.1`; the app itself never listens publicly.
 
@@ -95,7 +95,10 @@ optional = true
 
 Keys:
 
-- `runtime`, `version`: the toolchain. Leave them out to keep what the panel has.
+- `runtime`, `version`: the toolchain. Leave them out to keep what the panel has. A tag that
+  names one not installed on the server is refused; it is installed from the panel's Runtimes
+  page first. Node toolchains carry `pnpm` and `yarn` through corepack, which follows
+  `packageManager` in `package.json`.
 - `install`, `build`, `migrate`: run as the app's own user through `sh -c`, in the release
   directory. A key left out keeps the panel's value. Without a file, Ferrum prefills them at
   creation from `package.json` scripts (`build`, `start`, `db:migrate`/`migrate`) or the

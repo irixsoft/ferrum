@@ -56,7 +56,7 @@ optional = true
 
 ## What each key does
 
-- `runtime`, `version`: the toolchain the app builds and runs with. Toolchains are private to Ferrum, never on the system PATH.
+- `runtime`, `version`: the toolchain the app builds and runs with. Toolchains are private to Ferrum, never on the system PATH. A tag that names one not yet installed is refused before anything is built; install it on the Runtimes page, then push again. Node toolchains carry `pnpm` and `yarn` through corepack, which follows the `packageManager` field of `package.json`.
 - `install`, `build`, `migrate`: run as the app's own user, through `sh -c`, in the release directory. A key you leave out keeps what the panel has.
 - `packages`: Ubuntu packages, one name each (`^[a-z0-9][a-z0-9+._-]*$`), installed before the build on every deploy. A package dropped from the list is kept and the app's page says so, with an Uninstall button; a deploy never removes anything. A key left out keeps the panel's list.
 - `[env]`: the variables your code reads. Each key goes in one place: a bare name in `required`, or a table `[env.NAME]` when it has a sentence (`about`, shown on the Environment tab), a non-secret `default`, or `optional = true`. A table alone already makes its key required; you do not list it in `required` as well.
