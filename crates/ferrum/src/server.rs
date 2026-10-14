@@ -19,7 +19,8 @@ use std::sync::{Arc, Mutex};
 pub use ed25519_dalek::VerifyingKey;
 use tower_http::trace::TraceLayer;
 
-pub use ferrum_core::LISTEN_ADDR;
+use ferrum_core::{SOCKET_DIR, SOCKET_PATH};
+use std::os::unix::fs::PermissionsExt;
 
 /// Everything a test may want to stand a stub in for, exactly as `Directory::Custom` does for
 /// Let's Encrypt.
@@ -310,8 +311,13 @@ pub async fn serve(data_dir: &Path) -> anyhow::Result<()> {
     );
     ferrum_core::metrics::spawn_sampler(state, app_state.platform.clone());
     update::ticker::spawn(app_state.updater.clone());
-    let listener = tokio::net::TcpListener::bind(LISTEN_ADDR).await?;
-    tracing::info!(addr = %LISTEN_ADDR, "listening");
+    let platform = app_state.platform.clone();
+    let socket = Path::new(SOCKET_PATH);
+    platform.make_dirs(Path::new(SOCKET_DIR), 0o755)?;
+    platform.remove_file(socket)?;
+    let listener = tokio::net::UnixListener::bind(socket)?;
+    std::fs::set_permissions(socket, std::fs::Permissions::from_mode(0o666))?;
+    tracing::info!(socket = SOCKET_PATH, "listening");
     axum::serve(listener, router(app_state))
         .with_graceful_shutdown(shutdown_signal())
         .await?;

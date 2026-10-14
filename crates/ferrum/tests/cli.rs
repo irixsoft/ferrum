@@ -38,7 +38,7 @@ fn rollback_needs_a_slug_and_then_a_token() {
     assert!(
         String::from_utf8(no_token.stderr)
             .unwrap()
-            .contains("Set FERRUM_TOKEN")
+            .contains("Set FERRUM_TOKEN; mint one with `ferrum token create`.")
     );
 }
 
