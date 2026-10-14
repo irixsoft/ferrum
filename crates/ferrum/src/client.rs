@@ -117,7 +117,7 @@ async fn follow(http: &reqwest::Client, deploy_id: &str, token: &str) -> anyhow:
                 }
                 "done" => {
                     let done: Done = serde_json::from_str(&data)?;
-                    println!("\n  {}\n", done.outcome);
+                    println!("\n  {}\n", printable(&done.outcome));
                     return Ok(if done.outcome == "Live" { 0 } else { 1 });
                 }
                 _ => {}
@@ -522,7 +522,7 @@ pub async fn update(check_only: bool, token: &str) -> anyhow::Result<i32> {
             continue;
         }
         if let Some(error) = status.error {
-            println!("\n  {error}\n");
+            println!("\n  {}\n", printable(&error));
             return Ok(1);
         }
         if status.restarting {
