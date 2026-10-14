@@ -554,6 +554,7 @@ export interface NginxFiles {
 
 export interface Me {
   kind: "user" | "machine";
+  id: string | null;
   name: string;
   read_only: boolean;
 }

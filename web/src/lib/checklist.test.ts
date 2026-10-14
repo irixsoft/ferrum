@@ -53,13 +53,13 @@ describe("rows", () => {
       postgres: { installed: true, major: 18, installing: false, error: null, tunnel: "", tunnel_user: "ubuntu" },
       security: security(true),
       users: [user("saeed", 2), user("other", 0)],
-      me: { kind: "user", name: "saeed", read_only: false },
+      me: { kind: "user", id: "saeed", name: "saeed", read_only: false },
     });
     expect(all.every((r) => r.done)).toBe(true);
 
     const other = rows({
       users: [user("saeed", 2)],
-      me: { kind: "user", name: "nobody", read_only: false },
+      me: { kind: "user", id: "nobody", name: "nobody", read_only: false },
     });
     expect(other.find((r) => r.id === "passkey")?.done).toBe(false);
   });

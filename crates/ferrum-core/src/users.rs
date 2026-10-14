@@ -92,6 +92,16 @@ pub async fn count(state: &State) -> anyhow::Result<i64> {
     Ok(row.n)
 }
 
+/// Removes a person unless they are the last one; their passkeys, sessions, enrollment links and
+/// push subscriptions go with them through the schema's cascades.
+pub async fn remove(state: &State, id: &str) -> anyhow::Result<bool> {
+    let done = sqlx::query("DELETE FROM users WHERE id = ? AND (SELECT count(*) FROM users) > 1")
+        .bind(id)
+        .execute(&state.pool)
+        .await?;
+    Ok(done.rows_affected() > 0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -151,5 +161,15 @@ mod tests {
         create(&state, "Teammate").await.unwrap();
         assert_eq!(count(&state).await.unwrap(), 2);
         assert_eq!(list(&state).await.unwrap().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn the_last_person_is_never_removed() {
+        let (_d, state) = state().await;
+        let a = create(&state, "Saeed").await.unwrap();
+        let b = create(&state, "Teammate").await.unwrap();
+        assert!(remove(&state, &b.id).await.unwrap());
+        assert!(!remove(&state, &a.id).await.unwrap());
+        assert_eq!(count(&state).await.unwrap(), 1);
     }
 }

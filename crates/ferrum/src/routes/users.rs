@@ -2,6 +2,7 @@ use crate::auth::Caller;
 use crate::routes::error::{ApiError, ApiResult};
 use crate::server::AppState;
 use axum::extract::{Path, State as Extract};
+use axum::http::StatusCode;
 use axum::{Json, Router, routing::get};
 use ferrum_core::{credentials, enrollment, setup, users};
 use serde::{Deserialize, Serialize};
@@ -9,6 +10,7 @@ use serde::{Deserialize, Serialize};
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/api/users", get(list).post(create))
+        .route("/api/users/{id}", axum::routing::delete(remove))
         .route("/api/users/{id}/enrollment", axum::routing::post(reenroll))
 }
 
@@ -55,9 +57,10 @@ async fn list(Extract(app): Extract<AppState>, _: Caller) -> ApiResult<Json<Vec<
 
 async fn create(
     Extract(app): Extract<AppState>,
-    _: Caller,
+    caller: Caller,
     Json(body): Json<NewUser>,
 ) -> ApiResult<Json<Enrolled>> {
+    caller.person()?;
     let name = body.name.trim();
     if name.is_empty() {
         return Err(ApiError::bad_request("A user needs a name."));
@@ -74,9 +77,10 @@ async fn create(
 
 async fn reenroll(
     Extract(app): Extract<AppState>,
-    _: Caller,
+    caller: Caller,
     Path(id): Path<String>,
 ) -> ApiResult<Json<EnrollmentLink>> {
+    caller.person()?;
     users::by_id(&app.db, &id)
         .await?
         .ok_or_else(|| ApiError::not_found("No such user."))?;
@@ -84,6 +88,23 @@ async fn reenroll(
     Ok(Json(EnrollmentLink {
         enrollment_url: issue_link(&app, &id).await?,
     }))
+}
+
+async fn remove(
+    Extract(app): Extract<AppState>,
+    caller: Caller,
+    Path(id): Path<String>,
+) -> ApiResult<StatusCode> {
+    if caller.person()?.id == id {
+        return Err(ApiError::bad_request("You cannot remove yourself."));
+    }
+    users::by_id(&app.db, &id)
+        .await?
+        .ok_or_else(|| ApiError::not_found("No such user."))?;
+    if !users::remove(&app.db, &id).await? {
+        return Err(ApiError::conflict("The last person cannot be removed."));
+    }
+    Ok(StatusCode::NO_CONTENT)
 }
 
 async fn issue_link(app: &AppState, user_id: &str) -> ApiResult<String> {
