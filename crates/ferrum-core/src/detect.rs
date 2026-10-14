@@ -219,13 +219,13 @@ fn under<'a>(path: &'a str, prefix: &str) -> Option<&'a str> {
     path.strip_prefix(prefix)?.strip_prefix('/')
 }
 
-/// `^[a-z0-9][a-z0-9+.-]*[a-z0-9]$` — apt reads a trailing `-` as remove and `+` as install.
+/// `^[a-z0-9][a-z0-9+.-]*[a-z0-9+]$` — apt reads a trailing `-` as remove.
 pub fn valid_package(name: &str) -> bool {
     let alnum = |c: &u8| c.is_ascii_lowercase() || c.is_ascii_digit();
     let bytes = name.as_bytes();
     bytes.len() >= 2
         && bytes.first().is_some_and(alnum)
-        && bytes.last().is_some_and(alnum)
+        && bytes.last().is_some_and(|c| alnum(c) || *c == b'+')
         && bytes.iter().all(|c| alnum(c) || b"+.-".contains(c))
 }
 
@@ -235,7 +235,7 @@ mod tests {
 
     #[test]
     fn package_names_are_argv_safe_or_refused() {
-        for good in ["ffmpeg", "libvips42", "libssl-dev", "python3.12"] {
+        for good in ["ffmpeg", "libvips42", "g++", "libssl-dev", "python3.12"] {
             assert!(valid_package(good), "{good}");
         }
         for bad in [

@@ -147,6 +147,11 @@ mod tests {
         p.set_known_packages(&["ffmpeg"]);
         let err = install(&p, &["ffmpeg".into(), "libvips42".into()]).unwrap_err();
         assert_eq!(err.to_string(), "No Ubuntu package is named `libvips42`.");
+        let err = install(&p, &["ffmpeg.extra".into()]).unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "No Ubuntu package is named `ffmpeg.extra`."
+        );
         let err = install(&p, &["openssh-server-".into()]).unwrap_err();
         assert_eq!(
             err.to_string(),

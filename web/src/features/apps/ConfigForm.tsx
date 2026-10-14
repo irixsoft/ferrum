@@ -567,7 +567,7 @@ export function ConfigForm({
         </CardBody>
         <CardFoot className="flex-col items-start gap-1">
           <span>
-            Package names must match <Code>^[a-z0-9][a-z0-9+.-]*[a-z0-9]$</Code>.
+            Package names must match <Code>^[a-z0-9][a-z0-9+.-]*[a-z0-9+]$</Code>.
           </span>
           <span>
             Packages are system-wide and shared by every application on the box, so two

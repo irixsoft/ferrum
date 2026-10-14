@@ -490,13 +490,13 @@ optional = true
     fn a_package_name_apt_would_read_as_an_instruction_is_refused() {
         let listing =
             |name: &str| from_toml(&parse_toml(&format!("packages = [\"{name}\"]\n")).unwrap());
-        for bad in ["openssh-server-", "a.b+", "Ffmpeg", "x"] {
+        for bad in ["openssh-server-", "python3.", "Ffmpeg", "x"] {
             assert_eq!(
                 listing(bad).unwrap_err(),
                 format!("No Ubuntu package is named `{bad}`.")
             );
         }
-        for good in ["ffmpeg", "libvips42", "python3.12"] {
+        for good in ["ffmpeg", "libvips42", "python3.12", "g++"] {
             assert!(listing(good).is_ok(), "{good}");
         }
     }
