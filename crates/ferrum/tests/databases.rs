@@ -353,7 +353,7 @@ async fn a_custom_dump_creates_the_database_with_what_it_needs_then_loads_as_the
     h.platform.answer_restore_list(
         "2; 3079 16387 EXTENSION - vector \n3584; 0 0 COMMENT - EXTENSION vector \n218; 1259 16392 TABLE public users dbadmin\n",
     );
-    let gate = h.platform.gate("postgres_restore ledger_prod");
+    let gate = h.platform.gate("postgres_restore_as ledger_prod");
     let res = h
         .post_bytes_with_cookie(
             "/api/databases/ledger_prod/restore?connection_limit=30&app_slug=ledger&extensions=citext",
@@ -375,7 +375,7 @@ async fn a_custom_dump_creates_the_database_with_what_it_needs_then_loads_as_the
         .await;
     assert_eq!(again.status, StatusCode::CONFLICT, "{}", again.json);
 
-    wait_for_call(&h, "postgres_restore ledger_prod").await;
+    wait_for_call(&h, "postgres_restore_as ledger_prod").await;
     let staged = h.data_dir().join("restores").join("ledger_prod.dump");
     let list = h.data_dir().join("restores").join("ledger_prod.list");
     assert_eq!(
@@ -415,7 +415,7 @@ async fn a_custom_dump_creates_the_database_with_what_it_needs_then_loads_as_the
         .iter()
         .position(|c| {
             c == &format!(
-                "postgres_restore ledger_prod {} ledger_prod {}",
+                "postgres_restore_as ledger_prod ledger_prod {} {}",
                 staged.display(),
                 list.display()
             )
@@ -436,30 +436,40 @@ async fn a_custom_dump_creates_the_database_with_what_it_needs_then_loads_as_the
         !staged.exists() && !list.exists(),
         "the upload is removed once the load ends"
     );
+    let env = h.env_file("ledger");
+    let password = env
+        .split("DATABASE_URL=postgres://ledger_prod:")
+        .nth(1)
+        .and_then(|rest| rest.split('@').next())
+        .unwrap();
     assert!(
-        h.env_file("ledger")
-            .contains("DATABASE_URL=postgres://ledger_prod:")
+        !h.platform
+            .calls_matching("postgres_restore")
+            .join("\n")
+            .contains(password),
+        "the owner's password never reaches a recorded load"
     );
 }
 
 #[tokio::test]
 async fn a_plain_sql_dump_is_rewritten_for_the_role_and_its_extensions_created_first() {
     let (h, cookie) = with_postgres().await;
-    let gate = h.platform.gate("postgres_restore_sql ledger_prod");
+    let gate = h.platform.gate("postgres_restore_sql_as ledger_prod");
     let res = h
         .post_bytes_with_cookie(
             "/api/databases/ledger_prod/restore",
-            b"--\n-- PostgreSQL database dump\n--\nCREATE EXTENSION IF NOT EXISTS citext WITH SCHEMA public;\nCOMMENT ON EXTENSION citext IS 'x';\nCREATE TABLE t (id int);\nALTER TABLE public.t OWNER TO dbadmin;\nGRANT SELECT ON TABLE public.t TO reader;\nCOPY public.t (id) FROM stdin;\nALTER TABLE not a statement\n\\.\n",
+            b"--\n-- PostgreSQL database dump\n--\nCREATE EXTENSION IF NOT EXISTS citext WITH SCHEMA public;\nCOMMENT ON EXTENSION citext IS 'x';\nCREATE TABLE t (id int);\nALTER TABLE public.t OWNER TO dbadmin;\nGRANT SELECT ON TABLE public.t TO reader;\nRESET ROLE;\nset role postgres;\nCOPY public.t (id) FROM stdin;\nALTER TABLE not a statement\n\\.\n",
             &cookie,
         )
         .await;
     assert_eq!(res.status, StatusCode::CREATED, "{}", res.json);
     assert_eq!(res.json["extensions"], serde_json::json!(["citext"]));
-    wait_for_call(&h, "postgres_restore_sql").await;
+    wait_for_call(&h, "postgres_restore_sql_as").await;
     let staged = h.data_dir().join("restores").join("ledger_prod.dump");
     assert_eq!(
         std::fs::read_to_string(&staged).unwrap(),
-        "SET ROLE \"ledger_prod\";\n--\n-- PostgreSQL database dump\n--\nCREATE TABLE t (id int);\nCOPY public.t (id) FROM stdin;\nALTER TABLE not a statement\n\\.\n"
+        "--\n-- PostgreSQL database dump\n--\nCREATE TABLE t (id int);\nRESET ROLE;\nset role postgres;\nCOPY public.t (id) FROM stdin;\nALTER TABLE not a statement\n\\.\n",
+        "loaded connected as the role, a role switch in the dump has no superuser to reach"
     );
     gate.open();
     let done = wait_for_load(&h, &cookie).await;
@@ -471,13 +481,16 @@ async fn a_plain_sql_dump_is_rewritten_for_the_role_and_its_extensions_created_f
         .unwrap();
     let load = calls
         .iter()
-        .position(|c| c.starts_with("postgres_restore_sql ledger_prod "))
+        .position(|c| {
+            c == &format!(
+                "postgres_restore_sql_as ledger_prod ledger_prod {}",
+                staged.display()
+            )
+        })
         .unwrap();
     assert!(extension < load, "{calls:#?}");
     assert!(
-        calls
-            .iter()
-            .all(|c| !c.starts_with("postgres_restore ledger_prod ")),
+        calls.iter().all(|c| !c.starts_with("postgres_restore_as ")),
         "plain SQL never goes through pg_restore"
     );
 }
@@ -586,7 +599,7 @@ async fn a_second_upload_for_the_same_name_is_refused_and_leaves_the_first_alone
 #[tokio::test]
 async fn a_load_that_fails_on_the_host_is_reported_on_the_database() {
     let (h, cookie) = with_postgres().await;
-    h.platform.fail_next("postgres_restore ledger_prod");
+    h.platform.fail_next("postgres_restore_as ledger_prod");
     let res = h
         .post_bytes_with_cookie("/api/databases/ledger_prod/restore", b"PGDMP\x01", &cookie)
         .await;

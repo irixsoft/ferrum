@@ -61,8 +61,9 @@ pub async fn take(
     Ok(taken)
 }
 
-/// The database is dropped and recreated under its role, then the dump is restored as the
-/// cluster superuser in one transaction, so ownership comes back exactly as it was dumped.
+/// The database is dropped and recreated under its role, the superuser creates the extensions
+/// the dump needs, then the rest is restored in one transaction connected as that role, since
+/// what the app wrote must never run as the superuser.
 pub async fn restore(
     state: &State,
     platform: &dyn Platform,
@@ -74,8 +75,19 @@ pub async fn restore(
     let db = postgres::by_id(state, &snapshot.database_id)
         .await?
         .ok_or_else(|| anyhow::anyhow!("The database of that snapshot no longer exists."))?;
+    let password = postgres::roles::owner_password(state, &db).await?;
+    let path = Path::new(&snapshot.path);
+    let (list, extensions) = postgres::restore::filter_list(&platform.postgres_restore_list(path)?);
     platform.postgres_sql(MAINTENANCE_DB, &sql::recreate_database(&db.name, &db.role))?;
-    platform.postgres_restore(&db.name, Path::new(&snapshot.path), None, None)?;
+    for extension in &extensions {
+        platform.postgres_sql(&db.name, &sql::create_extension(extension))?;
+    }
+    let list_path = path.with_extension("list");
+    platform.write_file(&list_path, &list, 0o600)?;
+    let restored =
+        platform.postgres_restore_as(&db.name, &db.role, &password, path, Some(&list_path));
+    platform.remove_file(&list_path)?;
+    restored?;
     postgres::roles::regrant(state, platform, &db).await
 }
 
@@ -194,13 +206,19 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_restore_recreates_the_database_under_its_role_and_restores_as_postgres() {
+    async fn a_restore_recreates_the_database_under_its_role_and_restores_as_that_role() {
         let (_d, state) = state().await;
         let p = FakePlatform::new();
         let app = apps::create(&state, new_app("ledger", &[("/", "main", false)]))
             .await
             .unwrap();
         postgres::create(&state, &p, postgres::tests::new("ledger_prod"))
+            .await
+            .unwrap();
+        let password = "owner-password-never-recorded";
+        sqlx::query("UPDATE database_roles SET password = ? WHERE name = 'ledger_prod'")
+            .bind(crate::secrets::encrypt(&state.key, password))
+            .execute(&state.pool)
             .await
             .unwrap();
         postgres::link(&state, &app.id, "ledger_prod")
@@ -210,9 +228,18 @@ mod tests {
             .await
             .unwrap();
         let taken = take(&state, &p, &app, &d.id).await.unwrap();
+        let path = &taken[0].path;
+        assert!(path.starts_with("/var/lib/ferrum/snapshots/ledger_prod/"));
+        let list = path.replace(".dump", ".list");
+        p.answer_restore_list(
+            "2; 3079 16387 EXTENSION - vector \n3584; 0 0 COMMENT - EXTENSION vector \n218; 1259 16392 TABLE public users ledger_prod\n",
+        );
+        let before = p.calls().len();
         restore(&state, &p, &taken[0].id).await.unwrap();
-        let sql = p.sql();
-        let recreate = sql.last().unwrap();
+        let calls = p.calls()[before..].to_vec();
+        assert_eq!(calls.len(), 6, "{calls:#?}");
+        assert_eq!(calls[0], format!("postgres_restore_list {path}"));
+        let recreate = calls[1].strip_prefix("postgres_sql postgres ").unwrap();
         assert!(recreate.starts_with("DROP DATABASE IF EXISTS \"ledger_prod\" WITH (FORCE);"));
         assert!(recreate.contains("CREATE DATABASE \"ledger_prod\" OWNER \"ledger_prod\";"));
         assert!(recreate.contains("REVOKE CONNECT ON DATABASE \"ledger_prod\" FROM PUBLIC;"));
@@ -220,13 +247,22 @@ mod tests {
             !recreate.contains("DROP ROLE"),
             "the role and its password must survive"
         );
-        assert!(
-            p.calls()
-                .last()
-                .unwrap()
-                .starts_with("postgres_restore ledger_prod /var/lib/ferrum/snapshots/ledger_prod/")
+        assert_eq!(
+            calls[2..],
+            [
+                "postgres_sql ledger_prod CREATE EXTENSION IF NOT EXISTS \"vector\";\n".to_string(),
+                format!("write_file {list} 600"),
+                format!("postgres_restore_as ledger_prod ledger_prod {path} {list}"),
+                format!("remove_file {list}"),
+            ]
         );
+        assert!(p.removed(&list));
+        assert!(!p.calls().join("\n").contains(password));
         assert!(restore(&state, &p, "nope").await.is_err());
+
+        p.fail_next("postgres_restore_as ledger_prod");
+        assert!(restore(&state, &p, &taken[0].id).await.is_err());
+        assert_eq!(p.calls().last().unwrap(), &format!("remove_file {list}"));
 
         let db = postgres::by_name(&state, "ledger_prod")
             .await
@@ -241,7 +277,7 @@ mod tests {
             .unwrap();
         restore(&state, &p, &taken[0].id).await.unwrap();
         let calls = p.calls();
-        assert!(calls[calls.len() - 2].starts_with("postgres_restore ledger_prod "));
+        assert!(calls[calls.len() - 3].starts_with("postgres_restore_as ledger_prod ledger_prod "));
         assert_eq!(
             calls.last().unwrap(),
             "postgres_sql postgres GRANT CONNECT ON DATABASE \"ledger_prod\" TO \"ledger_prod_app\";\n",

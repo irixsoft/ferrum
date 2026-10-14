@@ -324,7 +324,7 @@ async fn rollback_repoints_without_a_build_and_offers_the_snapshot_choice() {
     );
     let restore = calls
         .iter()
-        .position(|c| c.starts_with("postgres_restore docs_prod"))
+        .position(|c| c.starts_with("postgres_restore_as docs_prod docs_prod"))
         .unwrap();
     let swap = calls
         .iter()
@@ -353,7 +353,7 @@ async fn rollback_repoints_without_a_build_and_offers_the_snapshot_choice() {
     assert_eq!(restored.status, StatusCode::NO_CONTENT, "{}", restored.json);
     assert_eq!(
         h.platform
-            .calls_matching("postgres_restore docs_prod")
+            .calls_matching("postgres_restore_as docs_prod docs_prod")
             .len(),
         2
     );

@@ -1525,7 +1525,9 @@ mod tests {
                 .any(|c| c.starts_with("run_scoped") || c.starts_with("git_clone")),
             "{calls:#?}"
         );
-        let restore = position(&calls, |c| c.starts_with("postgres_restore ledger_prod"));
+        let restore = position(&calls, |c| {
+            c.starts_with("postgres_restore_as ledger_prod ledger_prod")
+        });
         let pause = position(&calls, |c| {
             c == "write_file /var/lib/ferrum/apps/ledger/maintenance 644"
         });
