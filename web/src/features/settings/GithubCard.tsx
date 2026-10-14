@@ -6,18 +6,19 @@ import { Button } from "@/components/ui/Button";
 import { Badge } from "@/components/ui/Badge";
 import { Row } from "@/components/ui/Row";
 import { ago } from "@/lib/utils";
+import { failureSentence } from "@/lib/github";
 import type { GithubConnection } from "@/types/api";
 
 const INPUT =
   "h-9 px-3 bg-inset border border-line-strong rounded-control text-sm text-ink placeholder:text-ink-4 font-mono text-[13px]";
 
-/** GitHub sends the browser back with the sentence in the URL; read it once, then take it out. */
+/** GitHub sends the browser back with a reason code in the URL; read it once, then take it out. */
 function handoffFailure(): string | null {
   const params = new URLSearchParams(window.location.search);
   if (params.get("github") !== "failed") return null;
   const reason = params.get("reason");
   window.history.replaceState(null, "", window.location.pathname);
-  return reason ?? "GitHub refused the connection. Start again from Settings.";
+  return failureSentence(reason);
 }
 
 export function GithubCard() {

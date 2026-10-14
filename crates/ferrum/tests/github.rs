@@ -78,12 +78,7 @@ async fn an_unknown_state_is_refused_before_the_code_is_exchanged() {
     let res = h
         .get("/api/github/callback?code=realcode&state=never-issued")
         .await;
-    assert_eq!(
-        landed_on(&res),
-        format!(
-            "{FAILED}That%20connection%20attempt%20expired.%20Start%20again%20from%20Settings."
-        )
-    );
+    assert_eq!(landed_on(&res), format!("{FAILED}expired"));
 }
 
 #[tokio::test]
@@ -92,17 +87,14 @@ async fn a_callback_without_a_code_does_not_consume_the_state() {
     let state = h.connect_state(&cookie).await;
 
     let missing = h.get(&format!("/api/github/callback?state={state}")).await;
-    assert_eq!(
-        landed_on(&missing),
-        format!("{FAILED}GitHub%20did%20not%20send%20a%20code.")
-    );
+    assert_eq!(landed_on(&missing), format!("{FAILED}no-code"));
     let res = h
         .get(&format!("/api/github/callback?code=x&state={state}"))
         .await;
-    assert!(
-        !landed_on(&res).contains("expired"),
-        "a missing code must not burn the state: {}",
-        res.text
+    assert_eq!(
+        landed_on(&res),
+        format!("{FAILED}refused"),
+        "a missing code must not burn the state"
     );
 }
 
@@ -120,10 +112,10 @@ async fn a_state_can_only_be_used_once() {
 
     assert_eq!(
         landed_on(&first),
-        format!("{FAILED}GitHub%20refused%20the%20connection.%20Start%20again%20from%20Settings."),
+        format!("{FAILED}refused"),
         "the stub answers no conversion, and that is GitHub refusing"
     );
-    assert!(landed_on(&second).contains("expired"));
+    assert_eq!(landed_on(&second), format!("{FAILED}expired"));
 }
 
 #[tokio::test]
