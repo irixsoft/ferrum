@@ -5,7 +5,7 @@ mod write;
 pub use handler::{Ferrum, READ_ONLY};
 
 use crate::auth;
-use crate::server::{AppState, LISTEN_ADDR};
+use crate::server::AppState;
 use axum::extract::{Request, State};
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::middleware::Next;
@@ -44,12 +44,7 @@ pub async fn require_token(
 }
 
 pub fn allowed_hosts(hostname: Option<&str>) -> Vec<String> {
-    let mut hosts = vec![
-        LISTEN_ADDR.to_string(),
-        format!("localhost:{}", LISTEN_ADDR.port()),
-    ];
-    hosts.extend(hostname.map(str::to_string));
-    hosts
+    hostname.map(str::to_string).into_iter().collect()
 }
 
 pub fn service(state: AppState) -> StreamableHttpService<Ferrum, LocalSessionManager> {

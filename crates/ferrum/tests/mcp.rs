@@ -197,7 +197,7 @@ async fn the_endpoint_takes_a_bearer_token_and_the_panel_hostname_only() {
         &initialize(),
     )
     .await;
-    assert_eq!(loopback.status, StatusCode::OK, "{}", loopback.text);
+    assert_eq!(loopback.status, StatusCode::FORBIDDEN, "{}", loopback.text);
 }
 
 #[tokio::test]

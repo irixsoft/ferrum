@@ -112,7 +112,7 @@ restricted roles for code that must not bypass row-level security. Create blank 
 panel shows you. Redis per app.
 
 **Host.** ufw, fail2ban, unattended security updates and SSH key-only login, each one click.
-nginx faces the network; the daemon listens on `127.0.0.1` only.
+nginx faces the network; the daemon listens on a Unix socket only.
 
 **Notifications.** The panel installs to a phone, and tells you when a deploy was refused or
 went live, when something broke on its own, and when an update is waiting.
@@ -138,7 +138,7 @@ tokens when that is all it should do. Press `⌘K` anywhere for the command pale
 | `ferrum version` | Prints the version, build id and commit this binary was built from. |
 
 `deploy`, `status`, `logs`, `restart`, `rollback` and `update` talk to the daemon with a token:
-pass `--token` or set `FERRUM_TOKEN`.
+set `FERRUM_TOKEN`.
 
 ### Ports
 
@@ -148,7 +148,8 @@ pass `--token` or set `FERRUM_TOKEN`.
 | 80 | HTTP, the certificate challenge and the redirect to 443 |
 | 443 | HTTPS, the panel and every app |
 
-The Ferrum daemon listens on `127.0.0.1:8443` only. nginx is the only thing facing the network.
+The Ferrum daemon listens on the Unix socket `/run/ferrum/ferrum.sock` only, and opens no port.
+nginx is the only thing facing the network.
 
 ## Repository layout
 

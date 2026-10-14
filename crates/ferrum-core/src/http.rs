@@ -1,3 +1,5 @@
+use crate::SOCKET_PATH;
+use std::path::Path;
 use std::time::Duration;
 
 const USER_AGENT: &str = concat!("ferrum/", env!("CARGO_PKG_VERSION"));
@@ -14,6 +16,21 @@ pub fn client() -> reqwest::Client {
     reqwest::Client::builder()
         .user_agent(USER_AGENT)
         .connect_timeout(Duration::from_secs(15))
+        .build()
+        .expect("a reqwest client with no custom TLS settings always builds")
+}
+
+/// Every request goes to the daemon's socket whatever host its URL names.
+pub fn daemon_client() -> reqwest::Client {
+    daemon_client_at(Path::new(SOCKET_PATH))
+}
+
+pub fn daemon_client_at(socket: &Path) -> reqwest::Client {
+    ensure_tls();
+    reqwest::Client::builder()
+        .user_agent(USER_AGENT)
+        .connect_timeout(Duration::from_secs(15))
+        .unix_socket(socket)
         .build()
         .expect("a reqwest client with no custom TLS settings always builds")
 }
