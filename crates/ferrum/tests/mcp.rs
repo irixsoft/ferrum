@@ -691,3 +691,18 @@ async fn the_write_tools_change_the_box_the_way_the_routes_do() {
     .await;
     assert_eq!(too_short["isError"], true, "{too_short}");
 }
+
+#[tokio::test]
+async fn add_domain_refuses_the_panel_s_own_hostname() {
+    let (h, cookie) = signed_in().await;
+    h.create_app("ledger", &cookie).await;
+    let token = h.machine_token(false).await;
+    let panel = call(
+        &h,
+        &token,
+        "add_domain",
+        json!({ "slug": "ledger", "domain": HOSTNAME }),
+    )
+    .await;
+    assert_eq!(error_text(&panel), "That is the panel's own hostname.");
+}

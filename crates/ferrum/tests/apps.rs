@@ -2,7 +2,7 @@ mod support;
 
 use axum::http::StatusCode;
 use ferrum_core::runtime::RuntimeKind;
-use support::{new_app_json, signed_in, signed_in_and_connected};
+use support::{HOSTNAME, new_app_json, signed_in, signed_in_and_connected};
 
 const NEXT_PACKAGE: &str = r#"{"scripts":{"build":"next build","start":"next start"}}"#;
 
@@ -678,6 +678,40 @@ async fn a_name_serves_a_process_or_redirects_and_the_site_follows_each_change()
             .await
             .status,
         StatusCode::NOT_FOUND
+    );
+}
+
+#[tokio::test]
+async fn the_panel_s_own_hostname_is_refused_to_an_app() {
+    let (h, cookie, _github) = signed_in_and_connected().await;
+    h.pretend_toolchain(RuntimeKind::Node, "22.11.0").await;
+    let mut body: serde_json::Value = serde_json::from_str(&new_app_json("ledger")).unwrap();
+    body["domains"] = serde_json::json!([HOSTNAME]);
+    let refused = h
+        .post_with_cookie("/api/apps", &body.to_string(), &cookie)
+        .await;
+    assert_eq!(refused.status, StatusCode::BAD_REQUEST, "{}", refused.json);
+    assert_eq!(refused.json["error"], "That is the panel's own hostname.");
+
+    h.create_app("ledger", &cookie).await;
+    let site = h
+        .platform
+        .written("/etc/nginx/conf.d/ferrum-ledger.conf")
+        .unwrap();
+    let added = h
+        .post_with_cookie(
+            "/api/apps/ledger/domains",
+            &serde_json::json!({ "domain": HOSTNAME.to_uppercase() }).to_string(),
+            &cookie,
+        )
+        .await;
+    assert_eq!(added.status, StatusCode::BAD_REQUEST, "{}", added.json);
+    assert_eq!(added.json["error"], "That is the panel's own hostname.");
+    assert_eq!(
+        h.platform
+            .written("/etc/nginx/conf.d/ferrum-ledger.conf")
+            .unwrap(),
+        site
     );
 }
 
