@@ -18,7 +18,7 @@ async fn the_managed_file_is_read_and_the_custom_one_is_edited_behind_nginx_t() 
     assert_eq!(res.json["custom"], "");
 
     let before = h.platform.calls().len();
-    let body = r#"{"custom":"location /downloads/ {\n  alias /var/lib/ferrum/apps/ledger/shared/storage/;\n}\n"}"#;
+    let body = r#"{"custom":"location /downloads/ {\n  alias /var/lib/ferrum/apps/ledger/current/storage/;\n}\n"}"#;
     let saved = h
         .put_with_cookie("/api/apps/ledger/nginx", body, &cookie)
         .await;
@@ -112,7 +112,7 @@ async fn a_custom_file_that_reaches_the_host_is_refused_before_anything_is_writt
         ),
         (
             "root /;",
-            "`root` must stay under /var/lib/ferrum/apps/ledger/.",
+            "`root` must stay under /var/lib/ferrum/apps/ledger/current/.",
         ),
     ] {
         let res = h

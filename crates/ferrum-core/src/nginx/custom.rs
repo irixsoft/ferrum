@@ -1,20 +1,14 @@
 use crate::apps::provision::app_dir;
 
-const KEYS: [&str; 6] = [
-    "certificate",
-    "certificate_key",
-    "password_file",
-    "client_certificate",
-    "trusted_certificate",
-    "dhparam",
-];
-
 /// Refuses an app's custom file when a directive in it, at any depth, reaches past the app.
 pub fn check(text: &str, slug: &str) -> Result<(), String> {
     let parsed = parse(text);
-    let home = format!("{}/", app_dir(slug).display());
+    let home = format!("{}/", app_dir(slug).join("current").display());
     for statement in &parsed.statements {
         let name = statement[0].to_ascii_lowercase();
+        if name == "disable_symlinks" {
+            return Err("The custom file cannot change `disable_symlinks`.".into());
+        }
         if let Some(reason) = refused(&name) {
             return Err(format!("The custom file cannot use `{name}`; {reason}"));
         }
@@ -31,7 +25,6 @@ pub fn check(text: &str, slug: &str) -> Result<(), String> {
 }
 
 fn refused(name: &str) -> Option<&'static str> {
-    let key = name.rsplit_once("ssl_").map(|(_, key)| key);
     match name {
         "access_log" | "error_log" => Some("nginx's logs are Ferrum's."),
         "include" => Some("it reads files from outside the app."),
@@ -39,9 +32,8 @@ fn refused(name: &str) -> Option<&'static str> {
         "listen" | "server_name" => {
             Some("the app's names come from its domains under Configuration.")
         }
-        _ if key.is_some_and(|key| KEYS.contains(&key)) => {
-            Some("certificates and keys are Ferrum's.")
-        }
+        _ if name.starts_with("ssl_") || name.contains("_ssl_") => Some("TLS is Ferrum's."),
+        _ if name.ends_with("_store") => Some("nginx writes no files for the app."),
         _ if name.ends_with("_temp_path") || name.ends_with("_cache_path") => {
             Some("nginx's working directories are Ferrum's.")
         }
@@ -216,7 +208,16 @@ mod tests {
             "ssl_client_certificate",
             "ssl_trusted_certificate",
             "ssl_dhparam",
+            "ssl_crl",
+            "ssl_stapling_file",
+            "ssl_session_ticket_key",
+            "ssl_conf_command",
             "proxy_ssl_certificate_key",
+            "grpc_ssl_trusted_certificate",
+            "proxy_store",
+            "fastcgi_store",
+            "uwsgi_store",
+            "scgi_store",
             "client_body_temp_path",
             "proxy_temp_path",
             "proxy_cache_path",
@@ -239,6 +240,11 @@ mod tests {
             refusal("access_log /etc/cron.d/x;"),
             "The custom file cannot use `access_log`; nginx's logs are Ferrum's."
         );
+        assert_eq!(
+            refusal("location /x {\n    disable_symlinks off;\n}\n"),
+            "The custom file cannot change `disable_symlinks`."
+        );
+        assert!(check("auth_basic_user_file /etc/nginx/htpasswd;", "ledger").is_ok());
     }
 
     #[test]
@@ -257,26 +263,27 @@ mod tests {
     }
 
     #[test]
-    fn root_and_alias_stay_inside_the_app() {
+    fn root_and_alias_stay_inside_the_release() {
         assert!(check("root /var/lib/ferrum/apps/ledger/current/public;", "ledger").is_ok());
         assert!(
             check(
-                "location /d/ { alias /var/lib/ferrum/apps/ledger/shared/storage/; }",
+                "location /d/ { alias /var/lib/ferrum/apps/ledger/current/storage/; }",
                 "ledger"
             )
             .is_ok()
         );
         assert_eq!(
             refusal("root /;"),
-            "`root` must stay under /var/lib/ferrum/apps/ledger/."
+            "`root` must stay under /var/lib/ferrum/apps/ledger/current/."
         );
         assert_eq!(
-            refusal("location /x { alias /var/lib/ferrum/apps/notes/shared/; }"),
-            "`alias` must stay under /var/lib/ferrum/apps/ledger/."
+            refusal("location /x { alias /var/lib/ferrum/apps/ledger/shared/storage/; }"),
+            "`alias` must stay under /var/lib/ferrum/apps/ledger/current/."
         );
-        assert!(refusal("root /var/lib/ferrum/apps/ledger;").contains("`root`"));
-        assert!(refusal("root /var/lib/ferrum/apps/ledger/../notes;").contains("`root`"));
-        assert!(refusal("root /var/lib/ferrum/apps/ledger/$arg_d;").contains("`root`"));
+        assert!(refusal("root /var/lib/ferrum/apps/notes/current/public;").contains("`root`"));
+        assert!(refusal("root /var/lib/ferrum/apps/ledger/current;").contains("`root`"));
+        assert!(refusal("root /var/lib/ferrum/apps/ledger/current/../shared;").contains("`root`"));
+        assert!(refusal("root /var/lib/ferrum/apps/ledger/current/$arg_d;").contains("`root`"));
     }
 
     #[test]
