@@ -9,7 +9,9 @@ import {
   useCreateUser,
   useEnrollmentLink,
   useHost,
+  useMe,
   usePostgres,
+  useRemoveUser,
   useRevokeSession,
   useRevokeToken,
   useSessions,
@@ -101,6 +103,9 @@ function People() {
   const { data: users = [] } = useUsers();
   const createUser = useCreateUser();
   const reissue = useEnrollmentLink();
+  const { data: me } = useMe();
+  const remove = useRemoveUser();
+  const [removing, setRemoving] = useState<string | null>(null);
   const [link, setLink] = useState<string | null>(null);
   const [name, setName] = useState("");
   const [inviting, setInviting] = useState(false);
@@ -163,7 +168,39 @@ function People() {
                   >
                     New enrollment link
                   </Button>
+                  {me?.kind === "user" && u.id !== me.id ? (
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      onClick={() => {
+                        remove.reset();
+                        setRemoving(u.id);
+                      }}
+                    >
+                      Remove
+                    </Button>
+                  ) : null}
                 </div>
+                {removing === u.id ? (
+                  <div className="mt-2 bg-inset border border-line rounded-inset p-3 grid gap-3">
+                    <p className="text-[13px] text-ink-2 leading-relaxed">
+                      {u.name} loses access to this panel. Their passkeys and sessions are deleted.
+                    </p>
+                    <div className="flex gap-2 flex-wrap">
+                      <Button
+                        variant="danger"
+                        disabled={remove.isPending}
+                        onClick={() => remove.mutate(u.id, { onSuccess: () => setRemoving(null) })}
+                      >
+                        Remove {u.name}
+                      </Button>
+                      <Button variant="ghost" className="ml-auto" onClick={() => setRemoving(null)}>
+                        Cancel
+                      </Button>
+                    </div>
+                    {remove.error ? <p className="text-[12.5px] text-fail">{message(remove.error)}</p> : null}
+                  </div>
+                ) : null}
                 {u.passkeys.length ? (
                   <ul className="mt-2 grid gap-1">
                     {u.passkeys.map((p) => (

@@ -44,9 +44,16 @@ impl Caller {
             Caller::Machine(_) => None,
         }
     }
+
+    /// The signed-in person; an API token is refused, so it cannot widen its own access.
+    pub fn person(&self) -> Result<&User, ApiError> {
+        self.user()
+            .ok_or_else(|| ApiError::new(axum::http::StatusCode::FORBIDDEN, PANEL_ONLY))
+    }
 }
 
 const READ_ONLY: &str = "That API token is read-only.";
+const PANEL_ONLY: &str = "Sign in to the panel to do that.";
 
 pub async fn require_caller(
     Extract(app): Extract<AppState>,

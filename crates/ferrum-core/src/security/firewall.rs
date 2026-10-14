@@ -1,5 +1,7 @@
 use super::{Firewall, SecurityError, persisted};
-use ferrum_platform::ubuntu::{NETFILTER_PERSISTENT_UNIT, RULES_V4};
+use ferrum_platform::ubuntu::{
+    NETFILTER_PERSISTENT_UNIT, RULES_V4, RULES_V6, UFW_BEFORE_RULES, UFW_BEFORE6_RULES,
+};
 use ferrum_platform::{Platform, ServiceAction, Sshd};
 use std::path::Path;
 
@@ -26,6 +28,10 @@ pub fn enable(platform: &dyn Platform) -> anyhow::Result<()> {
     let sshd = platform.sshd_effective()?;
     let persisted = persisted::ensure_open(platform, &[sshd.port, 80, 443])?;
     platform.install_packages(&["ufw"])?;
+    if persisted.any() {
+        carry_into_ufw(platform, RULES_V4, UFW_BEFORE_RULES)?;
+        carry_into_ufw(platform, RULES_V6, UFW_BEFORE6_RULES)?;
+    }
     let rules = rules_for(sshd.port);
     let allow: Vec<&str> = rules.iter().map(String::as_str).collect();
     platform.ufw_apply(&allow)?;
@@ -40,11 +46,28 @@ pub fn enable(platform: &dyn Platform) -> anyhow::Result<()> {
     Ok(())
 }
 
+fn carry_into_ufw(platform: &dyn Platform, saved: &str, before: &str) -> anyhow::Result<()> {
+    let Some(rules) = platform.read_file(Path::new(saved))? else {
+        return Ok(());
+    };
+    let Some(carry) = persisted::carry(&rules) else {
+        return Ok(());
+    };
+    let Some(stock) = platform.read_file(Path::new(before))? else {
+        return Ok(());
+    };
+    let carried = persisted::into_ufw(&stock, &carry);
+    if carried != stock {
+        platform.write_file(Path::new(before), &carried, 0o640)?;
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::security::persisted::tests::{BEFORE_RULES, BEFORE6_RULES, ORACLE};
     use ferrum_platform::FakePlatform;
-    use ferrum_platform::ubuntu::RULES_V6;
 
     fn position(calls: &[String], needle: &str) -> usize {
         calls
@@ -100,6 +123,10 @@ mod tests {
         let own = "*filter\n-A INPUT -p tcp --dport 22 -j ACCEPT\n-A INPUT -j REJECT\nCOMMIT\n";
         p.write_file(Path::new(RULES_V4), own, 0o644).unwrap();
         p.write_file(Path::new(RULES_V6), own, 0o644).unwrap();
+        p.write_file(Path::new(UFW_BEFORE_RULES), BEFORE_RULES, 0o640)
+            .unwrap();
+        p.write_file(Path::new(UFW_BEFORE6_RULES), BEFORE6_RULES, 0o640)
+            .unwrap();
         assert!(status(&p, p.sshd_effective().unwrap()).unwrap().persisted);
         enable(&p).unwrap();
         let calls = p.calls();
@@ -129,6 +156,41 @@ mod tests {
                     .contains("--dports 80,443 -j ACCEPT\n-A INPUT -j REJECT")
             );
         }
+        assert_eq!(p.written(UFW_BEFORE_RULES).unwrap(), BEFORE_RULES);
+        assert_eq!(p.written(UFW_BEFORE6_RULES).unwrap(), BEFORE6_RULES);
+        assert_eq!(p.calls_matching("write_file /etc/ufw").len(), 2);
+    }
+
+    #[test]
+    fn oracles_instance_services_move_into_ufw_before_the_flush() {
+        let p = FakePlatform::new();
+        p.write_file(Path::new(RULES_V4), ORACLE, 0o644).unwrap();
+        p.write_file(Path::new(UFW_BEFORE_RULES), BEFORE_RULES, 0o640)
+            .unwrap();
+        p.write_file(Path::new(UFW_BEFORE6_RULES), BEFORE6_RULES, 0o640)
+            .unwrap();
+        enable(&p).unwrap();
+        let calls = p.calls();
+        let install = position(&calls, "install_packages ufw");
+        let carried = position(&calls, &format!("write_file {UFW_BEFORE_RULES} 640"));
+        let flush = position(&calls, "iptables_flush");
+        let up = position(&calls, "ufw_enable");
+        assert!(
+            install < carried && carried < flush && flush < up,
+            "{calls:#?}"
+        );
+        let before = p.written(UFW_BEFORE_RULES).unwrap();
+        assert!(
+            before.contains(
+                ":ufw-not-local - [0:0]\n:InstanceServices - [0:0]\n-A InstanceServices -d 169.254.0.2/32 -p tcp -m owner --uid-owner 0 -m tcp --dport 3260 "
+            ),
+            "{before}"
+        );
+        assert!(before.contains(
+            "-A ufw-before-output -d 169.254.0.0/16 -j InstanceServices\n# End required lines\n"
+        ));
+        assert_eq!(p.written(UFW_BEFORE6_RULES).unwrap(), BEFORE6_RULES);
+        assert_eq!(p.calls_matching("write_file /etc/ufw").len(), 3);
     }
 
     #[test]

@@ -28,6 +28,7 @@ async fn a_session_cookie_authenticates() {
     let res = h.get_with_cookie("/api/me", &cookie).await;
     assert_eq!(res.status, StatusCode::OK);
     assert_eq!(res.json["kind"], "user");
+    assert!(res.json["id"].is_string());
     assert_eq!(res.json["name"], "Saeed");
     assert_eq!(res.json["read_only"], false);
 }
@@ -40,6 +41,7 @@ async fn a_bearer_token_authenticates_as_a_machine() {
     let res = h.get_with_bearer("/api/me", &minted.secret).await;
     assert_eq!(res.status, StatusCode::OK);
     assert_eq!(res.json["kind"], "machine");
+    assert!(res.json["id"].is_null());
     assert_eq!(res.json["name"], "agent");
     assert_eq!(res.json["read_only"], true);
 }
@@ -204,9 +206,9 @@ async fn a_writing_token_is_not_stopped_by_the_read_only_check() {
     let h = harness().await;
     let token = h.machine_token(false).await;
     assert_eq!(
-        h.post_with_bearer("/api/users", r#"{"name":"Teammate"}"#, &token)
+        h.post_with_bearer("/api/apps/nope/restart", "", &token)
             .await
             .status,
-        StatusCode::OK
+        StatusCode::NOT_FOUND
     );
 }

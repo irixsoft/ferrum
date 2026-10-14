@@ -61,9 +61,10 @@ async fn list(Extract(app): Extract<AppState>, _: Caller) -> ApiResult<Json<Vec<
 
 async fn create(
     Extract(app): Extract<AppState>,
-    _: Caller,
+    caller: Caller,
     Json(body): Json<NewToken>,
 ) -> ApiResult<Json<Minted>> {
+    caller.person()?;
     let name = body.name.trim();
     if name.is_empty() {
         return Err(ApiError::bad_request("A token needs a name."));
