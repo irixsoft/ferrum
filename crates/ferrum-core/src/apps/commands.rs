@@ -18,6 +18,8 @@ const INTERRUPTED: &str = "Interrupted by a Ferrum restart.";
 pub enum CommandError {
     #[error("Type a command to run.")]
     Blank,
+    #[error("A command cannot contain control characters.")]
+    ControlCharacters,
     #[error("Deploy the application first; commands run in its current release.")]
     NotDeployed,
     #[error("A deploy is running for that application; wait for it to finish.")]
@@ -103,6 +105,9 @@ pub async fn start(ctx: &Ctx, app: &App, command: &str) -> anyhow::Result<Run> {
     let command = command.trim();
     if command.is_empty() {
         return Err(CommandError::Blank.into());
+    }
+    if command.chars().any(char::is_control) {
+        return Err(CommandError::ControlCharacters.into());
     }
     let current = current_link(app);
     if !on_disk(ctx.platform.as_ref(), &current) {
@@ -340,6 +345,11 @@ mod tests {
         assert!(matches!(
             e.downcast_ref::<CommandError>(),
             Some(CommandError::Blank)
+        ));
+        let e = start(&ctx, &app, "ls\rid").await.unwrap_err();
+        assert!(matches!(
+            e.downcast_ref::<CommandError>(),
+            Some(CommandError::ControlCharacters)
         ));
 
         p.write_file(

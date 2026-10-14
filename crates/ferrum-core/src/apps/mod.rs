@@ -291,6 +291,18 @@ pub fn validate(new: &NewApp) -> Result<Vec<NewDomain>, AppError> {
             )));
         }
     }
+    let commands = [
+        &new.commands.install,
+        &new.commands.build,
+        &new.commands.migrate,
+    ];
+    if commands
+        .into_iter()
+        .flatten()
+        .any(|c| c.chars().any(char::is_control))
+    {
+        return Err(invalid(processes::CONTROL_CHARACTERS));
+    }
     let build = new.commands.build.as_deref().unwrap_or("").trim();
     if new.processes.iter().any(NewProcess::is_folder) && build.is_empty() {
         return Err(invalid(
@@ -1268,6 +1280,52 @@ pub(crate) mod tests {
             .unwrap();
         assert_eq!(count, 2, "the ws port was released");
         assert!(updated.updated_at >= updated.created_at);
+    }
+
+    #[tokio::test]
+    async fn a_command_with_a_control_character_is_refused_from_the_panel_and_the_file() {
+        for commands in [
+            Commands {
+                build: Some("bun run build\rUser=root".into()),
+                ..Commands::default()
+            },
+            Commands {
+                install: Some("bun install\0".into()),
+                ..Commands::default()
+            },
+            Commands {
+                migrate: Some("bun run migrate\x1b".into()),
+                ..Commands::default()
+            },
+        ] {
+            let new = NewApp {
+                commands,
+                ..new_app("ledger", &[("/", "main", false)])
+            };
+            assert!(
+                matches!(validate(&new), Err(AppError::Invalid(m)) if m == processes::CONTROL_CHARACTERS)
+            );
+        }
+
+        let (_d, state) = state().await;
+        let app = create(&state, new_app("ledger", &[("/", "main", false)]))
+            .await
+            .unwrap();
+        let p = ferrum_platform::FakePlatform::new();
+        for file in [
+            "[processes.web]\nstart = \"true\\rUser=root\"\n",
+            "build = \"true\\rUser=root\"\n",
+        ] {
+            let manifest =
+                crate::manifest::from_toml(&crate::manifest::parse_toml(file).unwrap()).unwrap();
+            let e = apply_manifest(&state, &p, &app, &manifest)
+                .await
+                .unwrap_err();
+            assert!(
+                format!("{e:#}").contains(processes::CONTROL_CHARACTERS),
+                "{file}: {e:#}"
+            );
+        }
     }
 
     #[tokio::test]

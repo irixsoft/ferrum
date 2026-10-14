@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 pub const NAME_MAX: usize = 16;
 pub const DEFAULT_MEMORY_MB: u32 = 512;
 pub const WEB: &str = "web";
+pub const CONTROL_CHARACTERS: &str = "A command cannot contain control characters.";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(tag = "kind", rename_all = "lowercase")]
@@ -203,7 +204,11 @@ pub fn validate(p: &NewProcess) -> Result<(), String> {
                 ));
             }
         }
-        (Some(_), None) => {}
+        (Some(start), None) => {
+            if start.chars().any(char::is_control) {
+                return Err(CONTROL_CHARACTERS.to_string());
+            }
+        }
     }
     if !valid_dir(&p.dir) {
         return Err(format!(
@@ -352,6 +357,17 @@ mod tests {
         assert!(validate(&worker).is_ok());
         worker.health = Some("/healthz".into());
         assert!(validate(&worker).is_err());
+    }
+
+    #[test]
+    fn a_start_command_with_a_control_character_never_reaches_a_unit() {
+        for start in ["true\rUser=root", "true\nUser=root", "a\0b", "a\x1bb"] {
+            assert_eq!(
+                validate(&NewProcess::web(start, None)),
+                Err(CONTROL_CHARACTERS.to_string()),
+                "{start:?}"
+            );
+        }
     }
 
     #[test]
