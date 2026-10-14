@@ -395,6 +395,37 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_package_the_archive_does_not_know_stops_the_deploy_before_apt_runs() {
+        let (_d, state) = state().await;
+        let p = Arc::new(FakePlatform::new());
+        let health = Health::serve(200).await;
+        let app = provisioned(&state, &p, "ledger", health.port, |new| {
+            new.follow_repo_file = true;
+        })
+        .await;
+        p.set_known_packages(&["ffmpeg"]);
+        p.serve_clone(&[("ferrum.toml", "packages = [\"ffmpeg\", \"libvips42\"]\n")]);
+        let ctx = ctx(&state, &p);
+        let (outcome, d) = deploy(&ctx, &app, "abc1234").await;
+        assert_eq!(outcome, Outcome::Failed);
+        assert_eq!(d.steps[2].state, DeployState::InstallingSystemPackages);
+        assert_eq!(d.steps[2].status, StepStatus::Failed);
+        assert!(
+            d.failure_reason
+                .as_deref()
+                .unwrap()
+                .contains("No Ubuntu package is named `libvips42`."),
+            "{:?}",
+            d.failure_reason
+        );
+        assert!(
+            !p.calls()
+                .iter()
+                .any(|c| c.starts_with("install_packages") && c != "install_packages git")
+        );
+    }
+
+    #[tokio::test]
     async fn the_file_s_runtime_and_version_are_used_once_installed() {
         let (_d, state) = state().await;
         let p = Arc::new(FakePlatform::new());

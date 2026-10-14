@@ -1,6 +1,8 @@
 use super::App;
+use crate::detect::valid_package;
 use crate::state::State;
-use ferrum_platform::{Platform, PlatformError};
+use anyhow::bail;
+use ferrum_platform::Platform;
 use serde::Serialize;
 
 fn resolve(platform: &dyn Platform, names: &[String]) -> Vec<String> {
@@ -10,11 +12,23 @@ fn resolve(platform: &dyn Platform, names: &[String]) -> Vec<String> {
         .collect()
 }
 
+pub fn unknown(name: &str) -> String {
+    format!("No Ubuntu package is named `{name}`.")
+}
+
 /// Installs `names` and returns the ones the host already had, which are never removed.
-pub fn install(platform: &dyn Platform, names: &[String]) -> Result<Vec<String>, PlatformError> {
+pub fn install(platform: &dyn Platform, names: &[String]) -> anyhow::Result<Vec<String>> {
+    if let Some(bad) = names.iter().find(|n| !valid_package(n)) {
+        bail!(unknown(bad));
+    }
     let resolved = resolve(platform, names);
     if resolved.is_empty() {
         return Ok(Vec::new());
+    }
+    for name in &resolved {
+        if !platform.package_exists(name)? {
+            bail!(unknown(name));
+        }
     }
     let refs: Vec<&str> = resolved.iter().map(String::as_str).collect();
     let present = platform.installed_packages(&refs)?;
@@ -126,6 +140,20 @@ mod tests {
     use super::*;
     use crate::apps::tests::{new_app, state};
     use ferrum_platform::FakePlatform;
+
+    #[test]
+    fn a_name_the_archive_does_not_know_is_refused_before_apt_runs() {
+        let p = FakePlatform::new();
+        p.set_known_packages(&["ffmpeg"]);
+        let err = install(&p, &["ffmpeg".into(), "libvips42".into()]).unwrap_err();
+        assert_eq!(err.to_string(), "No Ubuntu package is named `libvips42`.");
+        let err = install(&p, &["openssh-server-".into()]).unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "No Ubuntu package is named `openssh-server-`."
+        );
+        assert!(p.calls_matching("install_packages").is_empty());
+    }
 
     #[tokio::test]
     async fn a_package_the_host_had_before_is_never_removable_and_a_shared_one_is_kept() {
