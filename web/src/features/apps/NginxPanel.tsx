@@ -50,7 +50,7 @@ export function NginxPanel({ slug }: { slug: string }) {
             spellCheck={false}
             value={custom}
             onChange={(e) => setDraft(e.target.value)}
-            placeholder={"location /downloads/ {\n  alias /var/lib/ferrum/apps/" + slug + "/shared/storage/;\n}"}
+            placeholder={"location /downloads/ {\n  alias /var/lib/ferrum/apps/" + slug + "/current/public/downloads/;\n}"}
             className="w-full bg-inset border border-line rounded-inset p-3 font-mono text-[12px] leading-relaxed text-ink placeholder:text-ink-4 resize-y"
           />
           {save.error ? <p className="text-[12.5px] text-fail mt-2 font-mono whitespace-pre-wrap">{message(save.error)}</p> : null}

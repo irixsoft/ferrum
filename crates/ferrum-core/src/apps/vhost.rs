@@ -147,6 +147,13 @@ fn maintenance(app: &App) -> String {
 fn body(app: &App, target: &str) -> String {
     let mut out = String::new();
     let _ = writeln!(out, "    include {};\n", custom_path(&app.slug).display());
+    if app.processes.iter().any(|p| p.static_dir().is_some()) {
+        let _ = writeln!(
+            out,
+            "    disable_symlinks if_not_owner from={};\n",
+            app_dir(&app.slug).join("current").display()
+        );
+    }
     out.push_str(&maintenance(app));
 
     let root = Route {
@@ -457,6 +464,17 @@ mod tests {
         assert!(v.contains("root /var/lib/ferrum/apps/docs/current/dist;"));
         assert!(v.contains("try_files $uri $uri/ /index.html;"));
         assert!(!v.contains("proxy_pass"));
+    }
+
+    #[test]
+    fn a_folder_never_follows_a_link_out_of_the_release_and_a_proxy_has_no_such_line() {
+        let mut a = app("docs");
+        a.processes = vec![folder("web", "dist")];
+        let v = render_vhost(&a, &tls(&["docs.example.com"]));
+        let line = "    disable_symlinks if_not_owner from=/var/lib/ferrum/apps/docs/current;\n";
+        assert_eq!(v.matches(line).count(), 1, "{v}");
+        assert!(block(&v, "listen 443 ssl;", "docs.example.com").contains(line));
+        assert!(!render_vhost(&app("ledger"), &[]).contains("disable_symlinks"));
     }
 
     #[test]

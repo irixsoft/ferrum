@@ -1,10 +1,12 @@
+pub mod custom;
+
 use crate::{ACME_ROOT, LISTEN_ADDR, acme};
 use ferrum_platform::ubuntu::{NGINX_CONF_DIR, NGINX_UNIT};
 use ferrum_platform::{Platform, PlatformError, ServiceAction};
 use std::path::{Path, PathBuf};
 
-const ACME_CONF: &str = include_str!("../../../packaging/nginx-acme.conf");
-const PANEL_TMPL: &str = include_str!("../../../packaging/nginx-panel.conf.tmpl");
+const ACME_CONF: &str = include_str!("../../../../packaging/nginx-acme.conf");
+const PANEL_TMPL: &str = include_str!("../../../../packaging/nginx-panel.conf.tmpl");
 
 const REPO_KEY_URL: &str = "https://nginx.org/keys/nginx_signing.key";
 

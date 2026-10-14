@@ -64,8 +64,9 @@ async fn set_custom(
     Ok(StatusCode::NO_CONTENT)
 }
 
-/// `nginx -t` decides; a rejected file is put back as it was and nginx is never reloaded.
+/// A refused directive writes nothing; a file `nginx -t` rejects is put back and nginx not reloaded.
 pub(crate) fn set_custom_file(app: &AppState, found: &apps::App, custom: &str) -> ApiResult<()> {
+    nginx::custom::check(custom, &found.slug).map_err(ApiError::bad_request)?;
     nginx::replace_and_reload(app.platform.as_ref(), &custom_path(&found.slug), custom).map_err(
         |e| match e {
             PlatformError::Command { stderr, .. } => {

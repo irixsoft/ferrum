@@ -18,7 +18,7 @@ async fn the_managed_file_is_read_and_the_custom_one_is_edited_behind_nginx_t() 
     assert_eq!(res.json["custom"], "");
 
     let before = h.platform.calls().len();
-    let body = r#"{"custom":"location /downloads/ {\n  alias /var/lib/ferrum/apps/ledger/shared/storage/;\n}\n"}"#;
+    let body = r#"{"custom":"location /downloads/ {\n  alias /var/lib/ferrum/apps/ledger/current/storage/;\n}\n"}"#;
     let saved = h
         .put_with_cookie("/api/apps/ledger/nginx", body, &cookie)
         .await;
@@ -98,4 +98,39 @@ async fn the_managed_file_is_read_and_the_custom_one_is_edited_behind_nginx_t() 
         )
         .await;
     assert_eq!(refused.status, StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn a_custom_file_that_reaches_the_host_is_refused_before_anything_is_written() {
+    let (h, cookie) = signed_in().await;
+    h.create_app("ledger", &cookie).await;
+    let before = h.platform.calls().len();
+    for (custom, sentence) in [
+        (
+            "location /x {\n  access_log \"/etc/cron.d/x\";\n}\n",
+            "The custom file cannot use `access_log`; nginx's logs are Ferrum's.",
+        ),
+        (
+            "root /;",
+            "`root` must stay under /var/lib/ferrum/apps/ledger/current/.",
+        ),
+    ] {
+        let res = h
+            .put_with_cookie(
+                "/api/apps/ledger/nginx",
+                &serde_json::json!({ "custom": custom }).to_string(),
+                &cookie,
+            )
+            .await;
+        assert_eq!(res.status, StatusCode::BAD_REQUEST, "{}", res.json);
+        assert_eq!(res.json["error"], sentence);
+    }
+    assert_eq!(h.platform.written(CUSTOM).as_deref(), Some(""));
+    let calls = h.platform.calls()[before..].to_vec();
+    assert!(
+        !calls
+            .iter()
+            .any(|c| c.contains(CUSTOM) || c == "nginx_test"),
+        "{calls:#?}"
+    );
 }

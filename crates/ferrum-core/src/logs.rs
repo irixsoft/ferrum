@@ -1,4 +1,5 @@
-use crate::apps::{App, processes::unit_name};
+use crate::apps::{self, App, processes::unit_name};
+use crate::state::State;
 use ferrum_platform::ubuntu::NGINX_LOG_DIR;
 use ferrum_platform::{JournalLine, Platform};
 use serde::{Deserialize, Serialize};
@@ -44,6 +45,26 @@ pub fn access_log_path(slug: &str) -> PathBuf {
 
 pub fn error_log_path(slug: &str) -> PathBuf {
     Path::new(NGINX_LOG_DIR).join(format!("ferrum-{slug}.error.log"))
+}
+
+pub fn secure(platform: &dyn Platform, slug: &str) -> anyhow::Result<()> {
+    platform.ensure_log_file(&access_log_path(slug))?;
+    platform.ensure_log_file(&error_log_path(slug))?;
+    Ok(())
+}
+
+/// Returns the apps whose logs could not be secured, each with the reason.
+pub async fn secure_all(
+    state: &State,
+    platform: &dyn Platform,
+) -> anyhow::Result<Vec<(String, anyhow::Error)>> {
+    let mut failed = Vec::new();
+    for app in apps::list(state).await? {
+        if let Err(e) = secure(platform, &app.slug) {
+            failed.push((app.slug, e));
+        }
+    }
+    Ok(failed)
 }
 
 fn stamp(at: chrono::DateTime<chrono::Utc>) -> String {
@@ -297,6 +318,35 @@ mod tests {
                 .is_empty()
         );
         assert!(tail(&p, &a, "jobs", Source::App, 200).unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn every_app_s_logs_are_secured_and_one_that_fails_is_reported_without_stopping() {
+        let (_d, state) = crate::apps::tests::state().await;
+        for slug in ["ledger", "notes"] {
+            apps::create(
+                &state,
+                crate::apps::tests::new_app(slug, &[("/", "main", false)]),
+            )
+            .await
+            .unwrap();
+        }
+        let p = FakePlatform::new();
+        p.fail_next("ensure_log_file /var/log/nginx/ferrum-ledger.access.log");
+
+        let failed = secure_all(&state, &p).await.unwrap();
+
+        assert_eq!(failed.len(), 1);
+        assert_eq!(failed[0].0, "ledger");
+        for path in [
+            "/var/log/nginx/ferrum-notes.access.log",
+            "/var/log/nginx/ferrum-notes.error.log",
+        ] {
+            assert_eq!(
+                p.calls_matching(&format!("ensure_log_file {path}")).len(),
+                1
+            );
+        }
     }
 
     #[tokio::test(flavor = "multi_thread")]

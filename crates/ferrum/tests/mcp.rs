@@ -691,3 +691,44 @@ async fn the_write_tools_change_the_box_the_way_the_routes_do() {
     .await;
     assert_eq!(too_short["isError"], true, "{too_short}");
 }
+
+#[tokio::test]
+async fn add_domain_refuses_the_panel_s_own_hostname() {
+    let (h, cookie) = signed_in().await;
+    h.create_app("ledger", &cookie).await;
+    let token = h.machine_token(false).await;
+    let panel = call(
+        &h,
+        &token,
+        "add_domain",
+        json!({ "slug": "ledger", "domain": HOSTNAME }),
+    )
+    .await;
+    assert_eq!(error_text(&panel), "That is the panel's own hostname.");
+}
+
+#[tokio::test]
+async fn edit_nginx_directives_refuses_a_directive_that_reaches_the_host() {
+    let (h, cookie) = signed_in().await;
+    h.create_app("ledger", &cookie).await;
+    let token = h.machine_token(false).await;
+    let before = h.platform.calls().len();
+    let refused = call(
+        &h,
+        &token,
+        "edit_nginx_directives",
+        json!({ "slug": "ledger", "custom": "location /x {\n  access_log /etc/cron.d/x;\n}\n" }),
+    )
+    .await;
+    assert_eq!(
+        error_text(&refused),
+        "The custom file cannot use `access_log`; nginx's logs are Ferrum's."
+    );
+    let calls = h.platform.calls()[before..].to_vec();
+    assert!(
+        !calls
+            .iter()
+            .any(|c| c.contains(CUSTOM) || c == "nginx_test"),
+        "{calls:#?}"
+    );
+}
