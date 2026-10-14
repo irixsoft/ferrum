@@ -1226,6 +1226,7 @@ dependencies = [
 name = "ferrum-platform"
 version = "0.2.3"
 dependencies = [
+ "base64 0.22.1",
  "flate2",
  "serde",
  "serde_json",

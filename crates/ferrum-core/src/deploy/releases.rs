@@ -156,7 +156,7 @@ mod tests {
         let mut ids = Vec::new();
         for i in 0..7 {
             let dir = releases_dir(&app).join(format!("r{i}"));
-            p.git_clone("https://github.com/x/y.git", Some("main"), &dir, 1)
+            p.git_clone("https://github.com/x/y.git", Some("main"), &dir, 1, None)
                 .unwrap();
             let r = record(&state, &app, &dir, "main", &format!("{i}abcdef0"), None)
                 .await

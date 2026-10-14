@@ -474,8 +474,7 @@ impl Job {
             .github
             .installation_token(&self.ctx.state, crate::github::owner_of(repository))
             .await?;
-        let url = format!("https://x-access-token:{token}@github.com/{repository}.git");
-        let public = format!("https://github.com/{repository}.git");
+        let url = format!("https://github.com/{repository}.git");
         let dir = releases::release_dir(&self.app, &sha);
         self.release_dir = Some(dir.clone());
         self.say(&format!("Cloning {repository} at {}", self.deploy.git_ref))
@@ -483,12 +482,11 @@ impl Job {
         let clone_ref =
             (!looks_like_sha(&self.deploy.git_ref)).then_some(self.deploy.git_ref.as_str());
         platform
-            .git_clone(&url, clone_ref, &dir, 1)
+            .git_clone(&url, clone_ref, &dir, 1, Some(&token))
             .context("cloning the repository")?;
         platform
-            .git_checkout(&dir, &sha)
+            .git_checkout(&dir, &sha, Some(&token))
             .with_context(|| format!("checking out {}", short(&sha)))?;
-        platform.git_scrub_remote(&dir, &public)?;
         let head = platform.git_head(&dir)?;
         if head != sha {
             super::set_commit(

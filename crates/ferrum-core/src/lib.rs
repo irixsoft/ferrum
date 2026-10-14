@@ -36,6 +36,10 @@ use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
 pub const LISTEN_ADDR: SocketAddr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 8443);
 
+/// Only root can create a file here, so nothing else can stand in for the daemon.
+pub const SOCKET_DIR: &str = "/run/ferrum";
+pub const SOCKET_PATH: &str = "/run/ferrum/ferrum.sock";
+
 pub const FERRUM_UNIT: &str = "ferrum";
 
 pub const DATA_DIR: &str = "/var/lib/ferrum";

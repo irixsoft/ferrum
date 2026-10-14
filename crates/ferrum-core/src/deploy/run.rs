@@ -210,12 +210,13 @@ mod tests {
             c.starts_with("git_clone https://github.com/irixsoft/ledger.git main /var/lib/ferrum/apps/ledger/releases/")
         });
         let checkout = position(&calls, |c| {
-            c.starts_with("git_checkout") && c.ends_with("a3f9c2d4e81b06f5c9a2")
+            c.starts_with("git_checkout") && c.ends_with(" auth a3f9c2d4e81b06f5c9a2")
         });
-        let scrub = position(&calls, |c| {
-            c.starts_with("git_scrub_remote")
-                && c.ends_with("https://github.com/irixsoft/ledger.git")
-        });
+        assert!(
+            calls[clone].ends_with(" auth"),
+            "the token rides in git's environment, never in the URL: {}",
+            calls[clone]
+        );
         let env = calls
             .iter()
             .rposition(|c| c == "write_file /var/lib/ferrum/apps/ledger/env 600")
@@ -233,8 +234,7 @@ mod tests {
         let start = position(&calls, |c| c == "service enable-now ferrum-app-ledger-web");
         assert!(
             clone < checkout
-                && checkout < scrub
-                && scrub < env
+                && checkout < env
                 && env < install
                 && install < build
                 && build < swap
