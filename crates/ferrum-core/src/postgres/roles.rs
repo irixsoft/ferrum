@@ -278,14 +278,23 @@ pub async fn remove(
 
 pub async fn url(state: &State, db: &Database, role: &str) -> anyhow::Result<String> {
     let target = found(state, db, role).await?;
+    let password = password(state, &target.id).await?;
+    Ok(super::url(&db.name, &target.name, &password))
+}
+
+pub async fn owner_password(state: &State, db: &Database) -> anyhow::Result<String> {
+    let owner = found(state, db, &db.role).await?;
+    password(state, &owner.id).await
+}
+
+async fn password(state: &State, role_id: &str) -> anyhow::Result<String> {
     let sealed = sqlx::query_scalar!(
         r#"SELECT password AS "password!" FROM database_roles WHERE id = ?"#,
-        target.id
+        role_id
     )
     .fetch_one(&state.pool)
     .await?;
-    let password = secrets::decrypt(&state.key, &sealed)?;
-    Ok(super::url(&db.name, &target.name, &password))
+    secrets::decrypt(&state.key, &sealed)
 }
 
 /// `(label, role, sealed password)` for every role but the owner, by name.

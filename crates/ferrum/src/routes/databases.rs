@@ -285,9 +285,8 @@ async fn create_from_dump(
     let format = receive(&app, &name, &staged, request.into_body()).await?;
 
     let platform = app.platform.clone();
-    let role = name.clone();
     let (staged, prepared) = tokio::task::spawn_blocking(move || {
-        let prepared = restore::prepare(platform.as_ref(), &staged, format, &role);
+        let prepared = restore::prepare(platform.as_ref(), &staged, format);
         (staged, prepared)
     })
     .await
@@ -325,25 +324,26 @@ async fn create_from_dump(
     let task = app.clone();
     let database = name.clone();
     tokio::spawn(async move {
-        let platform = task.platform.clone();
-        let loaded = db.clone();
-        let result = tokio::task::spawn_blocking(move || {
-            let result = restore::load(
-                platform.as_ref(),
-                &loaded,
-                &staged,
-                format,
-                prepared.list.as_deref(),
-            );
-            drop(staged);
-            result
-        })
+        let result = async {
+            let password = postgres::roles::owner_password(&task.db, &db).await?;
+            let platform = task.platform.clone();
+            let loaded = db.clone();
+            tokio::task::spawn_blocking(move || {
+                let result = restore::load(
+                    platform.as_ref(),
+                    &loaded,
+                    &password,
+                    &staged,
+                    format,
+                    prepared.list.as_deref(),
+                );
+                drop(staged);
+                result
+            })
+            .await??;
+            postgres::roles::regrant(&task.db, task.platform.as_ref(), &db).await
+        }
         .await;
-        let result = match result {
-            Ok(Ok(())) => postgres::roles::regrant(&task.db, task.platform.as_ref(), &db).await,
-            Ok(Err(e)) => Err(e),
-            Err(e) => Err(e.into()),
-        };
         let outcome = match result {
             Ok(()) => Install::Idle,
             Err(e) => Install::Failed(e.to_string()),
