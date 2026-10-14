@@ -14,7 +14,7 @@ description: >
 
 # Running an app on Ferrum
 
-Written for Ferrum 0.2.3. Everything an agent needs is in this file.
+Written for Ferrum 0.2.4. Everything an agent needs is in this file.
 
 ## How Ferrum runs an app
 
@@ -104,8 +104,9 @@ Keys:
   directory. A key left out keeps the panel's value. Without a file, Ferrum prefills them at
   creation from `package.json` scripts (`build`, `start`, `db:migrate`/`migrate`) or the
   `.csproj`; the prefill never runs on deploys.
-- `packages`: Ubuntu packages, one name each (`^[a-z0-9][a-z0-9+._-]*$`), installed before
-  the build on every deploy. A package dropped from the list is kept and the app's page says
+- `packages`: Ubuntu packages, one name each (`^[a-z0-9][a-z0-9+.-]*[a-z0-9]$`, at least two
+  characters), installed before the build on every deploy. A name that is not an existing
+  Ubuntu package refuses the deploy. A package dropped from the list is kept and the app's page says
   so, with an Uninstall button; a deploy never removes anything. Left out, the panel's list
   stands. Packages are system-wide.
 - `[processes.<name>]`: one table per process. A name is lowercase letters, digits and
