@@ -220,7 +220,7 @@ pub fn load(
 ) -> anyhow::Result<()> {
     match format {
         Format::Custom => {
-            platform.postgres_restore_as(&db.name, &db.role, password, &staged.path, list)
+            platform.postgres_restore_as(&db.name, &db.role, password, &staged.path, list, false)
         }
         Format::Plain => {
             platform.postgres_restore_sql_as(&db.name, &db.role, password, &staged.path)

@@ -842,56 +842,6 @@ impl Platform for Ubuntu {
         exec::run(&["runuser", "-u", PG_USER, "--", "pg_restore", "-l", &from])
     }
 
-    fn postgres_restore(
-        &self,
-        database: &str,
-        from: &Path,
-        role: Option<&str>,
-        list: Option<&Path>,
-    ) -> Result<(), PlatformError> {
-        let from = from.to_string_lossy();
-        let role = role.map(|r| format!("--role={r}"));
-        let list = list.map(|l| l.to_string_lossy().to_string());
-        let mut argv = vec![
-            "runuser",
-            "-u",
-            PG_USER,
-            "--",
-            "pg_restore",
-            "--single-transaction",
-            "--exit-on-error",
-        ];
-        if let Some(role) = &role {
-            argv.extend(["--no-owner", "--no-privileges", role]);
-        }
-        if let Some(list) = &list {
-            argv.extend(["-L", list]);
-        }
-        argv.extend(["-d", database, &from]);
-        exec::run(&argv).map(|_| ())
-    }
-
-    fn postgres_restore_sql(&self, database: &str, from: &Path) -> Result<(), PlatformError> {
-        let from = from.to_string_lossy();
-        exec::run(&[
-            "runuser",
-            "-u",
-            PG_USER,
-            "--",
-            "psql",
-            "-X",
-            "-q",
-            "-1",
-            "-v",
-            "ON_ERROR_STOP=1",
-            "-d",
-            database,
-            "-f",
-            &from,
-        ])
-        .map(|_| ())
-    }
-
     fn postgres_restore_as(
         &self,
         database: &str,
@@ -899,6 +849,7 @@ impl Platform for Ubuntu {
         password: &str,
         from: &Path,
         list: Option<&Path>,
+        keep_privileges: bool,
     ) -> Result<(), PlatformError> {
         let from = from.to_string_lossy();
         let port = PG_PORT.to_string();
@@ -908,8 +859,10 @@ impl Platform for Ubuntu {
             "--single-transaction",
             "--exit-on-error",
             "--no-owner",
-            "--no-privileges",
         ];
+        if !keep_privileges {
+            argv.push("--no-privileges");
+        }
         if let Some(list) = &list {
             argv.extend(["-L", list]);
         }

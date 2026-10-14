@@ -85,7 +85,7 @@ pub async fn restore(
     let list_path = path.with_extension("list");
     platform.write_file(&list_path, &list, 0o600)?;
     let restored =
-        platform.postgres_restore_as(&db.name, &db.role, &password, path, Some(&list_path));
+        platform.postgres_restore_as(&db.name, &db.role, &password, path, Some(&list_path), true);
     platform.remove_file(&list_path)?;
     restored?;
     postgres::roles::regrant(state, platform, &db).await
@@ -252,7 +252,7 @@ mod tests {
             [
                 "postgres_sql ledger_prod CREATE EXTENSION IF NOT EXISTS \"vector\";\n".to_string(),
                 format!("write_file {list} 600"),
-                format!("postgres_restore_as ledger_prod ledger_prod {path} {list}"),
+                format!("postgres_restore_as ledger_prod ledger_prod {path} {list} privileges"),
                 format!("remove_file {list}"),
             ]
         );

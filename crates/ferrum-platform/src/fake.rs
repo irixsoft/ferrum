@@ -641,28 +641,6 @@ impl Platform for FakePlatform {
         Ok(self.inner.lock().unwrap().restore_list.clone())
     }
 
-    fn postgres_restore(
-        &self,
-        database: &str,
-        from: &Path,
-        role: Option<&str>,
-        list: Option<&Path>,
-    ) -> Result<(), PlatformError> {
-        self.record(format!(
-            "postgres_restore {database} {} {} {}",
-            from.to_string_lossy(),
-            role.unwrap_or("-"),
-            list.map_or("-".to_string(), |l| l.to_string_lossy().to_string())
-        ))
-    }
-
-    fn postgres_restore_sql(&self, database: &str, from: &Path) -> Result<(), PlatformError> {
-        self.record(format!(
-            "postgres_restore_sql {database} {}",
-            from.to_string_lossy()
-        ))
-    }
-
     fn postgres_restore_as(
         &self,
         database: &str,
@@ -670,11 +648,13 @@ impl Platform for FakePlatform {
         _password: &str,
         from: &Path,
         list: Option<&Path>,
+        keep_privileges: bool,
     ) -> Result<(), PlatformError> {
         self.record(format!(
-            "postgres_restore_as {database} {role} {} {}",
+            "postgres_restore_as {database} {role} {} {}{}",
             from.to_string_lossy(),
-            list.map_or("-".to_string(), |l| l.to_string_lossy().to_string())
+            list.map_or("-".to_string(), |l| l.to_string_lossy().to_string()),
+            if keep_privileges { " privileges" } else { "" }
         ))
     }
 

@@ -193,19 +193,10 @@ pub trait Platform: Send + Sync {
     fn postgres_dump(&self, database: &str, to: &Path) -> Result<(), PlatformError>;
     /// `pg_restore -l`: the archive's table of contents, edited and fed back as `list`.
     fn postgres_restore_list(&self, from: &Path) -> Result<String, PlatformError>;
-    /// With a role, the dump's ownership and privileges are dropped and everything is created as
-    /// that role; without one the archive is loaded as dumped.
-    fn postgres_restore(
-        &self,
-        database: &str,
-        from: &Path,
-        role: Option<&str>,
-        list: Option<&Path>,
-    ) -> Result<(), PlatformError>;
-    /// A plain-SQL dump, which `pg_restore` cannot read, loaded through psql in one transaction.
-    fn postgres_restore_sql(&self, database: &str, from: &Path) -> Result<(), PlatformError>;
     /// Loads the archive connected as `role` over loopback, so nothing in it can run as the
-    /// superuser; ownership and privileges are dropped and `list` edits the table of contents.
+    /// superuser; ownership is dropped, `list` edits the table of contents, and the grants it
+    /// carries are replayed only with `keep_privileges` (a dump from elsewhere names roles this
+    /// host lacks; a snapshot of this host does not).
     fn postgres_restore_as(
         &self,
         database: &str,
@@ -213,6 +204,7 @@ pub trait Platform: Send + Sync {
         password: &str,
         from: &Path,
         list: Option<&Path>,
+        keep_privileges: bool,
     ) -> Result<(), PlatformError>;
     /// The plain-SQL counterpart of `postgres_restore_as`.
     fn postgres_restore_sql_as(
