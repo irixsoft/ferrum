@@ -288,6 +288,14 @@ pub async fn serve(data_dir: &Path) -> anyhow::Result<()> {
         }
         Err(e) => tracing::warn!(error = %e, "securing the app directories"),
     }
+    match ferrum_core::logs::secure_all(&state, deps.platform.as_ref()).await {
+        Ok(failed) => {
+            for (slug, e) in failed {
+                tracing::warn!(app = %slug, error = %e, "securing the app's nginx logs");
+            }
+        }
+        Err(e) => tracing::warn!(error = %e, "securing the app nginx logs"),
+    }
     match ferrum_core::apps::provision::move_env_files(&state, deps.platform.as_ref()).await {
         Ok(0) => {}
         Ok(n) => tracing::info!(apps = n, "app environment files moved out of shared/"),
