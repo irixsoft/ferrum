@@ -11,6 +11,12 @@ pub const DEFAULT_MEMORY_MB: u32 = 512;
 pub const WEB: &str = "web";
 pub const CONTROL_CHARACTERS: &str = "A command cannot contain control characters.";
 
+pub fn has_control_characters(command: &str) -> bool {
+    command
+        .chars()
+        .any(|c| c.is_control() && c != '\n' && c != '\t')
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(tag = "kind", rename_all = "lowercase")]
 pub enum ProcessKind {
@@ -205,7 +211,7 @@ pub fn validate(p: &NewProcess) -> Result<(), String> {
             }
         }
         (Some(start), None) => {
-            if start.chars().any(char::is_control) {
+            if has_control_characters(start) {
                 return Err(CONTROL_CHARACTERS.to_string());
             }
         }
@@ -361,13 +367,15 @@ mod tests {
 
     #[test]
     fn a_start_command_with_a_control_character_never_reaches_a_unit() {
-        for start in ["true\rUser=root", "true\nUser=root", "a\0b", "a\x1bb"] {
+        for start in ["true\rUser=root", "a\0b", "a\x1bb"] {
             assert_eq!(
                 validate(&NewProcess::web(start, None)),
                 Err(CONTROL_CHARACTERS.to_string()),
                 "{start:?}"
             );
         }
+        let multi_line = NewProcess::web("bun run migrate &&\n\tbun run start", None);
+        assert_eq!(validate(&multi_line), Ok(()));
     }
 
     #[test]

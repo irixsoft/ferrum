@@ -299,7 +299,7 @@ pub fn validate(new: &NewApp) -> Result<Vec<NewDomain>, AppError> {
     if commands
         .into_iter()
         .flatten()
-        .any(|c| c.chars().any(char::is_control))
+        .any(|c| processes::has_control_characters(c))
     {
         return Err(invalid(processes::CONTROL_CHARACTERS));
     }
@@ -1306,6 +1306,14 @@ pub(crate) mod tests {
                 matches!(validate(&new), Err(AppError::Invalid(m)) if m == processes::CONTROL_CHARACTERS)
             );
         }
+        let tabbed = NewApp {
+            commands: Commands {
+                build: Some("bun run build &&\n\tbun run docs".into()),
+                ..Commands::default()
+            },
+            ..new_app("ledger", &[("/", "main", false)])
+        };
+        assert!(validate(&tabbed).is_ok());
 
         let (_d, state) = state().await;
         let app = create(&state, new_app("ledger", &[("/", "main", false)]))

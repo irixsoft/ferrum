@@ -1,4 +1,5 @@
 use crate::apps::App;
+use crate::apps::processes::has_control_characters;
 use crate::apps::provision::user_name;
 use crate::deploy::releases::{current_link, on_disk};
 use crate::deploy::run::{CPU_WEIGHT, Ctx, IO_WEIGHT};
@@ -106,7 +107,7 @@ pub async fn start(ctx: &Ctx, app: &App, command: &str) -> anyhow::Result<Run> {
     if command.is_empty() {
         return Err(CommandError::Blank.into());
     }
-    if command.chars().any(char::is_control) {
+    if has_control_characters(command) {
         return Err(CommandError::ControlCharacters.into());
     }
     let current = current_link(app);
