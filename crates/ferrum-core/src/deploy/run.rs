@@ -640,10 +640,18 @@ mod tests {
         let build = position(&calls, |c| {
             c.starts_with("run_scoped") && c.contains("bun run build")
         });
-        let chown = position(&calls, |c| {
-            c.starts_with("chown_tree /var/lib/ferrum/apps/ledger/releases/")
+        let made = position(&calls, |c| {
+            c.starts_with("make_dirs /var/lib/ferrum/apps/ledger/releases/") && c.ends_with(" 750")
         });
-        assert!(chown < link && link < build, "{calls:#?}");
+        let clone = position(&calls, |c| c.starts_with("git_clone"));
+        let secured = position(&calls, |c| {
+            c.starts_with("secure_release /var/lib/ferrum/apps/ledger/releases/")
+                && c.ends_with(" ferrum-ledger")
+        });
+        assert!(
+            made < clone && clone < secured && secured < link && link < build,
+            "{calls:#?}"
+        );
         assert!(
             calls.contains(
                 &"make_dirs_as ferrum-ledger /var/lib/ferrum/apps/ledger/shared/cache/next 750"

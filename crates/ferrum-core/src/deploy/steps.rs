@@ -481,6 +481,7 @@ impl Job {
             .await?;
         let clone_ref =
             (!looks_like_sha(&self.deploy.git_ref)).then_some(self.deploy.git_ref.as_str());
+        platform.make_dirs(&dir, 0o750)?;
         platform
             .git_clone(&url, clone_ref, &dir, 1, Some(&token))
             .context("cloning the repository")?;
@@ -501,7 +502,7 @@ impl Job {
             self.deploy.commit_sha = Some(head.clone());
         }
         let user = user_name(&self.app.slug);
-        platform.chown_tree(&dir, &user)?;
+        platform.secure_release(&dir, &user)?;
         self.prepare_caches(&dir, &user)?;
         write_env(&self.ctx.state, platform.as_ref(), &self.app).await?;
         self.say(&format!("Checked out {}", short(&head))).await?;
