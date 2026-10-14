@@ -340,7 +340,7 @@ pub fn validate(new: &NewApp) -> Result<Vec<NewDomain>, AppError> {
     }
     for package in &new.packages {
         if !detect::valid_package(package) {
-            return Err(invalid(format!("{package} is not a valid package name.")));
+            return Err(invalid(packages::unknown(package)));
         }
     }
     let settled = domains::settle(&new.domains, &new.processes, &new.routes)?;

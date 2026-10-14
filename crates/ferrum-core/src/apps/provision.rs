@@ -244,7 +244,9 @@ pub async fn deprovision(state: &State, platform: &dyn Platform, app: &App) -> a
     platform.nginx_test()?;
     platform.service(ServiceAction::Reload, NGINX_UNIT)?;
 
-    platform.remove_system_user(&user_name(&app.slug))?;
+    let user = user_name(&app.slug);
+    platform.kill_user_processes(&user)?;
+    platform.remove_system_user(&user)?;
     platform.remove_tree(&app_dir(&app.slug))?;
     Ok(())
 }
@@ -747,8 +749,12 @@ mod tests {
         assert!(calls.contains(&"remove_system_user ferrum-ledger".to_string()));
         assert!(calls.contains(&"remove_tree /var/lib/ferrum/apps/ledger".to_string()));
         let stop = position(&calls, "service stop ferrum-app-ledger-web");
+        let killed = position(&calls, "kill_user_processes ferrum-ledger");
         let user = position(&calls, "remove_system_user ferrum-ledger");
         let tree = position(&calls, "remove_tree /var/lib/ferrum/apps/ledger");
-        assert!(stop < user && user < tree, "{calls:#?}");
+        assert!(
+            stop < killed && killed + 1 == user && user < tree,
+            "{calls:#?}"
+        );
     }
 }
