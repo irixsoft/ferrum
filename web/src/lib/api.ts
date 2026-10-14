@@ -394,6 +394,12 @@ export function useEnrollmentLink() {
   );
 }
 
+export function useRemoveUser() {
+  return useInvalidating(keys.users, (id: string) =>
+    request<void>(`/users/${id}`, { method: "DELETE" }),
+  );
+}
+
 export function useCreateToken() {
   return useInvalidating(keys.tokens, (token: { name: string; read_only: boolean }) =>
     request<MintedToken>("/tokens", body(token)),
