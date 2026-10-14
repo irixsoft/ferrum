@@ -445,12 +445,12 @@ fn git_env(token: Option<&str>) -> Vec<(&'static str, String)> {
 
 /// `apt-cache policy` prints nothing for an unknown name and `Candidate: (none)` for one that
 /// is known but not installable.
-pub fn package_has_candidate(policy: &str) -> bool {
-    policy
-        .lines()
-        .map(str::trim)
-        .find_map(|l| l.strip_prefix("Candidate:"))
-        .is_some_and(|c| c.trim() != "(none)")
+pub fn package_has_candidate(policy: &str, name: &str) -> bool {
+    let mut lines = policy.lines().map(str::trim);
+    lines.next() == Some(&format!("{name}:"))
+        && lines
+            .find_map(|l| l.strip_prefix("Candidate:"))
+            .is_some_and(|c| c.trim() != "(none)")
 }
 
 fn redacted(result: Result<String, PlatformError>, url: &str) -> Result<(), PlatformError> {
@@ -689,7 +689,7 @@ impl Platform for Ubuntu {
 
     fn package_exists(&self, name: &str) -> Result<bool, PlatformError> {
         let out = exec::run_env(&["apt-cache", "policy", "--", name], &APT_ENV)?;
-        Ok(package_has_candidate(&out))
+        Ok(package_has_candidate(&out, name))
     }
 
     fn kill_user_processes(&self, user: &str) -> Result<(), PlatformError> {
@@ -1657,14 +1657,19 @@ mod tests {
     }
 
     #[test]
-    fn a_package_exists_only_with_an_installable_candidate() {
-        assert!(package_has_candidate(
-            "ffmpeg:\n  Installed: (none)\n  Candidate: 7:6.1.1-3ubuntu5\n  Version table:\n"
-        ));
+    fn a_package_exists_only_with_an_installable_candidate_under_its_exact_name() {
+        let ffmpeg =
+            "ffmpeg:\n  Installed: (none)\n  Candidate: 7:6.1.1-3ubuntu5\n  Version table:\n";
+        assert!(package_has_candidate(ffmpeg, "ffmpeg"));
+        assert!(
+            !package_has_candidate(ffmpeg, "ff.*"),
+            "a pattern apt expanded is not the package it named"
+        );
         assert!(!package_has_candidate(
-            "nothing:\n  Installed: (none)\n  Candidate: (none)\n"
+            "nothing:\n  Installed: (none)\n  Candidate: (none)\n",
+            "nothing"
         ));
-        assert!(!package_has_candidate(""));
+        assert!(!package_has_candidate("", "nothing"));
     }
 
     #[test]
