@@ -155,6 +155,7 @@ pub trait Platform: Send + Sync {
     fn remove_tree(&self, path: &Path) -> Result<(), PlatformError>;
     fn chown_tree(&self, path: &Path, user: &str) -> Result<(), PlatformError>;
     fn chown(&self, path: &Path, user: &str) -> Result<(), PlatformError>;
+    fn chmod(&self, path: &Path, mode: u32) -> Result<(), PlatformError>;
     /// Creates `path` if missing and sets its mode and owner; a link there is refused.
     fn secure_dir(&self, path: &Path, mode: u32, owner: &str) -> Result<(), PlatformError>;
     /// The tree becomes the user's; the directory itself is `user:www-data 0750`, so nginx can

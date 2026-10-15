@@ -21,6 +21,9 @@ pub fn extract_tar_gz(archive: &[u8], dest: &Path, strip_components: u32) -> io:
         };
         let target = dest.join(rel);
         let parent = target.parent().unwrap_or(dest);
+        if !nearest_existing(parent)?.starts_with(&root) {
+            return Err(escapes(&path));
+        }
         std::fs::create_dir_all(parent)?;
         if !parent.canonicalize()?.starts_with(&root) {
             return Err(escapes(&path));
@@ -48,6 +51,16 @@ pub fn extract_tar_gz(archive: &[u8], dest: &Path, strip_components: u32) -> io:
         entry.unpack(&target)?;
     }
     Ok(())
+}
+
+fn nearest_existing(path: &Path) -> io::Result<PathBuf> {
+    let mut cur = path;
+    loop {
+        if let Ok(real) = cur.canonicalize() {
+            return Ok(real);
+        }
+        cur = cur.parent().ok_or_else(|| escapes(path))?;
+    }
 }
 
 fn resolve(dir: &Path, link: &Path) -> PathBuf {
@@ -248,9 +261,9 @@ pub(crate) mod tests {
         assert!(!dest.join("shadow").exists());
 
         std::os::unix::fs::symlink(&outside, dest.join("planted")).unwrap();
-        let archive = tar_with(|t| file(t, "planted/evil", b"x", 0o644));
+        let archive = tar_with(|t| file(t, "planted/a/b/evil", b"x", 0o644));
         assert!(extract_tar_gz(&archive, &dest, 0).is_err());
-        assert!(!outside.join("evil").exists());
+        assert_eq!(std::fs::read_dir(&outside).unwrap().count(), 0);
     }
 
     #[test]

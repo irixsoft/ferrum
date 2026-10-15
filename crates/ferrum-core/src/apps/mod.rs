@@ -366,7 +366,7 @@ async fn refuse_panel_hostname(state: &State, settled: &[NewDomain]) -> anyhow::
         return Ok(());
     };
     let panel = panel.trim().to_ascii_lowercase();
-    if settled.iter().any(|d| domains::covers(&d.domain, &panel)) {
+    if settled.iter().any(|d| d.domain == panel) {
         return Err(invalid(PANEL_HOSTNAME).into());
     }
     Ok(())
@@ -1123,7 +1123,7 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
-    async fn the_panel_s_hostname_and_a_wildcard_over_it_belong_to_no_app() {
+    async fn the_panel_s_hostname_belongs_to_no_app_but_a_wildcard_beside_it_may() {
         let (_d, state) = state().await;
         crate::setup::set_hostname(&state, "panel.example.com")
             .await
@@ -1132,17 +1132,10 @@ pub(crate) mod tests {
             .execute(&state.pool)
             .await
             .unwrap();
-        let mut wildcard = NewDomain::from("*.example.com");
-        wildcard.dns_provider_id = Some("cf".into());
-        for domains in [
-            vec![NewDomain::from("Panel.Example.com")],
-            vec!["ledger.example.com".into(), wildcard.clone()],
-        ] {
-            let mut new = new_app("ledger", &[("/", "main", false)]);
-            new.domains = domains;
-            let e = create(&state, new).await.unwrap_err();
-            assert_eq!(e.to_string(), PANEL_HOSTNAME);
-        }
+        let mut new = new_app("ledger", &[("/", "main", false)]);
+        new.domains = vec![NewDomain::from("Panel.Example.com")];
+        let e = create(&state, new).await.unwrap_err();
+        assert_eq!(e.to_string(), PANEL_HOSTNAME);
         assert!(by_slug(&state, "ledger").await.unwrap().is_none());
 
         create(&state, new_app("ledger", &[("/", "main", false)]))
@@ -1152,20 +1145,20 @@ pub(crate) mod tests {
             &state,
             "ledger",
             AppChanges {
-                domains: Some(vec!["ledger.example.com".into(), wildcard]),
+                domains: Some(vec!["panel.example.com".into()]),
                 ..AppChanges::default()
             },
         )
         .await
         .unwrap_err();
         assert_eq!(e.to_string(), PANEL_HOSTNAME);
-        let mut sibling = NewDomain::from("*.ledger.example.com");
-        sibling.dns_provider_id = Some("cf".into());
+        let mut wildcard = NewDomain::from("*.example.com");
+        wildcard.dns_provider_id = Some("cf".into());
         let kept = update(
             &state,
             "ledger",
             AppChanges {
-                domains: Some(vec!["ledger.example.com".into(), sibling]),
+                domains: Some(vec!["ledger.example.com".into(), wildcard]),
                 ..AppChanges::default()
             },
         )

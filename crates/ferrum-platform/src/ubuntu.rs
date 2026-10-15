@@ -68,6 +68,7 @@ const ICU_FALLBACK: &str = "libicu-dev";
 
 const USERDEL_MISSING: i32 = 6;
 const PKILL_NONE: i32 = 1;
+const PKILL_NO_USER: i32 = 2;
 
 const APT_ENV: [(&str, &str); 2] = [
     ("DEBIAN_FRONTEND", "noninteractive"),
@@ -639,6 +640,11 @@ impl Platform for Ubuntu {
         exec::run(&["chown", "-h", &owner, &path.to_string_lossy()]).map(|_| ())
     }
 
+    fn chmod(&self, path: &Path, mode: u32) -> Result<(), PlatformError> {
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode))?;
+        Ok(())
+    }
+
     fn secure_dir(&self, path: &Path, mode: u32, owner: &str) -> Result<(), PlatformError> {
         std::fs::create_dir_all(path)?;
         if std::fs::symlink_metadata(path)?.file_type().is_symlink() {
@@ -693,7 +699,15 @@ impl Platform for Ubuntu {
     }
 
     fn kill_user_processes(&self, user: &str) -> Result<(), PlatformError> {
-        tolerate(exec::run(&["pkill", "-KILL", "-u", user]), PKILL_NONE)
+        match exec::run(&["pkill", "-KILL", "-u", user]) {
+            Ok(_) => Ok(()),
+            Err(PlatformError::Command { code, .. })
+                if code == PKILL_NONE || code == PKILL_NO_USER =>
+            {
+                Ok(())
+            }
+            Err(e) => Err(e),
+        }
     }
 
     fn make_dirs_as(&self, user: &str, path: &Path, mode: u32) -> Result<(), PlatformError> {
@@ -1500,6 +1514,13 @@ mod tests {
             stderr: "invalid".into(),
         });
         assert!(tolerate(syntax, USERDEL_MISSING).is_err());
+    }
+
+    #[test]
+    fn a_user_that_no_longer_exists_has_no_processes_to_kill() {
+        Ubuntu
+            .kill_user_processes("ferrum-nobody-was-ever-called-this")
+            .unwrap();
     }
 
     #[test]

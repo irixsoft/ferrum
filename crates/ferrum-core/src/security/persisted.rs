@@ -236,7 +236,9 @@ fn in_chain(line: &str, chain: &str) -> bool {
 
 fn target(line: &str) -> Option<&str> {
     let words: Vec<&str> = line.split_whitespace().collect();
-    let at = words.iter().rposition(|w| *w == "-j" || *w == "--jump")?;
+    let at = words
+        .iter()
+        .rposition(|w| matches!(*w, "-j" | "--jump" | "-g" | "--goto"))?;
     words.get(at + 1).copied()
 }
 
@@ -450,6 +452,27 @@ COMMIT
                 "-A Nested -j ACCEPT"
             ]
         );
+    }
+
+    #[test]
+    fn a_goto_reaches_a_chain_as_a_jump_does() {
+        let rules = "*filter
+:OUTPUT ACCEPT [0:0]
+:Meta - [0:0]
+:MetaAllow - [0:0]
+-A OUTPUT -d 169.254.0.0/16 -g Meta
+-A Meta -p tcp -g MetaAllow
+-A Meta -j REJECT
+-A MetaAllow -j ACCEPT
+COMMIT
+";
+        let carry = carry(rules).unwrap();
+        assert_eq!(carry.chains, ["Meta", "MetaAllow"]);
+        assert_eq!(carry.jumps, ["-A OUTPUT -d 169.254.0.0/16 -g Meta"]);
+        let carried = into_ufw(BEFORE_RULES, &carry);
+        assert!(carried.contains(":MetaAllow - [0:0]\n"));
+        assert!(carried.contains("-A Meta -p tcp -g MetaAllow\n"));
+        assert!(carried.contains("-A ufw-before-output -d 169.254.0.0/16 -g Meta\n"));
     }
 
     #[test]

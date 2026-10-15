@@ -485,6 +485,10 @@ impl Platform for FakePlatform {
         self.record(format!("chown {} {user}", path.to_string_lossy()))
     }
 
+    fn chmod(&self, path: &Path, mode: u32) -> Result<(), PlatformError> {
+        self.record(format!("chmod {} {mode:o}", path.to_string_lossy()))
+    }
+
     fn secure_dir(&self, path: &Path, mode: u32, owner: &str) -> Result<(), PlatformError> {
         let p = path.to_string_lossy().to_string();
         self.record(format!("secure_dir {p} {mode:o} {owner}"))?;

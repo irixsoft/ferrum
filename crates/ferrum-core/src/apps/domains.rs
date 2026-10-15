@@ -122,16 +122,6 @@ pub fn is_wildcard(domain: &str) -> bool {
     domain.starts_with("*.")
 }
 
-/// Whether nginx would hand `host` to a server named `domain`; `*.a.com` takes `x.y.a.com` too.
-pub fn covers(domain: &str, host: &str) -> bool {
-    match domain.strip_prefix("*.") {
-        Some(rest) => host
-            .strip_suffix(rest)
-            .is_some_and(|head| head.len() > 1 && head.ends_with('.')),
-        None => domain == host,
-    }
-}
-
 fn clean_name(raw: &str) -> Result<String, String> {
     let raw = raw.trim().to_ascii_lowercase();
     match raw.strip_prefix("*.") {
@@ -471,18 +461,6 @@ mod tests {
         assert_eq!(refused(&["*.example.com".into()]), WILDCARD_NEEDS_PROVIDER);
         assert!(refused(&["a.*.example.com".into()]).contains("not a valid hostname"));
         assert!(refused(&["a.example.com".into(), "A.example.com".into()]).contains("twice"));
-    }
-
-    #[test]
-    fn a_wildcard_covers_every_name_under_it_and_not_its_own_apex() {
-        let host = "panel.example.com";
-        assert!(covers("panel.example.com", host));
-        assert!(covers("*.example.com", host));
-        assert!(covers("*.com", host));
-        assert!(!covers("example.com", host));
-        assert!(!covers("*.panel.example.com", host));
-        assert!(!covers("*.ample.com", host));
-        assert!(!covers("*.example.com", "example.com"));
     }
 
     #[tokio::test]
