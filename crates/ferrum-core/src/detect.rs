@@ -219,11 +219,14 @@ fn under<'a>(path: &'a str, prefix: &str) -> Option<&'a str> {
     path.strip_prefix(prefix)?.strip_prefix('/')
 }
 
-/// `^[a-z0-9][a-z0-9+._-]*$` — a package name reaches `apt-get` as one argv entry.
+/// `^[a-z0-9][a-z0-9+.-]*[a-z0-9+]$` — apt reads a trailing `-` as remove.
 pub fn valid_package(name: &str) -> bool {
-    let mut chars = name.chars();
-    matches!(chars.next(), Some(c) if c.is_ascii_lowercase() || c.is_ascii_digit())
-        && chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || "+._-".contains(c))
+    let alnum = |c: &u8| c.is_ascii_lowercase() || c.is_ascii_digit();
+    let bytes = name.as_bytes();
+    bytes.len() >= 2
+        && bytes.first().is_some_and(alnum)
+        && bytes.last().is_some_and(|c| alnum(c) || *c == b'+')
+        && bytes.iter().all(|c| alnum(c) || b"+.-".contains(c))
 }
 
 #[cfg(test)]

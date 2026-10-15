@@ -24,6 +24,7 @@ pub const SLUG_MAX: usize = 25;
 /// Their site files would land on `ferrum-panel.conf` and `ferrum-acme.conf`.
 const RESERVED_SLUGS: [&str; 2] = ["panel", "acme"];
 const NAME_MAX: usize = 80;
+pub const PANEL_HOSTNAME: &str = "That is the panel's own hostname.";
 
 #[derive(Debug, thiserror::Error)]
 pub enum AppError {
@@ -290,6 +291,18 @@ pub fn validate(new: &NewApp) -> Result<Vec<NewDomain>, AppError> {
             )));
         }
     }
+    let commands = [
+        &new.commands.install,
+        &new.commands.build,
+        &new.commands.migrate,
+    ];
+    if commands
+        .into_iter()
+        .flatten()
+        .any(|c| processes::has_control_characters(c))
+    {
+        return Err(invalid(processes::CONTROL_CHARACTERS));
+    }
     let build = new.commands.build.as_deref().unwrap_or("").trim();
     if new.processes.iter().any(NewProcess::is_folder) && build.is_empty() {
         return Err(invalid(
@@ -327,7 +340,7 @@ pub fn validate(new: &NewApp) -> Result<Vec<NewDomain>, AppError> {
     }
     for package in &new.packages {
         if !detect::valid_package(package) {
-            return Err(invalid(format!("{package} is not a valid package name.")));
+            return Err(invalid(packages::unknown(package)));
         }
     }
     let settled = domains::settle(&new.domains, &new.processes, &new.routes)?;
@@ -348,8 +361,20 @@ pub fn validate(new: &NewApp) -> Result<Vec<NewDomain>, AppError> {
     Ok(settled)
 }
 
+async fn refuse_panel_hostname(state: &State, settled: &[NewDomain]) -> anyhow::Result<()> {
+    let Some(panel) = crate::setup::hostname(state).await? else {
+        return Ok(());
+    };
+    let panel = panel.trim().to_ascii_lowercase();
+    if settled.iter().any(|d| d.domain == panel) {
+        return Err(invalid(PANEL_HOSTNAME).into());
+    }
+    Ok(())
+}
+
 pub async fn create(state: &State, new: NewApp) -> anyhow::Result<App> {
     let settled = validate(&new)?;
+    refuse_panel_hostname(state, &settled).await?;
     let id = uuid::Uuid::new_v4().to_string();
     let mut tx = state.pool.begin_with("BEGIN IMMEDIATE").await?;
 
@@ -440,6 +465,7 @@ pub async fn update(state: &State, slug: &str, changes: AppChanges) -> anyhow::R
         env_required: Vec::new(),
     };
     let settled = validate(&merged)?;
+    refuse_panel_hostname(state, &settled).await?;
 
     let mut tx = state.pool.begin_with("BEGIN IMMEDIATE").await?;
     let budget = merged.startup_budget_secs as i64;
@@ -1097,6 +1123,51 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
+    async fn the_panel_s_hostname_belongs_to_no_app_but_a_wildcard_beside_it_may() {
+        let (_d, state) = state().await;
+        crate::setup::set_hostname(&state, "panel.example.com")
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO dns_providers (id, name, kind, credentials) VALUES ('cf', 'Cloudflare', 'cloudflare', 'x')")
+            .execute(&state.pool)
+            .await
+            .unwrap();
+        let mut new = new_app("ledger", &[("/", "main", false)]);
+        new.domains = vec![NewDomain::from("Panel.Example.com")];
+        let e = create(&state, new).await.unwrap_err();
+        assert_eq!(e.to_string(), PANEL_HOSTNAME);
+        assert!(by_slug(&state, "ledger").await.unwrap().is_none());
+
+        create(&state, new_app("ledger", &[("/", "main", false)]))
+            .await
+            .unwrap();
+        let e = update(
+            &state,
+            "ledger",
+            AppChanges {
+                domains: Some(vec!["panel.example.com".into()]),
+                ..AppChanges::default()
+            },
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(e.to_string(), PANEL_HOSTNAME);
+        let mut wildcard = NewDomain::from("*.example.com");
+        wildcard.dns_provider_id = Some("cf".into());
+        let kept = update(
+            &state,
+            "ledger",
+            AppChanges {
+                domains: Some(vec!["ledger.example.com".into(), wildcard]),
+                ..AppChanges::default()
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(kept.domains.len(), 2);
+    }
+
+    #[tokio::test]
     async fn validation_refuses_what_the_host_would_choke_on() {
         let (_d, state) = state().await;
         let mut bad_package = new_app("a", &[("/", "main", false)]);
@@ -1202,6 +1273,60 @@ pub(crate) mod tests {
             .unwrap();
         assert_eq!(count, 2, "the ws port was released");
         assert!(updated.updated_at >= updated.created_at);
+    }
+
+    #[tokio::test]
+    async fn a_command_with_a_control_character_is_refused_from_the_panel_and_the_file() {
+        for commands in [
+            Commands {
+                build: Some("bun run build\rUser=root".into()),
+                ..Commands::default()
+            },
+            Commands {
+                install: Some("bun install\0".into()),
+                ..Commands::default()
+            },
+            Commands {
+                migrate: Some("bun run migrate\x1b".into()),
+                ..Commands::default()
+            },
+        ] {
+            let new = NewApp {
+                commands,
+                ..new_app("ledger", &[("/", "main", false)])
+            };
+            assert!(
+                matches!(validate(&new), Err(AppError::Invalid(m)) if m == processes::CONTROL_CHARACTERS)
+            );
+        }
+        let tabbed = NewApp {
+            commands: Commands {
+                build: Some("bun run build &&\n\tbun run docs".into()),
+                ..Commands::default()
+            },
+            ..new_app("ledger", &[("/", "main", false)])
+        };
+        assert!(validate(&tabbed).is_ok());
+
+        let (_d, state) = state().await;
+        let app = create(&state, new_app("ledger", &[("/", "main", false)]))
+            .await
+            .unwrap();
+        let p = ferrum_platform::FakePlatform::new();
+        for file in [
+            "[processes.web]\nstart = \"true\\rUser=root\"\n",
+            "build = \"true\\rUser=root\"\n",
+        ] {
+            let manifest =
+                crate::manifest::from_toml(&crate::manifest::parse_toml(file).unwrap()).unwrap();
+            let e = apply_manifest(&state, &p, &app, &manifest)
+                .await
+                .unwrap_err();
+            assert!(
+                format!("{e:#}").contains(processes::CONTROL_CHARACTERS),
+                "{file}: {e:#}"
+            );
+        }
     }
 
     #[tokio::test]

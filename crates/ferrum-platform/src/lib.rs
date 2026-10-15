@@ -155,8 +155,16 @@ pub trait Platform: Send + Sync {
     fn remove_tree(&self, path: &Path) -> Result<(), PlatformError>;
     fn chown_tree(&self, path: &Path, user: &str) -> Result<(), PlatformError>;
     fn chown(&self, path: &Path, user: &str) -> Result<(), PlatformError>;
+    fn chmod(&self, path: &Path, mode: u32) -> Result<(), PlatformError>;
     /// Creates `path` if missing and sets its mode and owner; a link there is refused.
     fn secure_dir(&self, path: &Path, mode: u32, owner: &str) -> Result<(), PlatformError>;
+    /// The tree becomes the user's; the directory itself is `user:www-data 0750`, so nginx can
+    /// enter it and no other user can.
+    fn secure_release(&self, dir: &Path, user: &str) -> Result<(), PlatformError>;
+    /// Creates the log file if missing as `root:adm 0640`, and tightens its rotated copies.
+    fn ensure_log_file(&self, path: &Path) -> Result<(), PlatformError>;
+    fn package_exists(&self, name: &str) -> Result<bool, PlatformError>;
+    fn kill_user_processes(&self, user: &str) -> Result<(), PlatformError>;
     fn make_dirs_as(&self, user: &str, path: &Path, mode: u32) -> Result<(), PlatformError>;
     fn symlink_as(&self, user: &str, target: &Path, link: &Path) -> Result<(), PlatformError>;
     fn user_exists(&self, name: &str) -> bool;
@@ -186,27 +194,43 @@ pub trait Platform: Send + Sync {
     fn postgres_dump(&self, database: &str, to: &Path) -> Result<(), PlatformError>;
     /// `pg_restore -l`: the archive's table of contents, edited and fed back as `list`.
     fn postgres_restore_list(&self, from: &Path) -> Result<String, PlatformError>;
-    /// With a role, the dump's ownership and privileges are dropped and everything is created as
-    /// that role; without one the archive is loaded as dumped.
-    fn postgres_restore(
+    /// Loads the archive connected as `role` over loopback, so nothing in it can run as the
+    /// superuser; ownership is dropped, `list` edits the table of contents, and the grants it
+    /// carries are replayed only with `keep_privileges` (a dump from elsewhere names roles this
+    /// host lacks; a snapshot of this host does not).
+    fn postgres_restore_as(
         &self,
         database: &str,
+        role: &str,
+        password: &str,
         from: &Path,
-        role: Option<&str>,
         list: Option<&Path>,
+        keep_privileges: bool,
     ) -> Result<(), PlatformError>;
-    /// A plain-SQL dump, which `pg_restore` cannot read, loaded through psql in one transaction.
-    fn postgres_restore_sql(&self, database: &str, from: &Path) -> Result<(), PlatformError>;
+    /// The plain-SQL counterpart of `postgres_restore_as`.
+    fn postgres_restore_sql_as(
+        &self,
+        database: &str,
+        role: &str,
+        password: &str,
+        from: &Path,
+    ) -> Result<(), PlatformError>;
+    /// `token` authenticates the clone through the process environment; the URL stays public.
     fn git_clone(
         &self,
         url: &str,
         git_ref: Option<&str>,
         dest: &Path,
         depth: u32,
+        token: Option<&str>,
     ) -> Result<(), PlatformError>;
-    fn git_checkout(&self, dir: &Path, commit_sha: &str) -> Result<(), PlatformError>;
+    fn git_checkout(
+        &self,
+        dir: &Path,
+        commit_sha: &str,
+        token: Option<&str>,
+    ) -> Result<(), PlatformError>;
     fn git_head(&self, dir: &Path) -> Result<String, PlatformError>;
-    fn git_scrub_remote(&self, dir: &Path, public_url: &str) -> Result<(), PlatformError>;
     fn run_scoped(
         &self,
         spec: &RunSpec,

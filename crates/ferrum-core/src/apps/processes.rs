@@ -9,6 +9,13 @@ use std::path::{Path, PathBuf};
 pub const NAME_MAX: usize = 16;
 pub const DEFAULT_MEMORY_MB: u32 = 512;
 pub const WEB: &str = "web";
+pub const CONTROL_CHARACTERS: &str = "A command cannot contain control characters.";
+
+pub fn has_control_characters(command: &str) -> bool {
+    command
+        .chars()
+        .any(|c| c.is_control() && c != '\n' && c != '\t')
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(tag = "kind", rename_all = "lowercase")]
@@ -203,7 +210,11 @@ pub fn validate(p: &NewProcess) -> Result<(), String> {
                 ));
             }
         }
-        (Some(_), None) => {}
+        (Some(start), None) => {
+            if has_control_characters(start) {
+                return Err(CONTROL_CHARACTERS.to_string());
+            }
+        }
     }
     if !valid_dir(&p.dir) {
         return Err(format!(
@@ -352,6 +363,19 @@ mod tests {
         assert!(validate(&worker).is_ok());
         worker.health = Some("/healthz".into());
         assert!(validate(&worker).is_err());
+    }
+
+    #[test]
+    fn a_start_command_with_a_control_character_never_reaches_a_unit() {
+        for start in ["true\rUser=root", "a\0b", "a\x1bb"] {
+            assert_eq!(
+                validate(&NewProcess::web(start, None)),
+                Err(CONTROL_CHARACTERS.to_string()),
+                "{start:?}"
+            );
+        }
+        let multi_line = NewProcess::web("bun run migrate &&\n\tbun run start", None);
+        assert_eq!(validate(&multi_line), Ok(()));
     }
 
     #[test]

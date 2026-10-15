@@ -54,6 +54,7 @@ struct Inner {
     self_check: String,
     installed: Option<Vec<u8>>,
     packages: HashSet<String>,
+    known_packages: Option<HashSet<String>>,
 }
 
 pub struct FakePlatform {
@@ -303,6 +304,12 @@ impl FakePlatform {
             .extend(names.iter().map(|n| n.to_string()));
     }
 
+    /// Until this is called every package name exists; afterwards only these do.
+    pub fn set_known_packages(&self, names: &[&str]) {
+        self.inner.lock().unwrap().known_packages =
+            Some(names.iter().map(|n| n.to_string()).collect());
+    }
+
     pub fn answer_restore_list(&self, listing: &str) {
         self.inner.lock().unwrap().restore_list = listing.to_string();
     }
@@ -478,6 +485,10 @@ impl Platform for FakePlatform {
         self.record(format!("chown {} {user}", path.to_string_lossy()))
     }
 
+    fn chmod(&self, path: &Path, mode: u32) -> Result<(), PlatformError> {
+        self.record(format!("chmod {} {mode:o}", path.to_string_lossy()))
+    }
+
     fn secure_dir(&self, path: &Path, mode: u32, owner: &str) -> Result<(), PlatformError> {
         let p = path.to_string_lossy().to_string();
         self.record(format!("secure_dir {p} {mode:o} {owner}"))?;
@@ -487,6 +498,32 @@ impl Platform for FakePlatform {
         }
         inner.dirs.insert(p);
         Ok(())
+    }
+
+    fn secure_release(&self, dir: &Path, user: &str) -> Result<(), PlatformError> {
+        let p = dir.to_string_lossy().to_string();
+        self.record(format!("secure_release {p} {user}"))?;
+        self.inner.lock().unwrap().dirs.insert(p);
+        Ok(())
+    }
+
+    fn ensure_log_file(&self, path: &Path) -> Result<(), PlatformError> {
+        let p = path.to_string_lossy().to_string();
+        self.record(format!("ensure_log_file {p}"))?;
+        self.inner.lock().unwrap().files.entry(p).or_default();
+        Ok(())
+    }
+
+    fn package_exists(&self, name: &str) -> Result<bool, PlatformError> {
+        let inner = self.inner.lock().unwrap();
+        Ok(inner
+            .known_packages
+            .as_ref()
+            .is_none_or(|known| known.contains(name)))
+    }
+
+    fn kill_user_processes(&self, user: &str) -> Result<(), PlatformError> {
+        self.record(format!("kill_user_processes {user}"))
     }
 
     fn make_dirs_as(&self, user: &str, path: &Path, mode: u32) -> Result<(), PlatformError> {
@@ -608,24 +645,32 @@ impl Platform for FakePlatform {
         Ok(self.inner.lock().unwrap().restore_list.clone())
     }
 
-    fn postgres_restore(
+    fn postgres_restore_as(
         &self,
         database: &str,
+        role: &str,
+        _password: &str,
         from: &Path,
-        role: Option<&str>,
         list: Option<&Path>,
+        keep_privileges: bool,
     ) -> Result<(), PlatformError> {
         self.record(format!(
-            "postgres_restore {database} {} {} {}",
+            "postgres_restore_as {database} {role} {} {}{}",
             from.to_string_lossy(),
-            role.unwrap_or("-"),
-            list.map_or("-".to_string(), |l| l.to_string_lossy().to_string())
+            list.map_or("-".to_string(), |l| l.to_string_lossy().to_string()),
+            if keep_privileges { " privileges" } else { "" }
         ))
     }
 
-    fn postgres_restore_sql(&self, database: &str, from: &Path) -> Result<(), PlatformError> {
+    fn postgres_restore_sql_as(
+        &self,
+        database: &str,
+        role: &str,
+        _password: &str,
+        from: &Path,
+    ) -> Result<(), PlatformError> {
         self.record(format!(
-            "postgres_restore_sql {database} {}",
+            "postgres_restore_sql_as {database} {role} {}",
             from.to_string_lossy()
         ))
     }
@@ -636,12 +681,14 @@ impl Platform for FakePlatform {
         git_ref: Option<&str>,
         dest: &Path,
         depth: u32,
+        token: Option<&str>,
     ) -> Result<(), PlatformError> {
         let dest = dest.to_string_lossy().to_string();
         self.record(format!(
-            "git_clone {} {} {dest} {depth}",
+            "git_clone {} {} {dest} {depth} {}",
             crate::ubuntu::redact_url(url, url),
-            git_ref.unwrap_or("HEAD")
+            git_ref.unwrap_or("HEAD"),
+            if token.is_some() { "auth" } else { "anon" }
         ))?;
         let mut inner = self.inner.lock().unwrap();
         inner.dirs.insert(dest.clone());
@@ -655,10 +702,16 @@ impl Platform for FakePlatform {
         Ok(())
     }
 
-    fn git_checkout(&self, dir: &Path, commit_sha: &str) -> Result<(), PlatformError> {
+    fn git_checkout(
+        &self,
+        dir: &Path,
+        commit_sha: &str,
+        token: Option<&str>,
+    ) -> Result<(), PlatformError> {
         self.record(format!(
-            "git_checkout {} {commit_sha}",
-            dir.to_string_lossy()
+            "git_checkout {} {} {commit_sha}",
+            dir.to_string_lossy(),
+            if token.is_some() { "auth" } else { "anon" }
         ))?;
         self.inner.lock().unwrap().head = commit_sha.to_string();
         Ok(())
@@ -667,13 +720,6 @@ impl Platform for FakePlatform {
     fn git_head(&self, dir: &Path) -> Result<String, PlatformError> {
         self.record(format!("git_head {}", dir.to_string_lossy()))?;
         Ok(self.inner.lock().unwrap().head.clone())
-    }
-
-    fn git_scrub_remote(&self, dir: &Path, public_url: &str) -> Result<(), PlatformError> {
-        self.record(format!(
-            "git_scrub_remote {} {public_url}",
-            dir.to_string_lossy()
-        ))
     }
 
     fn run_scoped(
@@ -1106,19 +1152,18 @@ mod tests {
         p.write_file(Path::new("/a/releases/r1/x"), "", 0o644)
             .unwrap();
         p.git_clone(
-            "https://x-access-token:ghs_abc@github.com/irixsoft/ledger.git",
+            "https://github.com/irixsoft/ledger.git",
             Some("main"),
             Path::new("/a/releases/r2"),
             1,
+            Some("ghs_abc"),
         )
         .unwrap();
         assert!(p.file_exists(Path::new("/a/releases/r2/.git/HEAD")));
         assert!(p.file_exists(Path::new("/a/releases/r2")));
         assert!(
-            p.calls()
-                .iter()
-                .any(|c| c
-                    == "git_clone https://github.com/irixsoft/ledger.git main /a/releases/r2 1")
+            p.calls().iter().any(|c| c
+                == "git_clone https://github.com/irixsoft/ledger.git main /a/releases/r2 1 auth")
         );
         assert!(!p.calls().join("\n").contains("ghs_abc"));
         assert_eq!(

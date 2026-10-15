@@ -41,9 +41,9 @@ async fn start(
     let run = commands::start(app.deployer.ctx(), &found, &body.command)
         .await
         .map_err(|e| match e.downcast_ref::<CommandError>() {
-            Some(CommandError::Blank | CommandError::NotDeployed) => {
-                ApiError::bad_request(e.to_string())
-            }
+            Some(
+                CommandError::Blank | CommandError::ControlCharacters | CommandError::NotDeployed,
+            ) => ApiError::bad_request(e.to_string()),
             Some(CommandError::DeployRunning | CommandError::RunOpen) => {
                 ApiError::conflict(e.to_string())
             }

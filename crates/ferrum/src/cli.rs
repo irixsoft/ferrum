@@ -60,15 +60,9 @@ pub enum Command {
         slug: String,
         #[arg(long = "ref")]
         git_ref: Option<String>,
-        /// Defaults to FERRUM_TOKEN; mint one with `ferrum token create`.
-        #[arg(long)]
-        token: Option<String>,
     },
     /// Prints the host card the Dashboard shows.
-    Status {
-        #[arg(long)]
-        token: Option<String>,
-    },
+    Status,
     /// Prints an application's log; `--follow` streams it until Ctrl-C.
     Logs {
         slug: String,
@@ -79,15 +73,9 @@ pub enum Command {
         follow: bool,
         #[arg(long, short = 'n', default_value_t = ferrum_core::logs::DEFAULT_LINES)]
         lines: u32,
-        #[arg(long)]
-        token: Option<String>,
     },
     /// Restarts an application's unit and prints its status.
-    Restart {
-        slug: String,
-        #[arg(long)]
-        token: Option<String>,
-    },
+    Restart { slug: String },
     /// Rolls an application back to the release before the current one and follows the log.
     Rollback {
         slug: String,
@@ -97,22 +85,18 @@ pub enum Command {
         /// Also restore the database snapshot taken by the deploy that replaced the release.
         #[arg(long)]
         restore: bool,
-        #[arg(long)]
-        token: Option<String>,
     },
     /// Checks GitHub for a newer release and installs it through the running daemon.
     Update {
         /// Only report whether a newer release exists.
         #[arg(long)]
         check: bool,
-        #[arg(long)]
-        token: Option<String>,
     },
 }
 
-/// `--token` first, then `FERRUM_TOKEN`; the daemon mints nothing for the CLI.
-pub fn token_from(flag: Option<String>) -> Option<String> {
-    flag.or_else(|| std::env::var("FERRUM_TOKEN").ok())
+pub fn token_from() -> Option<String> {
+    std::env::var("FERRUM_TOKEN")
+        .ok()
         .filter(|t| !t.trim().is_empty())
 }
 

@@ -330,6 +330,96 @@ async fn session_management_requires_authentication() {
 }
 
 #[tokio::test]
+async fn a_writing_token_cannot_create_people_links_or_tokens() {
+    let (h, _cookie) = signed_in().await;
+    let token = h.machine_token(false).await;
+    let id = ferrum_core::users::list(&h.db).await.unwrap()[0].id.clone();
+    let link = format!("/api/users/{id}/enrollment");
+
+    for (uri, body) in [
+        ("/api/users", r#"{"name":"Intruder"}"#),
+        (link.as_str(), ""),
+        ("/api/tokens", r#"{"name":"another"}"#),
+    ] {
+        let res = h.post_with_bearer(uri, body, &token).await;
+        assert_eq!(res.status, StatusCode::FORBIDDEN, "{uri}");
+        assert_eq!(res.json["error"], "Sign in to the panel to do that.");
+    }
+    assert_eq!(
+        h.delete_with_bearer(&format!("/api/users/{id}"), &token)
+            .await
+            .status,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(ferrum_core::users::count(&h.db).await.unwrap(), 1);
+    assert_eq!(ferrum_core::tokens::list(&h.db).await.unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn removing_a_person_takes_their_passkeys_and_sessions() {
+    let (h, cookie) = signed_in().await;
+    let link = h.enrollment("Teammate").await;
+    let mut key = soft_passkey();
+    let theirs = h.register(&mut key, &link).await.session_cookie().unwrap();
+    let id = id_of(&h, "Teammate").await;
+    ferrum_core::enrollment::issue(&h.db, &id).await.unwrap();
+
+    assert_eq!(
+        h.delete_with_cookie(&format!("/api/users/{id}"), &cookie)
+            .await
+            .status,
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(
+        h.get_with_cookie("/api/me", &theirs).await.status,
+        StatusCode::UNAUTHORIZED
+    );
+    for table in ["users", "credentials", "sessions", "enrollments"] {
+        let column = if table == "users" { "id" } else { "user_id" };
+        let left: i64 =
+            sqlx::query_scalar(&format!("SELECT count(*) FROM {table} WHERE {column} = ?"))
+                .bind(&id)
+                .fetch_one(&h.db.pool)
+                .await
+                .unwrap();
+        assert_eq!(left, 0, "{table}");
+    }
+    assert_eq!(
+        h.get_with_cookie("/api/me", &cookie).await.status,
+        StatusCode::OK
+    );
+    assert_eq!(
+        h.delete_with_cookie(&format!("/api/users/{id}"), &cookie)
+            .await
+            .status,
+        StatusCode::NOT_FOUND
+    );
+}
+
+#[tokio::test]
+async fn nobody_removes_themselves() {
+    let (h, cookie) = signed_in().await;
+    ferrum_core::users::create(&h.db, "Teammate").await.unwrap();
+    let id = id_of(&h, "Saeed").await;
+    let res = h
+        .delete_with_cookie(&format!("/api/users/{id}"), &cookie)
+        .await;
+    assert_eq!(res.status, StatusCode::BAD_REQUEST);
+    assert_eq!(res.json["error"], "You cannot remove yourself.");
+    assert_eq!(ferrum_core::users::count(&h.db).await.unwrap(), 2);
+}
+
+async fn id_of(h: &Harness, name: &str) -> String {
+    ferrum_core::users::list(&h.db)
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|u| u.name == name)
+        .unwrap()
+        .id
+}
+
+#[tokio::test]
 async fn a_read_only_token_can_still_reach_the_api_it_is_allowed() {
     let (h, cookie) = signed_in().await;
     let secret = h

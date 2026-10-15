@@ -38,6 +38,11 @@ pub const APT_AUTO_UPGRADES: &str = "/etc/apt/apt.conf.d/20auto-upgrades";
 pub const RULES_V4: &str = "/etc/iptables/rules.v4";
 pub const RULES_V6: &str = "/etc/iptables/rules.v6";
 pub const NETFILTER_PERSISTENT_UNIT: &str = "netfilter-persistent";
+pub const UFW_BEFORE_RULES: &str = "/etc/ufw/before.rules";
+pub const UFW_BEFORE6_RULES: &str = "/etc/ufw/before6.rules";
+pub const NGINX_USER: &str = "www-data";
+pub const NGINX_LOG_GROUP: &str = "adm";
+pub const PG_HOST: &str = "127.0.0.1";
 pub const ROOT_AUTHORIZED_KEYS: &str = "/root/.ssh/authorized_keys";
 const HOME_DIR: &str = "/home";
 const AUTHORIZED_KEYS: &str = ".ssh/authorized_keys";
@@ -62,6 +67,8 @@ const ICU_BY_CODENAME: [(&str, &str); 2] = [("jammy", "libicu70"), ("noble", "li
 const ICU_FALLBACK: &str = "libicu-dev";
 
 const USERDEL_MISSING: i32 = 6;
+const PKILL_NONE: i32 = 1;
+const PKILL_NO_USER: i32 = 2;
 
 const APT_ENV: [(&str, &str); 2] = [
     ("DEBIAN_FRONTEND", "noninteractive"),
@@ -151,6 +158,8 @@ pub fn scope_argv(spec: &RunSpec) -> Vec<String> {
         format!("MemoryMax={}M", spec.memory_max_mb),
         "-p".into(),
         format!("CPUWeight={}", spec.cpu_weight),
+        "-p".into(),
+        "SocketBindDeny=any".into(),
         "-p".into(),
         format!("IOWeight={}", spec.io_weight),
         "--".into(),
@@ -418,6 +427,33 @@ pub fn redact_url(text: &str, url: &str) -> String {
     }
 }
 
+/// The credential rides in git's environment, never in the URL or on the command line.
+fn git_env(token: Option<&str>) -> Vec<(&'static str, String)> {
+    use base64::Engine;
+    let mut env: Vec<(&str, String)> = GIT_ENV.iter().map(|(k, v)| (*k, v.to_string())).collect();
+    if let Some(token) = token {
+        let basic =
+            base64::engine::general_purpose::STANDARD.encode(format!("x-access-token:{token}"));
+        env.push(("GIT_CONFIG_COUNT", "1".into()));
+        env.push(("GIT_CONFIG_KEY_0", "http.extraHeader".into()));
+        env.push((
+            "GIT_CONFIG_VALUE_0",
+            format!("Authorization: Basic {basic}"),
+        ));
+    }
+    env
+}
+
+/// `apt-cache policy` prints nothing for an unknown name and `Candidate: (none)` for one that
+/// is known but not installable.
+pub fn package_has_candidate(policy: &str, name: &str) -> bool {
+    let mut lines = policy.lines().map(str::trim);
+    lines.next() == Some(&format!("{name}:"))
+        && lines
+            .find_map(|l| l.strip_prefix("Candidate:"))
+            .is_some_and(|c| c.trim() != "(none)")
+}
+
 fn redacted(result: Result<String, PlatformError>, url: &str) -> Result<(), PlatformError> {
     match result {
         Ok(_) => Ok(()),
@@ -604,6 +640,11 @@ impl Platform for Ubuntu {
         exec::run(&["chown", "-h", &owner, &path.to_string_lossy()]).map(|_| ())
     }
 
+    fn chmod(&self, path: &Path, mode: u32) -> Result<(), PlatformError> {
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode))?;
+        Ok(())
+    }
+
     fn secure_dir(&self, path: &Path, mode: u32, owner: &str) -> Result<(), PlatformError> {
         std::fs::create_dir_all(path)?;
         if std::fs::symlink_metadata(path)?.file_type().is_symlink() {
@@ -616,6 +657,57 @@ impl Platform for Ubuntu {
         self.chown(path, owner)?;
         std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode))?;
         Ok(())
+    }
+
+    fn secure_release(&self, dir: &Path, user: &str) -> Result<(), PlatformError> {
+        self.chown_tree(dir, user)?;
+        let group = format!(":{NGINX_USER}");
+        exec::run(&["chown", &group, &dir.to_string_lossy()])?;
+        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o750))?;
+        Ok(())
+    }
+
+    fn ensure_log_file(&self, path: &Path) -> Result<(), PlatformError> {
+        std::fs::OpenOptions::new()
+            .append(true)
+            .create(true)
+            .mode(0o640)
+            .open(path)?;
+        let owner = format!("root:{NGINX_LOG_GROUP}");
+        exec::run(&["chown", &owner, &path.to_string_lossy()])?;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o640))?;
+        let (Some(dir), Some(name)) = (path.parent(), path.file_name().and_then(|n| n.to_str()))
+        else {
+            return Ok(());
+        };
+        let rotated = format!("{name}.");
+        for entry in std::fs::read_dir(dir)?.flatten() {
+            if entry
+                .file_name()
+                .to_str()
+                .is_some_and(|n| n.starts_with(&rotated))
+            {
+                std::fs::set_permissions(entry.path(), std::fs::Permissions::from_mode(0o640))?;
+            }
+        }
+        Ok(())
+    }
+
+    fn package_exists(&self, name: &str) -> Result<bool, PlatformError> {
+        let out = exec::run_env(&["apt-cache", "policy", "--", name], &APT_ENV)?;
+        Ok(package_has_candidate(&out, name))
+    }
+
+    fn kill_user_processes(&self, user: &str) -> Result<(), PlatformError> {
+        match exec::run(&["pkill", "-KILL", "-u", user]) {
+            Ok(_) => Ok(()),
+            Err(PlatformError::Command { code, .. })
+                if code == PKILL_NONE || code == PKILL_NO_USER =>
+            {
+                Ok(())
+            }
+            Err(e) => Err(e),
+        }
     }
 
     fn make_dirs_as(&self, user: &str, path: &Path, mode: u32) -> Result<(), PlatformError> {
@@ -764,53 +856,66 @@ impl Platform for Ubuntu {
         exec::run(&["runuser", "-u", PG_USER, "--", "pg_restore", "-l", &from])
     }
 
-    fn postgres_restore(
+    fn postgres_restore_as(
         &self,
         database: &str,
+        role: &str,
+        password: &str,
         from: &Path,
-        role: Option<&str>,
         list: Option<&Path>,
+        keep_privileges: bool,
     ) -> Result<(), PlatformError> {
         let from = from.to_string_lossy();
-        let role = role.map(|r| format!("--role={r}"));
+        let port = PG_PORT.to_string();
         let list = list.map(|l| l.to_string_lossy().to_string());
         let mut argv = vec![
-            "runuser",
-            "-u",
-            PG_USER,
-            "--",
             "pg_restore",
             "--single-transaction",
             "--exit-on-error",
+            "--no-owner",
         ];
-        if let Some(role) = &role {
-            argv.extend(["--no-owner", "--no-privileges", role]);
+        if !keep_privileges {
+            argv.push("--no-privileges");
         }
         if let Some(list) = &list {
             argv.extend(["-L", list]);
         }
-        argv.extend(["-d", database, &from]);
-        exec::run(&argv).map(|_| ())
+        argv.extend([
+            "-h", PG_HOST, "-p", &port, "-U", role, "-d", database, &from,
+        ]);
+        exec::run_env(&argv, &[("PGPASSWORD", password)]).map(|_| ())
     }
 
-    fn postgres_restore_sql(&self, database: &str, from: &Path) -> Result<(), PlatformError> {
+    fn postgres_restore_sql_as(
+        &self,
+        database: &str,
+        role: &str,
+        password: &str,
+        from: &Path,
+    ) -> Result<(), PlatformError> {
         let from = from.to_string_lossy();
-        exec::run(&[
-            "runuser",
-            "-u",
-            PG_USER,
-            "--",
-            "psql",
-            "-X",
-            "-q",
-            "-1",
-            "-v",
-            "ON_ERROR_STOP=1",
-            "-d",
-            database,
-            "-f",
-            &from,
-        ])
+        let port = PG_PORT.to_string();
+        exec::run_env(
+            &[
+                "psql",
+                "-X",
+                "-q",
+                "-1",
+                "-v",
+                "ON_ERROR_STOP=1",
+                "-h",
+                PG_HOST,
+                "-p",
+                &port,
+                "-U",
+                role,
+                "-d",
+                database,
+                "-f",
+                &from,
+            ],
+            &[("PGPASSWORD", password)],
+        )
         .map(|_| ())
     }
 
@@ -820,6 +925,7 @@ impl Platform for Ubuntu {
         git_ref: Option<&str>,
         dest: &Path,
         depth: u32,
+        token: Option<&str>,
     ) -> Result<(), PlatformError> {
         let depth = depth.to_string();
         let dest = dest.to_string_lossy();
@@ -835,16 +941,25 @@ impl Platform for Ubuntu {
             argv.extend(["--branch", git_ref]);
         }
         argv.extend([url, &dest]);
-        redacted(exec::run_env(&argv, &GIT_ENV), url)
+        let env = git_env(token);
+        let env: Vec<(&str, &str)> = env.iter().map(|(k, v)| (*k, v.as_str())).collect();
+        redacted(exec::run_env(&argv, &env), url)
     }
 
-    fn git_checkout(&self, dir: &Path, commit_sha: &str) -> Result<(), PlatformError> {
+    fn git_checkout(
+        &self,
+        dir: &Path,
+        commit_sha: &str,
+        token: Option<&str>,
+    ) -> Result<(), PlatformError> {
         let dir = dir.to_string_lossy();
+        let env = git_env(token);
+        let env: Vec<(&str, &str)> = env.iter().map(|(k, v)| (*k, v.as_str())).collect();
         exec::run_env(
             &[
                 "git", "-C", &dir, "fetch", "--quiet", "--depth", "1", "origin", commit_sha,
             ],
-            &GIT_ENV,
+            &env,
         )?;
         exec::run_env(
             &[
@@ -861,15 +976,6 @@ impl Platform for Ubuntu {
             .map(|out| out.trim().to_string())
     }
 
-    fn git_scrub_remote(&self, dir: &Path, public_url: &str) -> Result<(), PlatformError> {
-        let dir = dir.to_string_lossy();
-        exec::run_env(
-            &["git", "-C", &dir, "remote", "set-url", "origin", public_url],
-            &GIT_ENV,
-        )
-        .map(|_| ())
-    }
-
     fn run_scoped(
         &self,
         spec: &RunSpec,
@@ -884,7 +990,7 @@ impl Platform for Ubuntu {
             .collect();
         let scope = scope_unit(&spec.unit);
         let kill = ["systemctl", "kill", "--signal=KILL", &scope];
-        exec::run_streaming(
+        let exit = exec::run_streaming(
             &Spawn {
                 argv: &argv,
                 env: &env,
@@ -895,7 +1001,9 @@ impl Platform for Ubuntu {
                 stop: None,
             },
             on_line,
-        )
+        );
+        let _ = exec::run(&["systemctl", "stop", &scope]);
+        exit
     }
 
     fn journal_tail(&self, unit: &str, lines: u32) -> Result<Vec<JournalLine>, PlatformError> {
@@ -1409,6 +1517,13 @@ mod tests {
     }
 
     #[test]
+    fn a_user_that_no_longer_exists_has_no_processes_to_kill() {
+        Ubuntu
+            .kill_user_processes("ferrum-nobody-was-ever-called-this")
+            .unwrap();
+    }
+
+    #[test]
     fn removing_what_is_already_gone_succeeds() {
         let dir = tempfile::tempdir().unwrap();
         assert!(Ubuntu.remove_file(&dir.path().join("nope")).is_ok());
@@ -1465,6 +1580,7 @@ mod tests {
         assert!(argv.contains(&"--unit=ferrum-build-ledger-1".to_string()));
         assert!(argv.windows(2).any(|w| w == ["-p", "MemoryMax=1200M"]));
         assert!(argv.windows(2).any(|w| w == ["-p", "CPUWeight=50"]));
+        assert!(argv.windows(2).any(|w| w == ["-p", "SocketBindDeny=any"]));
         let sh = argv.iter().position(|a| a == "/bin/sh").unwrap();
         assert_eq!(argv[sh + 1], "-c");
         assert_eq!(argv[sh + 2], "bun run build && echo 100%");
@@ -1496,6 +1612,38 @@ mod tests {
         assert!(!clean.contains("ghs_abc"), "{clean}");
         assert!(clean.contains("https://github.com/irixsoft/ledger.git"));
         assert_eq!(redact_url("plain", "https://github.com/x.git"), "plain");
+    }
+
+    #[test]
+    fn git_authenticates_through_its_environment_and_never_the_command_line() {
+        let env = git_env(Some("ghs_abc"));
+        let joined: Vec<String> = env.iter().map(|(k, v)| format!("{k}={v}")).collect();
+        assert!(joined.contains(&"GIT_CONFIG_KEY_0=http.extraHeader".to_string()));
+        assert!(
+            joined
+                .iter()
+                .any(|e| e
+                    == "GIT_CONFIG_VALUE_0=Authorization: Basic eC1hY2Nlc3MtdG9rZW46Z2hzX2FiYw=="),
+            "{joined:?}"
+        );
+        assert!(!joined.join(" ").contains("ghs_abc"));
+        assert_eq!(git_env(None).len(), GIT_ENV.len());
+    }
+
+    #[test]
+    fn a_package_exists_only_with_an_installable_candidate_under_its_exact_name() {
+        let ffmpeg =
+            "ffmpeg:\n  Installed: (none)\n  Candidate: 7:6.1.1-3ubuntu5\n  Version table:\n";
+        assert!(package_has_candidate(ffmpeg, "ffmpeg"));
+        assert!(
+            !package_has_candidate(ffmpeg, "ff.*"),
+            "a pattern apt expanded is not the package it named"
+        );
+        assert!(!package_has_candidate(
+            "nothing:\n  Installed: (none)\n  Candidate: (none)\n",
+            "nothing"
+        ));
+        assert!(!package_has_candidate("", "nothing"));
     }
 
     #[test]

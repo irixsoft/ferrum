@@ -69,6 +69,11 @@ pub fn render_unit(
     unit.push_str(&format!("MemoryMax={}M\n", process.memory_mb));
     unit.push_str(&format!("CPUQuota={}%\n", app.cpu_percent));
     unit.push_str("NoNewPrivileges=yes\nProtectSystem=strict\nProtectHome=yes\nPrivateTmp=yes\n");
+    unit.push_str("ProtectProc=invisible\n");
+    if let Some(port) = process.port {
+        unit.push_str(&format!("SocketBindAllow=tcp:{port}\n"));
+    }
+    unit.push_str("SocketBindDeny=any\n");
     unit.push_str(&format!(
         "ReadWritePaths={}\n",
         dir.join("shared").display()
@@ -148,6 +153,9 @@ mod tests {
             "ProtectSystem=strict",
             "ReadWritePaths=/var/lib/ferrum/apps/ledger/shared",
             "PrivateTmp=yes",
+            "ProtectProc=invisible",
+            "SocketBindAllow=tcp:20000",
+            "SocketBindDeny=any",
             "SyslogIdentifier=ferrum-app-ledger-web",
             "WantedBy=multi-user.target",
         ] {
@@ -166,10 +174,14 @@ mod tests {
         let rt = render_unit(&a, &a.processes[1], Path::new("/t"), None).unwrap();
         assert!(rt.contains("WorkingDirectory=/var/lib/ferrum/apps/skool/current/apps/realtime\n"));
         assert!(rt.contains("Environment=PORT=20001\n"));
+        assert!(rt.contains("SocketBindAllow=tcp:20001\n"));
+        assert!(rt.contains("SocketBindDeny=any\n"));
         assert!(rt.contains("MemoryMax=256M\n"));
         assert!(rt.contains("SyslogIdentifier=ferrum-app-skool-realtime\n"));
         let j = render_unit(&a, &a.processes[2], Path::new("/t"), None).unwrap();
         assert!(!j.contains("PORT="), "{j}");
+        assert!(!j.contains("SocketBindAllow"), "{j}");
+        assert!(j.contains("SocketBindDeny=any\n"), "{j}");
         assert!(j.contains("Description=Ferrum app skool (jobs)\n"));
     }
 

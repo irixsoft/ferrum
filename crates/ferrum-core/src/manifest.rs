@@ -1,7 +1,7 @@
 use crate::apps::NewRoute;
 use crate::apps::env::{self, EnvRequirement};
 use crate::apps::processes::{NewProcess, WEB};
-use crate::detect::RepoTree;
+use crate::detect::{RepoTree, valid_package};
 use crate::runtime::{Commands, RuntimeKind};
 use ferrum_platform::Platform;
 use serde::{Deserialize, Serialize};
@@ -137,6 +137,9 @@ pub fn from_toml(t: &FerrumToml) -> Result<Manifest, String> {
         Some(spec) => Some(env_requirements(spec, t, &processes)?),
         None => None,
     };
+    if let Some(bad) = t.packages.iter().flatten().find(|p| !valid_package(p)) {
+        return Err(crate::apps::packages::unknown(bad));
+    }
     Ok(Manifest {
         runtime: t.runtime,
         version: t.version.clone(),
@@ -481,6 +484,21 @@ optional = true
             Some(Vec::new()),
             "an empty list drops every package"
         );
+    }
+
+    #[test]
+    fn a_package_name_apt_would_read_as_an_instruction_is_refused() {
+        let listing =
+            |name: &str| from_toml(&parse_toml(&format!("packages = [\"{name}\"]\n")).unwrap());
+        for bad in ["openssh-server-", "python3.", "Ffmpeg", "x"] {
+            assert_eq!(
+                listing(bad).unwrap_err(),
+                format!("No Ubuntu package is named `{bad}`.")
+            );
+        }
+        for good in ["ffmpeg", "libvips42", "python3.12", "g++"] {
+            assert!(listing(good).is_ok(), "{good}");
+        }
     }
 
     #[test]

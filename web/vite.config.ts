@@ -46,7 +46,7 @@ export default defineConfig({
   },
   server: {
     port: 5173,
-    proxy: { "/api": "http://127.0.0.1:8443" },
+    proxy: { "/api": { target: { host: "ferrum", port: 80, socketPath: "/run/ferrum/ferrum.sock" } } },
   },
   build: {
     outDir: "dist",

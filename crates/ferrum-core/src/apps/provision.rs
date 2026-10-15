@@ -5,7 +5,7 @@ use super::{App, env};
 use crate::deploy::maintenance;
 use crate::runtime::toolchain::{self, Store};
 use crate::state::State;
-use crate::{APPS_DIR, acme, apps, nginx, redis};
+use crate::{APPS_DIR, acme, apps, logs, nginx, redis};
 use anyhow::Context;
 use ferrum_platform::ubuntu::{NGINX_UNIT, SYSTEMD_UNIT_DIR};
 use ferrum_platform::{Platform, ServiceAction};
@@ -42,6 +42,7 @@ pub async fn provision(state: &State, platform: &dyn Platform, app: &App) -> any
         platform.write_file(&custom, "", 0o644)?;
     }
     maintenance::ensure_page(platform)?;
+    logs::secure(platform, &app.slug)?;
     nginx::replace_and_reload(platform, &vhost_path(&app.slug), &render_for(platform, app))
         .context("nginx refused the generated site configuration")?;
     Ok(())
@@ -243,7 +244,9 @@ pub async fn deprovision(state: &State, platform: &dyn Platform, app: &App) -> a
     platform.nginx_test()?;
     platform.service(ServiceAction::Reload, NGINX_UNIT)?;
 
-    platform.remove_system_user(&user_name(&app.slug))?;
+    let user = user_name(&app.slug);
+    platform.kill_user_processes(&user)?;
+    platform.remove_system_user(&user)?;
     platform.remove_tree(&app_dir(&app.slug))?;
     Ok(())
 }
@@ -292,13 +295,23 @@ mod tests {
         );
         let test = position(&calls, "nginx_test");
         let nginx = position(&calls, "service reload nginx");
+        let access = position(
+            &calls,
+            "ensure_log_file /var/log/nginx/ferrum-ledger.access.log",
+        );
+        let error = position(
+            &calls,
+            "ensure_log_file /var/log/nginx/ferrum-ledger.error.log",
+        );
         assert!(
             user < env
                 && env < unit
                 && unit < reload
                 && reload < vhost
                 && vhost < test
-                && test < nginx,
+                && test < nginx
+                && access < vhost
+                && error < vhost,
             "{calls:#?}"
         );
         for expected in [
@@ -736,8 +749,12 @@ mod tests {
         assert!(calls.contains(&"remove_system_user ferrum-ledger".to_string()));
         assert!(calls.contains(&"remove_tree /var/lib/ferrum/apps/ledger".to_string()));
         let stop = position(&calls, "service stop ferrum-app-ledger-web");
+        let killed = position(&calls, "kill_user_processes ferrum-ledger");
         let user = position(&calls, "remove_system_user ferrum-ledger");
         let tree = position(&calls, "remove_tree /var/lib/ferrum/apps/ledger");
-        assert!(stop < user && user < tree, "{calls:#?}");
+        assert!(
+            stop < killed && killed + 1 == user && user < tree,
+            "{calls:#?}"
+        );
     }
 }

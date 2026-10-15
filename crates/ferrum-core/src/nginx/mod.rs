@@ -1,10 +1,12 @@
-use crate::{ACME_ROOT, LISTEN_ADDR, acme};
+pub mod custom;
+
+use crate::{ACME_ROOT, SOCKET_PATH, acme};
 use ferrum_platform::ubuntu::{NGINX_CONF_DIR, NGINX_UNIT};
 use ferrum_platform::{Platform, PlatformError, ServiceAction};
 use std::path::{Path, PathBuf};
 
-const ACME_CONF: &str = include_str!("../../../packaging/nginx-acme.conf");
-const PANEL_TMPL: &str = include_str!("../../../packaging/nginx-panel.conf.tmpl");
+const ACME_CONF: &str = include_str!("../../../../packaging/nginx-acme.conf");
+const PANEL_TMPL: &str = include_str!("../../../../packaging/nginx-panel.conf.tmpl");
 
 const REPO_KEY_URL: &str = "https://nginx.org/keys/nginx_signing.key";
 
@@ -44,7 +46,7 @@ pub fn render_panel_vhost(hostname: &str, cert_dir: &Path) -> String {
         .replace("{{hostname}}", hostname)
         .replace("{{cert_dir}}", &cert_dir.to_string_lossy())
         .replace("{{acme_root}}", ACME_ROOT)
-        .replace("{{upstream}}", &LISTEN_ADDR.to_string())
+        .replace("{{upstream}}", &format!("unix:{SOCKET_PATH}"))
 }
 
 /// A no-op until setup has issued the certificate, and whenever the file already matches.
@@ -131,13 +133,13 @@ mod tests {
     }
 
     #[test]
-    fn panel_vhost_proxies_to_loopback_and_serves_acme() {
+    fn panel_vhost_proxies_to_the_daemon_socket_and_serves_acme() {
         let conf = render_panel_vhost(
             "panel.example.com",
             Path::new("/var/lib/ferrum/certs/panel.example.com"),
         );
         assert!(conf.contains("server_name panel.example.com;"));
-        assert!(conf.contains("proxy_pass http://127.0.0.1:8443;"));
+        assert!(conf.contains("proxy_pass http://unix:/run/ferrum/ferrum.sock;"));
         assert!(conf.contains("listen 443 ssl;"));
         assert!(conf.contains("http2 on;"));
         assert!(conf.contains("/var/lib/ferrum/certs/panel.example.com/fullchain.pem"));
@@ -157,7 +159,11 @@ mod tests {
         );
         assert_eq!(conf.matches("proxy_set_header Host $host;").count(), 1);
         assert_eq!(conf.matches("proxy_http_version 1.1;").count(), 1);
-        assert_eq!(conf.matches("proxy_pass http://127.0.0.1:8443;").count(), 2);
+        assert_eq!(
+            conf.matches("proxy_pass http://unix:/run/ferrum/ferrum.sock;")
+                .count(),
+            2
+        );
     }
 
     #[test]
@@ -171,7 +177,7 @@ mod tests {
         assert!(block.contains("client_max_body_size 0;"), "{block}");
         assert!(block.contains("proxy_request_buffering off;"), "{block}");
         assert!(
-            block.contains("proxy_pass http://127.0.0.1:8443;"),
+            block.contains("proxy_pass http://unix:/run/ferrum/ferrum.sock;"),
             "{block}"
         );
         assert_eq!(conf.matches("client_max_body_size 0;").count(), 1);

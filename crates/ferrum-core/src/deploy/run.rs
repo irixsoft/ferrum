@@ -210,12 +210,13 @@ mod tests {
             c.starts_with("git_clone https://github.com/irixsoft/ledger.git main /var/lib/ferrum/apps/ledger/releases/")
         });
         let checkout = position(&calls, |c| {
-            c.starts_with("git_checkout") && c.ends_with("a3f9c2d4e81b06f5c9a2")
+            c.starts_with("git_checkout") && c.ends_with(" auth a3f9c2d4e81b06f5c9a2")
         });
-        let scrub = position(&calls, |c| {
-            c.starts_with("git_scrub_remote")
-                && c.ends_with("https://github.com/irixsoft/ledger.git")
-        });
+        assert!(
+            calls[clone].ends_with(" auth"),
+            "the token rides in git's environment, never in the URL: {}",
+            calls[clone]
+        );
         let env = calls
             .iter()
             .rposition(|c| c == "write_file /var/lib/ferrum/apps/ledger/env 600")
@@ -233,8 +234,7 @@ mod tests {
         let start = position(&calls, |c| c == "service enable-now ferrum-app-ledger-web");
         assert!(
             clone < checkout
-                && checkout < scrub
-                && scrub < env
+                && checkout < env
                 && env < install
                 && install < build
                 && build < swap
@@ -392,6 +392,37 @@ mod tests {
         assert_eq!(kept.len(), 1, "{kept:#?}");
         assert_eq!(kept[0].subject, "ffmpeg");
         assert_eq!(d.steps[2].note.as_deref(), Some("2 packages"));
+    }
+
+    #[tokio::test]
+    async fn a_package_the_archive_does_not_know_stops_the_deploy_before_apt_runs() {
+        let (_d, state) = state().await;
+        let p = Arc::new(FakePlatform::new());
+        let health = Health::serve(200).await;
+        let app = provisioned(&state, &p, "ledger", health.port, |new| {
+            new.follow_repo_file = true;
+        })
+        .await;
+        p.set_known_packages(&["ffmpeg"]);
+        p.serve_clone(&[("ferrum.toml", "packages = [\"ffmpeg\", \"libvips42\"]\n")]);
+        let ctx = ctx(&state, &p);
+        let (outcome, d) = deploy(&ctx, &app, "abc1234").await;
+        assert_eq!(outcome, Outcome::Failed);
+        assert_eq!(d.steps[2].state, DeployState::InstallingSystemPackages);
+        assert_eq!(d.steps[2].status, StepStatus::Failed);
+        assert!(
+            d.failure_reason
+                .as_deref()
+                .unwrap()
+                .contains("No Ubuntu package is named `libvips42`."),
+            "{:?}",
+            d.failure_reason
+        );
+        assert!(
+            !p.calls()
+                .iter()
+                .any(|c| c.starts_with("install_packages") && c != "install_packages git")
+        );
     }
 
     #[tokio::test]
@@ -640,10 +671,18 @@ mod tests {
         let build = position(&calls, |c| {
             c.starts_with("run_scoped") && c.contains("bun run build")
         });
-        let chown = position(&calls, |c| {
-            c.starts_with("chown_tree /var/lib/ferrum/apps/ledger/releases/")
+        let made = position(&calls, |c| {
+            c.starts_with("make_dirs /var/lib/ferrum/apps/ledger/releases/") && c.ends_with(" 750")
         });
-        assert!(chown < link && link < build, "{calls:#?}");
+        let clone = position(&calls, |c| c.starts_with("git_clone"));
+        let secured = position(&calls, |c| {
+            c.starts_with("secure_release /var/lib/ferrum/apps/ledger/releases/")
+                && c.ends_with(" ferrum-ledger")
+        });
+        assert!(
+            made < clone && clone < secured && secured < link && link < build,
+            "{calls:#?}"
+        );
         assert!(
             calls.contains(
                 &"make_dirs_as ferrum-ledger /var/lib/ferrum/apps/ledger/shared/cache/next 750"
@@ -1525,7 +1564,9 @@ mod tests {
                 .any(|c| c.starts_with("run_scoped") || c.starts_with("git_clone")),
             "{calls:#?}"
         );
-        let restore = position(&calls, |c| c.starts_with("postgres_restore ledger_prod"));
+        let restore = position(&calls, |c| {
+            c.starts_with("postgres_restore_as ledger_prod ledger_prod")
+        });
         let pause = position(&calls, |c| {
             c == "write_file /var/lib/ferrum/apps/ledger/maintenance 644"
         });

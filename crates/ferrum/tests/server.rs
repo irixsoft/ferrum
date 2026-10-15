@@ -56,6 +56,24 @@ async fn health_endpoint_reports_ok() {
 }
 
 #[tokio::test]
+async fn the_cli_client_reaches_the_daemon_over_its_socket() {
+    let dir = tempfile::tempdir().unwrap();
+    let socket = dir.path().join("ferrum.sock");
+    let listener = tokio::net::UnixListener::bind(&socket).unwrap();
+    let app = app().await;
+    tokio::spawn(async move { axum::serve(listener, app).await });
+
+    let res = ferrum_core::http::daemon_client_at(&socket)
+        .get("http://ferrum/api/health")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let json: serde_json::Value = res.json().await.unwrap();
+    assert_eq!(json["ok"], true);
+}
+
+#[tokio::test]
 async fn unknown_path_is_404() {
     let res = app()
         .await

@@ -32,9 +32,9 @@ pub mod tokens;
 pub mod update;
 pub mod users;
 
-use std::net::{IpAddr, Ipv4Addr, SocketAddr};
-
-pub const LISTEN_ADDR: SocketAddr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 8443);
+/// Only root can create a file here, so nothing else can stand in for the daemon.
+pub const SOCKET_DIR: &str = "/run/ferrum";
+pub const SOCKET_PATH: &str = "/run/ferrum/ferrum.sock";
 
 pub const FERRUM_UNIT: &str = "ferrum";
 
@@ -68,8 +68,7 @@ mod tests {
     }
 
     #[test]
-    fn the_daemon_is_loopback_only() {
-        assert!(LISTEN_ADDR.ip().is_loopback());
-        assert_eq!(LISTEN_ADDR.port(), 8443);
+    fn the_daemon_socket_lives_in_its_directory() {
+        assert!(SOCKET_PATH.starts_with(SOCKET_DIR));
     }
 }

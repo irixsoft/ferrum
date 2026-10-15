@@ -1,4 +1,4 @@
-use super::{Database, DbError, host_error, sql};
+use super::{Database, DbError, host_error};
 use ferrum_platform::Platform;
 use ferrum_platform::ubuntu::PG_USER;
 use std::io::{BufRead, Write};
@@ -82,15 +82,13 @@ impl Drop for Staged {
     }
 }
 
-/// A plain dump made to load as `role`: it opens with `SET ROLE`; the ownership, privilege and
-/// extension statements are left out and the extension names returned, since the superuser
-/// creates those first. Lines inside COPY data are copied byte for byte.
+/// A plain dump made to load as the database's role: the ownership, privilege and extension
+/// statements are left out and the extension names returned, since the superuser creates those
+/// first. Lines inside COPY data are copied byte for byte.
 pub fn rewrite_plain(
     mut input: impl BufRead,
     mut output: impl Write,
-    role: &str,
 ) -> std::io::Result<Vec<String>> {
-    writeln!(output, "SET ROLE {};", sql::quote_ident(role))?;
     let mut extensions = Vec::new();
     let mut line = Vec::new();
     let mut in_data = false;
@@ -182,14 +180,13 @@ pub fn prepare(
     platform: &dyn Platform,
     staged: &Staged,
     format: Format,
-    role: &str,
 ) -> anyhow::Result<Prepared> {
     match format {
         Format::Plain => {
             let tmp = staged.path.with_extension("tmp");
             let input = std::io::BufReader::new(std::fs::File::open(&staged.path)?);
             let output = std::io::BufWriter::new(std::fs::File::create(&tmp)?);
-            let extensions = rewrite_plain(input, output, role)?;
+            let extensions = rewrite_plain(input, output)?;
             std::fs::rename(&tmp, &staged.path)?;
             Ok(Prepared {
                 extensions,
@@ -211,19 +208,23 @@ pub fn prepare(
     }
 }
 
-/// Loads the prepared dump into the freshly created database as its role, so every object it
-/// creates is owned by that role.
+/// Loads the prepared dump into the freshly created database connected as its role, so every
+/// object it creates is owned by that role and no statement in it runs as the superuser.
 pub fn load(
     platform: &dyn Platform,
     db: &Database,
+    password: &str,
     staged: &Staged,
     format: Format,
     list: Option<&Path>,
 ) -> anyhow::Result<()> {
-    platform.chown_tree(&staged.dir, PG_USER)?;
     match format {
-        Format::Custom => platform.postgres_restore(&db.name, &staged.path, Some(&db.role), list),
-        Format::Plain => platform.postgres_restore_sql(&db.name, &staged.path),
+        Format::Custom => {
+            platform.postgres_restore_as(&db.name, &db.role, password, &staged.path, list, false)
+        }
+        Format::Plain => {
+            platform.postgres_restore_sql_as(&db.name, &db.role, password, &staged.path)
+        }
     }
     .map_err(host_error)?;
     Ok(())
@@ -306,10 +307,9 @@ REVOKE ALL ON SCHEMA public FROM PUBLIC;\n\
 ALTER DEFAULT PRIVILEGES FOR ROLE dbadmin IN SCHEMA public GRANT SELECT ON TABLES TO reader;\n\
 ALTER TABLE ONLY public.users ADD CONSTRAINT users_pkey PRIMARY KEY (id);\n";
         let mut out = Vec::new();
-        let extensions = rewrite_plain(&dump[..], &mut out, "ledger_prod").unwrap();
+        let extensions = rewrite_plain(&dump[..], &mut out).unwrap();
         assert_eq!(extensions, vec!["citext", "uuid-ossp", "citext"]);
-        let expected: &[u8] = b"SET ROLE \"ledger_prod\";\n\
-SET statement_timeout = 0;\r\n\
+        let expected: &[u8] = b"SET statement_timeout = 0;\r\n\
 CREATE SCHEMA audit;\n\
 CREATE TABLE public.users (id integer NOT NULL, note text);\n\
 COPY public.users (id, note) FROM stdin;\n\
@@ -363,37 +363,38 @@ ALTER TABLE ONLY public.users ADD CONSTRAINT users_pkey PRIMARY KEY (id);\n";
         }
     }
 
+    const PASSWORD: &str = "owner-password-never-recorded";
+
     #[test]
-    fn a_plain_dump_is_rewritten_in_place_then_loaded_through_psql() {
+    fn a_plain_dump_is_rewritten_in_place_then_loaded_through_psql_as_the_role() {
         let dir = tempfile::tempdir().unwrap();
         let staged = Staged::new(dir.path(), "ledger_prod");
         std::fs::create_dir_all(&staged.dir).unwrap();
         std::fs::write(
             &staged.path,
-            "CREATE EXTENSION IF NOT EXISTS citext;\nCREATE TABLE t (id int);\nALTER TABLE public.t OWNER TO dbadmin;\n",
+            "CREATE EXTENSION IF NOT EXISTS citext;\nCREATE TABLE t (id int);\nALTER TABLE public.t OWNER TO dbadmin;\nRESET ROLE;\nset role postgres;\nSELECT 1; RESET ROLE;\n",
         )
         .unwrap();
         let p = FakePlatform::new();
-        let prepared = prepare(&p, &staged, Format::Plain, "ledger_prod").unwrap();
+        let prepared = prepare(&p, &staged, Format::Plain).unwrap();
         assert_eq!(prepared.extensions, vec!["citext"]);
         assert!(prepared.list.is_none());
         assert_eq!(
             std::fs::read_to_string(&staged.path).unwrap(),
-            "SET ROLE \"ledger_prod\";\nCREATE TABLE t (id int);\n"
+            "CREATE TABLE t (id int);\nRESET ROLE;\nset role postgres;\nSELECT 1; RESET ROLE;\n"
         );
         assert!(!staged.path.with_extension("tmp").exists());
 
-        load(&p, &database(), &staged, Format::Plain, None).unwrap();
+        load(&p, &database(), PASSWORD, &staged, Format::Plain, None).unwrap();
         let calls = p.calls();
-        let chown = calls
-            .iter()
-            .position(|c| c.starts_with("chown_tree"))
-            .unwrap();
-        let restore = calls
-            .iter()
-            .position(|c| c.starts_with("postgres_restore_sql ledger_prod "))
-            .unwrap();
-        assert!(chown < restore, "{calls:#?}");
+        assert_eq!(
+            calls,
+            vec![format!(
+                "postgres_restore_sql_as ledger_prod ledger_prod {}",
+                staged.path.display()
+            )]
+        );
+        assert!(!calls.join("\n").contains(PASSWORD));
     }
 
     #[test]
@@ -404,7 +405,15 @@ ALTER TABLE ONLY public.users ADD CONSTRAINT users_pkey PRIMARY KEY (id);\n";
         std::fs::write(&staged.path, b"PGDMP\x01").unwrap();
         let p = FakePlatform::new();
         p.answer_restore_list("2; 3079 16387 EXTENSION - vector \n5; 0 0 TABLE public t dbadmin\n");
-        let prepared = prepare(&p, &staged, Format::Custom, "ledger_prod").unwrap();
+        let prepared = prepare(&p, &staged, Format::Custom).unwrap();
+        assert_eq!(
+            p.calls(),
+            vec![
+                format!("chown_tree {} postgres", staged.dir.display()),
+                format!("postgres_restore_list {}", staged.path.display()),
+            ],
+            "postgres lists the dump, so it must be able to read it"
+        );
         assert_eq!(prepared.extensions, vec!["vector"]);
         assert_eq!(prepared.list.as_deref(), Some(staged.list.as_path()));
         assert_eq!(
@@ -416,18 +425,21 @@ ALTER TABLE ONLY public.users ADD CONSTRAINT users_pkey PRIMARY KEY (id);\n";
         load(
             &p,
             &database(),
+            PASSWORD,
             &staged,
             Format::Custom,
             prepared.list.as_deref(),
         )
         .unwrap();
+        let calls = p.calls();
         assert_eq!(
-            p.calls_matching("postgres_restore ledger_prod "),
-            vec![format!(
-                "postgres_restore ledger_prod {} ledger_prod {}",
+            calls[2..],
+            [format!(
+                "postgres_restore_as ledger_prod ledger_prod {} {}",
                 staged.path.display(),
                 staged.list.display()
             )]
         );
+        assert!(!calls.join("\n").contains(PASSWORD));
     }
 }

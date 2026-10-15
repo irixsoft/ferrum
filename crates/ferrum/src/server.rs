@@ -19,7 +19,7 @@ use std::sync::{Arc, Mutex};
 pub use ed25519_dalek::VerifyingKey;
 use tower_http::trace::TraceLayer;
 
-pub use ferrum_core::LISTEN_ADDR;
+use ferrum_core::{SOCKET_DIR, SOCKET_PATH};
 
 /// Everything a test may want to stand a stub in for, exactly as `Directory::Custom` does for
 /// Let's Encrypt.
@@ -287,6 +287,14 @@ pub async fn serve(data_dir: &Path) -> anyhow::Result<()> {
         }
         Err(e) => tracing::warn!(error = %e, "securing the app directories"),
     }
+    match ferrum_core::logs::secure_all(&state, deps.platform.as_ref()).await {
+        Ok(failed) => {
+            for (slug, e) in failed {
+                tracing::warn!(app = %slug, error = %e, "securing the app's nginx logs");
+            }
+        }
+        Err(e) => tracing::warn!(error = %e, "securing the app nginx logs"),
+    }
     match ferrum_core::apps::provision::move_env_files(&state, deps.platform.as_ref()).await {
         Ok(0) => {}
         Ok(n) => tracing::info!(apps = n, "app environment files moved out of shared/"),
@@ -310,8 +318,13 @@ pub async fn serve(data_dir: &Path) -> anyhow::Result<()> {
     );
     ferrum_core::metrics::spawn_sampler(state, app_state.platform.clone());
     update::ticker::spawn(app_state.updater.clone());
-    let listener = tokio::net::TcpListener::bind(LISTEN_ADDR).await?;
-    tracing::info!(addr = %LISTEN_ADDR, "listening");
+    let platform = app_state.platform.clone();
+    let socket = Path::new(SOCKET_PATH);
+    platform.make_dirs(Path::new(SOCKET_DIR), 0o755)?;
+    platform.remove_file(socket)?;
+    let listener = tokio::net::UnixListener::bind(socket)?;
+    platform.chmod(socket, 0o666)?;
+    tracing::info!(socket = SOCKET_PATH, "listening");
     axum::serve(listener, router(app_state))
         .with_graceful_shutdown(shutdown_signal())
         .await?;

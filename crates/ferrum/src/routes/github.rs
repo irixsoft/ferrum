@@ -8,22 +8,9 @@ use axum::response::{IntoResponse, Redirect, Response};
 use axum::{Json, Router, routing::get};
 use ferrum_core::github::{self, manifest};
 use ferrum_core::setup;
-use percent_encoding::{AsciiSet, CONTROLS, utf8_percent_encode};
 use serde::{Deserialize, Serialize};
 
 const SETTINGS: &str = "/settings";
-const EXPIRED: &str = "That connection attempt expired. Start again from Settings.";
-const QUERY: &AsciiSet = &CONTROLS
-    .add(b' ')
-    .add(b'"')
-    .add(b'#')
-    .add(b'%')
-    .add(b'&')
-    .add(b'+')
-    .add(b'<')
-    .add(b'>')
-    .add(b'=')
-    .add(b'?');
 
 pub fn router() -> Router<AppState> {
     Router::new()
@@ -98,32 +85,41 @@ async fn connect(
     }))
 }
 
-async fn callback(Extract(app): Extract<AppState>, Query(query): Query<Callback>) -> Response {
-    match exchange(&app, query).await {
-        Ok(()) => Redirect::to(&format!("{SETTINGS}?github=connected")).into_response(),
-        Err(e) if e.status.is_client_error() => Redirect::to(&format!(
-            "{SETTINGS}?github=failed&reason={}",
-            utf8_percent_encode(&e.message, QUERY)
-        ))
-        .into_response(),
-        Err(e) => e.into_response(),
+enum Failed {
+    NoCode,
+    Expired,
+    Refused,
+    Server(ApiError),
+}
+
+impl From<anyhow::Error> for Failed {
+    fn from(e: anyhow::Error) -> Self {
+        Failed::Server(e.into())
     }
 }
 
-async fn exchange(app: &AppState, query: Callback) -> ApiResult<()> {
+async fn callback(Extract(app): Extract<AppState>, Query(query): Query<Callback>) -> Response {
+    let reason = match exchange(&app, query).await {
+        Ok(()) => return Redirect::to(&format!("{SETTINGS}?github=connected")).into_response(),
+        Err(Failed::Server(e)) => return e.into_response(),
+        Err(Failed::NoCode) => "no-code",
+        Err(Failed::Expired) => "expired",
+        Err(Failed::Refused) => "refused",
+    };
+    Redirect::to(&format!("{SETTINGS}?github=failed&reason={reason}")).into_response()
+}
+
+async fn exchange(app: &AppState, query: Callback) -> Result<(), Failed> {
     let state = query.state.unwrap_or_default();
-    let code = query
-        .code
-        .filter(|c| !c.is_empty())
-        .ok_or_else(|| ApiError::bad_request("GitHub did not send a code."))?;
+    let code = query.code.filter(|c| !c.is_empty()).ok_or(Failed::NoCode)?;
 
     if !manifest::consume_state(&app.db, &state).await? {
-        return Err(ApiError::bad_request(EXPIRED));
+        return Err(Failed::Expired);
     }
 
     let connection = app.github.exchange(&code).await.map_err(|e| {
         tracing::error!(error = ?e, "the manifest exchange failed");
-        ApiError::bad_request("GitHub refused the connection. Start again from Settings.")
+        Failed::Refused
     })?;
     github::save(&app.db, connection).await?;
     app.github.forget();

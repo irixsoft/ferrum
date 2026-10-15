@@ -286,14 +286,15 @@ async fn wait_for_dns(host: &str, expected: IpAddr, timeout: Duration) -> anyhow
 }
 
 async fn wait_for_health() -> anyhow::Result<()> {
-    let url = format!("http://{}/api/health", ferrum_core::LISTEN_ADDR);
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(2))
-        .build()?;
+    let client = ferrum_core::http::daemon_client();
     let deadline = Instant::now() + HEALTH_TIMEOUT;
 
     loop {
-        if let Ok(res) = client.get(&url).send().await
+        if let Ok(res) = client
+            .get("http://ferrum/api/health")
+            .timeout(Duration::from_secs(2))
+            .send()
+            .await
             && res.status().is_success()
         {
             return Ok(());

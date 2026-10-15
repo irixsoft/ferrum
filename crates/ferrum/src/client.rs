@@ -1,6 +1,10 @@
 use anyhow::{Context, bail};
-use ferrum_core::LISTEN_ADDR;
 use serde::Deserialize;
+use std::borrow::Cow;
+
+const BASE: &str = "http://ferrum/api";
+
+const NOT_RUNNING: &str = "Ferrum is not running; check `systemctl status ferrum`.";
 
 #[derive(Deserialize)]
 struct Queued {
@@ -48,19 +52,18 @@ pub fn frames(buffer: &mut String) -> Vec<(String, String)> {
     out
 }
 
-/// Talks to the daemon over loopback with a bearer token, prints the log, and returns the exit
+/// Talks to the daemon over its socket with a bearer token, prints the log, and returns the exit
 /// code: 0 when the deploy ends live, 1 otherwise.
 pub async fn deploy(slug: &str, git_ref: Option<&str>, token: &str) -> anyhow::Result<i32> {
-    let base = format!("http://{LISTEN_ADDR}/api");
-    let http = ferrum_core::http::client();
+    let http = ferrum_core::http::daemon_client();
     let body = serde_json::json!({ "ref": git_ref, "cli": true });
     let res = http
-        .post(format!("{base}/apps/{slug}/deploys"))
+        .post(format!("{BASE}/apps/{slug}/deploys"))
         .bearer_auth(token)
         .json(&body)
         .send()
         .await
-        .context("reaching the Ferrum daemon on loopback")?;
+        .context(NOT_RUNNING)?;
     if !res.status().is_success() {
         let status = res.status();
         let refused: Option<Refused> = res.json().await.ok();
@@ -85,18 +88,13 @@ pub async fn deploy(slug: &str, git_ref: Option<&str>, token: &str) -> anyhow::R
         ),
     }
 
-    follow(&http, &base, &queued.id, token).await
+    follow(&http, &queued.id, token).await
 }
 
 /// Prints a deploy's log until its `done` frame; 0 when it ends live, 1 otherwise.
-async fn follow(
-    http: &reqwest::Client,
-    base: &str,
-    deploy_id: &str,
-    token: &str,
-) -> anyhow::Result<i32> {
+async fn follow(http: &reqwest::Client, deploy_id: &str, token: &str) -> anyhow::Result<i32> {
     let mut res = http
-        .get(format!("{base}/deploys/{deploy_id}/log"))
+        .get(format!("{BASE}/deploys/{deploy_id}/log"))
         .bearer_auth(token)
         .header("accept", "text/event-stream")
         .send()
@@ -111,15 +109,15 @@ async fn follow(
                 "line" => {
                     if let Ok(line) = serde_json::from_str::<Line>(&data) {
                         if line.stream == "system" {
-                            println!("  {}", line.text);
+                            println!("  {}", printable(&line.text));
                         } else {
-                            println!("    {}", line.text);
+                            println!("    {}", printable(&line.text));
                         }
                     }
                 }
                 "done" => {
                     let done: Done = serde_json::from_str(&data)?;
-                    println!("\n  {}\n", done.outcome);
+                    println!("\n  {}\n", printable(&done.outcome));
                     return Ok(if done.outcome == "Live" { 0 } else { 1 });
                 }
                 _ => {}
@@ -188,14 +186,13 @@ pub async fn rollback(
     restore: bool,
     token: &str,
 ) -> anyhow::Result<i32> {
-    let base = format!("http://{LISTEN_ADDR}/api");
-    let http = ferrum_core::http::client();
+    let http = ferrum_core::http::daemon_client();
     let res = http
-        .get(format!("{base}/apps/{slug}/releases"))
+        .get(format!("{BASE}/apps/{slug}/releases"))
         .bearer_auth(token)
         .send()
         .await
-        .context("reaching the Ferrum daemon on loopback")?;
+        .context(NOT_RUNNING)?;
     if !res.status().is_success() {
         return Err(refused(res).await);
     }
@@ -204,7 +201,7 @@ pub async fn rollback(
 
     let restore_deploy_id = if restore {
         let deploys: Vec<DeployRow> = http
-            .get(format!("{base}/apps/{slug}/deploys"))
+            .get(format!("{BASE}/apps/{slug}/deploys"))
             .bearer_auth(token)
             .send()
             .await?
@@ -226,7 +223,7 @@ pub async fn rollback(
         "restore_deploy_id": restore_deploy_id,
     });
     let res = http
-        .post(format!("{base}/apps/{slug}/rollback"))
+        .post(format!("{BASE}/apps/{slug}/rollback"))
         .bearer_auth(token)
         .json(&body)
         .send()
@@ -245,7 +242,7 @@ pub async fn rollback(
             ""
         }
     );
-    follow(&http, &base, &queued.id, token).await
+    follow(&http, &queued.id, token).await
 }
 
 #[derive(Deserialize)]
@@ -347,13 +344,12 @@ fn host_card(host: &Host) -> String {
 }
 
 pub async fn status(token: &str) -> anyhow::Result<()> {
-    let base = format!("http://{LISTEN_ADDR}/api");
-    let res = ferrum_core::http::client()
-        .get(format!("{base}/host"))
+    let res = ferrum_core::http::daemon_client()
+        .get(format!("{BASE}/host"))
         .bearer_auth(token)
         .send()
         .await
-        .context("reaching the Ferrum daemon on loopback")?;
+        .context(NOT_RUNNING)?;
     if !res.status().is_success() {
         return Err(refused(res).await);
     }
@@ -364,7 +360,19 @@ pub async fn status(token: &str) -> anyhow::Result<()> {
 
 fn print_line(line: &LogLine) {
     let clock = line.at.get(11..19).unwrap_or("        ");
-    println!("  {clock}  {:<5} {}", line.level, line.text);
+    println!("  {clock}  {:<5} {}", line.level, printable(&line.text));
+}
+
+fn printable(text: &str) -> Cow<'_, str> {
+    if text.chars().any(|c| c.is_control() && c != '\t') {
+        Cow::Owned(
+            text.chars()
+                .filter(|&c| !c.is_control() || c == '\t')
+                .collect(),
+        )
+    } else {
+        Cow::Borrowed(text)
+    }
 }
 
 pub async fn logs(
@@ -374,16 +382,15 @@ pub async fn logs(
     lines: u32,
     token: &str,
 ) -> anyhow::Result<()> {
-    let base = format!("http://{LISTEN_ADDR}/api");
-    let http = ferrum_core::http::client();
-    let url = format!("{base}/apps/{slug}/logs?source={source}&lines={lines}");
+    let http = ferrum_core::http::daemon_client();
+    let url = format!("{BASE}/apps/{slug}/logs?source={source}&lines={lines}");
     if !follow {
         let res = http
             .get(&url)
             .bearer_auth(token)
             .send()
             .await
-            .context("reaching the Ferrum daemon on loopback")?;
+            .context(NOT_RUNNING)?;
         if !res.status().is_success() {
             return Err(refused(res).await);
         }
@@ -398,7 +405,7 @@ pub async fn logs(
         .header("accept", "text/event-stream")
         .send()
         .await
-        .context("reaching the Ferrum daemon on loopback")?;
+        .context(NOT_RUNNING)?;
     if !res.status().is_success() {
         return Err(refused(res).await);
     }
@@ -417,19 +424,18 @@ pub async fn logs(
 }
 
 pub async fn restart(slug: &str, token: &str) -> anyhow::Result<()> {
-    let base = format!("http://{LISTEN_ADDR}/api");
-    let http = ferrum_core::http::client();
+    let http = ferrum_core::http::daemon_client();
     let res = http
-        .post(format!("{base}/apps/{slug}/restart"))
+        .post(format!("{BASE}/apps/{slug}/restart"))
         .bearer_auth(token)
         .send()
         .await
-        .context("reaching the Ferrum daemon on loopback")?;
+        .context(NOT_RUNNING)?;
     if !res.status().is_success() {
         return Err(refused(res).await);
     }
     let shown: Status = http
-        .get(format!("{base}/apps/{slug}"))
+        .get(format!("{BASE}/apps/{slug}"))
         .bearer_auth(token)
         .send()
         .await?
@@ -463,14 +469,13 @@ const UPDATE_POLL: std::time::Duration = std::time::Duration::from_millis(500);
 /// Asks the daemon to check GitHub and, unless `check_only`, to install what it found; prints
 /// each step as the daemon reports it. Exit 0 when nothing is newer or the restart is scheduled.
 pub async fn update(check_only: bool, token: &str) -> anyhow::Result<i32> {
-    let base = format!("http://{LISTEN_ADDR}/api");
-    let http = ferrum_core::http::client();
+    let http = ferrum_core::http::daemon_client();
     let res = http
-        .post(format!("{base}/update/check"))
+        .post(format!("{BASE}/update/check"))
         .bearer_auth(token)
         .send()
         .await
-        .context("reaching the Ferrum daemon on loopback")?;
+        .context(NOT_RUNNING)?;
     if !res.status().is_success() {
         return Err(refused(res).await);
     }
@@ -489,7 +494,7 @@ pub async fn update(check_only: bool, token: &str) -> anyhow::Result<i32> {
     }
 
     let res = http
-        .post(format!("{base}/update"))
+        .post(format!("{BASE}/update"))
         .bearer_auth(token)
         .send()
         .await?;
@@ -500,7 +505,7 @@ pub async fn update(check_only: bool, token: &str) -> anyhow::Result<i32> {
     loop {
         tokio::time::sleep(UPDATE_POLL).await;
         let status: UpdateStatus = http
-            .get(format!("{base}/update"))
+            .get(format!("{BASE}/update"))
             .bearer_auth(token)
             .send()
             .await?
@@ -510,14 +515,14 @@ pub async fn update(check_only: bool, token: &str) -> anyhow::Result<i32> {
         if status.step != shown
             && let Some(step) = &status.step
         {
-            println!("  {step}");
+            println!("  {}", printable(step));
         }
         shown = status.step;
         if status.running {
             continue;
         }
         if let Some(error) = status.error {
-            println!("\n  {error}\n");
+            println!("\n  {}\n", printable(&error));
             return Ok(1);
         }
         if status.restarting {
@@ -549,6 +554,19 @@ mod tests {
             ]
         );
         assert_eq!(buffer, "event: line\ndata: par");
+    }
+
+    #[test]
+    fn printed_lines_lose_control_characters_but_keep_tabs() {
+        assert_eq!(
+            printable("\x1b[2Jgone\x1b]0;title\x07\r"),
+            "[2Jgone]0;title"
+        );
+        assert_eq!(printable("a\tb"), "a\tb");
+        assert!(matches!(
+            printable("plain text"),
+            Cow::Borrowed("plain text")
+        ));
     }
 
     fn release(id: &str, sha: &str, current: bool) -> ReleaseRow {
